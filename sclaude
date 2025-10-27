@@ -1,0 +1,233 @@
+#!/bin/bash
+# sclaude: Secure/Sandboxed Claude - Run Claude Code in Docker isolation
+# Usage: sclaude [options] [prompt]
+#   sclaude                  # Interactive mode
+#   sclaude --resume         # Resume session
+#   sclaude --yolo           # Alias for --dangerously-skip-permissions
+#   sclaude update           # Update to latest Claude CLI
+#   sclaude cleanup          # Remove old image versions
+#   sclaude version          # Show version info and metadata
+#   sclaude volumes          # Show Docker volume information
+#   sclaude reset            # Delete all persistent data
+#   sclaude "your prompt"    # Direct prompt
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+MEMORY_LIMIT="4g"
+CPU_LIMIT="2"
+PIDS_LIMIT="100"
+
+get_dockerfile_content() {
+    cat <<'DOCKERFILE_END'
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    curl git python3 python3-pip build-essential ca-certificates gnupg sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code
+
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN (groupadd -g ${USER_GID} claude 2>/dev/null || groupadd claude) && \
+    useradd -u ${USER_UID} -g $(getent group ${USER_GID} | cut -d: -f1 || echo claude) -m -s /bin/bash claude
+
+RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' >> /etc/sudoers.d/claude && \
+    chmod 0440 /etc/sudoers.d/claude
+
+RUN mkdir -p /workspace && chown claude:claude /workspace
+
+USER claude
+WORKDIR /workspace
+ENV HOME=/home/claude
+ENV TMPDIR=/tmp
+ENV PATH="/home/claude/.npm-global/bin:/home/claude/.local/bin:${PATH}"
+
+RUN npm config set prefix /home/claude/.npm-global
+DOCKERFILE_END
+}
+
+get_version_hash() {
+    {
+        get_dockerfile_content
+        echo "MEMORY_LIMIT=$MEMORY_LIMIT"
+        echo "CPU_LIMIT=$CPU_LIMIT"
+        echo "PIDS_LIMIT=$PIDS_LIMIT"
+    } | shasum -a 256 | cut -c1-8
+}
+
+VERSION_HASH=$(get_version_hash)
+IMAGE_NAME="sclaude-sandbox:$VERSION_HASH"
+
+build_image() {
+    local NO_CACHE="${1:-}"
+
+    if [ "$NO_CACHE" = "--no-cache" ]; then
+        echo "[sclaude] Updating to latest Claude CLI (version: $VERSION_HASH)..." >&2
+    else
+        echo "[sclaude] Building Docker image (version: $VERSION_HASH)..." >&2
+    fi
+
+    local TEMP_DOCKERFILE
+    TEMP_DOCKERFILE=$(mktemp)
+    get_dockerfile_content > "$TEMP_DOCKERFILE"
+
+    local BUILD_TIMESTAMP
+    BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    cat >> "$TEMP_DOCKERFILE" <<EOF
+
+USER root
+RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$BUILD_TIMESTAMP"}' > /sclaude-metadata.json
+USER claude
+EOF
+
+    if [ -n "$NO_CACHE" ]; then
+        docker build -q "$NO_CACHE" \
+            --build-arg USER_UID="$(id -u)" \
+            --build-arg USER_GID="$(id -g)" \
+            -t "$IMAGE_NAME" \
+            -f "$TEMP_DOCKERFILE" \
+            "$SCRIPT_DIR" >&2
+    else
+        docker build -q \
+            --build-arg USER_UID="$(id -u)" \
+            --build-arg USER_GID="$(id -g)" \
+            -t "$IMAGE_NAME" \
+            -f "$TEMP_DOCKERFILE" \
+            "$SCRIPT_DIR" >&2
+    fi
+
+    rm "$TEMP_DOCKERFILE"
+
+    if [ "$NO_CACHE" = "--no-cache" ]; then
+        local NEW_VERSION
+        NEW_VERSION=$(docker run --rm "$IMAGE_NAME" claude --version 2>/dev/null || echo "unknown")
+        echo "[sclaude] Updated to Claude CLI: $NEW_VERSION" >&2
+    else
+        echo "[sclaude] Image built successfully" >&2
+    fi
+}
+
+if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    echo "[sclaude] Script changed, rebuilding image..." >&2
+    build_image
+fi
+
+if [ "${1:-}" = "update" ]; then
+    build_image --no-cache
+    exit 0
+fi
+
+if [ "${1:-}" = "--build" ]; then
+    build_image
+    exit 0
+fi
+
+if [ "${1:-}" = "cleanup" ]; then
+    echo "[sclaude] Current version: $VERSION_HASH" >&2
+    echo "[sclaude] Removing old sclaude-sandbox images..." >&2
+    docker images sclaude-sandbox --format "{{.Tag}}" | grep -v "^$VERSION_HASH$" | grep -v "^latest$" | while read -r tag; do
+        if [ -n "$tag" ]; then
+            echo "  Removing sclaude-sandbox:$tag" >&2
+            docker rmi "sclaude-sandbox:$tag" 2>&1 | grep -v "^Untagged:" | grep -v "^Deleted:" >&2 || true
+        fi
+    done
+    echo "[sclaude] Cleanup complete" >&2
+    exit 0
+fi
+
+if [ "${1:-}" = "version" ] || [ "${1:-}" = "--version-info" ]; then
+    echo "Script version: $VERSION_HASH"
+    if docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        echo "Container metadata:"
+        docker run --rm "$IMAGE_NAME" cat /sclaude-metadata.json 2>/dev/null | python3 -m json.tool 2>/dev/null || docker run --rm "$IMAGE_NAME" cat /sclaude-metadata.json 2>/dev/null
+    else
+        echo "Container image not built yet"
+    fi
+    exit 0
+fi
+
+if [ "${1:-}" = "volumes" ]; then
+    echo "[sclaude] Docker volumes:"
+    docker volume ls --filter "name=sclaude-" --format "table {{.Name}}\t{{.Driver}}\t{{.Mountpoint}}"
+    echo -e "\n[sclaude] Volume sizes:"
+    docker system df -v | grep "sclaude-" || echo "  (volume size info not available)"
+    exit 0
+fi
+
+if [ "${1:-}" = "reset" ]; then
+    echo "[sclaude] WARNING: This will delete all persisted data (credentials, packages, etc.)" >&2
+    echo "[sclaude] Press Ctrl+C to cancel, or Enter to continue..." >&2
+    read -r
+    echo "[sclaude] Removing Docker volumes..." >&2
+    docker volume rm sclaude-config sclaude-rootfs sclaude-npm sclaude-pip sclaude-apt 2>&1 || true
+    echo "[sclaude] Reset complete. Volumes will be recreated on next run." >&2
+    exit 0
+fi
+
+# Convert --yolo to --dangerously-skip-permissions
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--yolo" ]; then
+        ARGS+=("--dangerously-skip-permissions")
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+docker volume create sclaude-config >/dev/null 2>&1 || true
+docker volume create sclaude-rootfs >/dev/null 2>&1 || true
+docker volume create sclaude-npm >/dev/null 2>&1 || true
+docker volume create sclaude-pip >/dev/null 2>&1 || true
+docker volume create sclaude-apt >/dev/null 2>&1 || true
+
+# Fix volume permissions for claude user
+CONTAINER_UID=$(docker run --rm "$IMAGE_NAME" id -u)
+CONTAINER_GID=$(docker run --rm "$IMAGE_NAME" id -g)
+docker run --rm --user root \
+    -v sclaude-config:/config \
+    "$IMAGE_NAME" \
+    bash -c "chown -R $CONTAINER_UID:$CONTAINER_GID /config" 2>/dev/null || true
+
+# Sync credentials from macOS Keychain to Docker volume
+if [ "$(uname)" = "Darwin" ]; then
+    CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)
+    if [ -n "$CREDS" ]; then
+        echo "$CREDS" | docker run --rm -i \
+            -v sclaude-config:/config \
+            "$IMAGE_NAME" \
+            bash -c 'cat > /config/.credentials.json' 2>/dev/null || true
+    fi
+fi
+
+# Mount workspace at actual path for session compatibility
+WORKSPACE_PATH="$(pwd)"
+
+exec docker run -it --rm \
+    -v "$WORKSPACE_PATH:$WORKSPACE_PATH:rw" \
+    -v sclaude-config:/sclaude-config:rw \
+    -v sclaude-rootfs:/home/claude:rw \
+    -v sclaude-npm:/home/claude/.npm-global:rw \
+    -v sclaude-pip:/home/claude/.local:rw \
+    -v sclaude-apt:/var/cache/apt:rw \
+    -w "$WORKSPACE_PATH" \
+    --memory="$MEMORY_LIMIT" \
+    --cpus="$CPU_LIMIT" \
+    --pids-limit="$PIDS_LIMIT" \
+    --tmpfs /tmp:rw,noexec,nosuid,size=1g \
+    --security-opt=no-new-privileges \
+    --cap-drop=ALL \
+    --cap-add=NET_BIND_SERVICE \
+    --network bridge \
+    --ulimit nofile=1024:1024 \
+    -e "CLAUDE_CONFIG_DIR=/sclaude-config" \
+    -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" \
+    -e "TERM=${TERM:-xterm-256color}" \
+    "$IMAGE_NAME" \
+    claude ${ARGS[@]+"${ARGS[@]}"}
