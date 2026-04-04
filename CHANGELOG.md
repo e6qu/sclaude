@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/e6qu/sclaude/compare/v2.0.0...v2.1.0) (2026-04-04)
+
+
+### Features
+
+* add install/update instructions to GitHub release notes ([9bdcc65](https://github.com/e6qu/sclaude/commit/9bdcc6570c096715cfd81dd812c5630c340eb564))
+
 ## [2.0.0](https://github.com/e6qu/sclaude/compare/v1.0.0...v2.0.0) (2026-04-04)
 
 
