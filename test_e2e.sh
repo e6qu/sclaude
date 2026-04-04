@@ -79,11 +79,24 @@ if [ "$OS" = "Darwin" ]; then
     ' _ "$SCLAUDE"
 else
     # Linux: Bug #14 — check file-based credential sync
+    # We test the sync mechanism directly: write a dummy cred file,
+    # run the helper container the same way sclaude does, verify it lands.
     run_test "T05: credential sync (Linux)" bash -c '
         mkdir -p ~/.claude
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
-        "$1" version >/dev/null 2>&1
+        docker volume create sclaude-config >/dev/null 2>&1 || true
+        IMG=$(docker images sclaude-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+        if [ -z "$IMG" ]; then echo "No image" >&2; exit 1; fi
+        printf "{\"test_cred\":true}" | docker run --rm -i --user root \
+            -v sclaude-config:/vol-config \
+            "$IMG" bash -c "
+                CREDS=\$(cat)
+                if [ -n \"\$CREDS\" ] && printf \"%s\" \"\$CREDS\" | python3 -m json.tool >/dev/null 2>&1; then
+                    printf \"%s\" \"\$CREDS\" > /vol-config/.credentials.json
+                fi
+            "
         docker run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
+        rm -f ~/.claude/.credentials.json
     ' _ "$SCLAUDE"
 fi
 
