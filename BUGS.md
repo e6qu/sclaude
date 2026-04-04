@@ -33,6 +33,13 @@ None.
 | 23 | `version` command spawns up to two containers for JSON formatting | Single container; format locally only if `python3` available |
 | 24 | `timeout` not available on stock macOS (test file) | Portable fallback: `timeout` -> `gtimeout` -> none |
 | 25 | `useradd` fails if host UID conflicts with existing container user | Added `-o` flag to allow duplicate UIDs |
+| 26 | `rm` without `-f` on temp Dockerfile can abort under `set -e` | Changed to `rm -f`; EXIT trap already handles cleanup |
+| 27 | Helper container errors fully suppressed (`2>/dev/null \|\| true`) hides credential sync failures | Print explicit warning on stderr when helper container fails |
+| 28 | T05 Linux test doesn't clean up fake `~/.claude/.credentials.json` on failure | Added trap-based cleanup in test subshell |
+| 29 | T15 temp file race: other processes creating `/tmp/tmp.*` between before/after counts | Use a unique marker prefix instead of counting all tmp files |
+| 30 | `docs/e2e-testing.md` embedded script stale: `((PASS++))` fails at zero with `set -e`, non-portable `stat -c`, missing timeout fallback | Removed embedded copy; docs now reference `test_e2e.sh` directly |
+| 31 | `docs/storage-layout.md` credential sync only mentions macOS Keychain | Added Linux file-based sync paths |
+| 32 | README uninstall: `docker rmi sclaude-sandbox` won't work (images tagged with hash) | Changed to `sclaude cleanup` then `docker rmi` |
 
 ## False Positives
 

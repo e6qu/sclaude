@@ -26,7 +26,7 @@ run_test() {
         PASS=$((PASS + 1))
     else
         printf "FAIL\n"
-        echo "    Output: ${output:-(empty)}" | head -5
+        printf "    Output: %s\n" "${output:-(empty)}" | head -5
         FAIL=$((FAIL + 1))
     fi
 }
@@ -84,6 +84,7 @@ else
     run_test "T05: credential sync (Linux)" bash -c '
         mkdir -p ~/.claude
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
+        trap "rm -f ~/.claude/.credentials.json" EXIT
         docker volume create sclaude-config >/dev/null 2>&1 || true
         IMG=$(docker images sclaude-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
         if [ -z "$IMG" ]; then echo "No image" >&2; exit 1; fi
@@ -96,7 +97,6 @@ else
                 fi
             "
         docker run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
-        rm -f ~/.claude/.credentials.json
     ' _ "$SCLAUDE"
 fi
 
@@ -122,7 +122,7 @@ run_test "T06: volume permissions" bash -c '
         -v sclaude-npm:/vol-npm \
         -v sclaude-pip:/vol-pip \
         "$IMG" \
-        bash -c "chown -R $HOST_UID:$HOST_GID /vol-config /vol-rootfs /vol-npm /vol-pip" 2>/dev/null || true
+        bash -c "chown -R \"$HOST_UID:$HOST_GID\" /vol-config /vol-rootfs /vol-npm /vol-pip" 2>/dev/null || true
     # Verify the claude user can actually write to each volume
     docker run --rm \
         -v sclaude-config:/sclaude-config:rw \
@@ -219,12 +219,15 @@ fi
 # ── T15: temp file cleanup on build failure ───────────────────────────
 # Bug #1: temp Dockerfile should be cleaned up even on failure
 run_test "T15: no leaked temp files" bash -c '
-    BEFORE=$(ls /tmp/tmp.* 2>/dev/null | wc -l)
-    # Force a build that might leave temp files (normal build is fine)
+    # Snapshot existing tmp files, run build, check for new ones
+    MARKER="/tmp/.sclaude-t15-$$"
+    touch "$MARKER"
     "$1" --build >/dev/null 2>&1 || true
-    AFTER=$(ls /tmp/tmp.* 2>/dev/null | wc -l)
-    if [ "$AFTER" -gt "$BEFORE" ]; then
-        echo "Temp files leaked: before=$BEFORE after=$AFTER" >&2
+    # Any tmp.* files newer than our marker were created during the build
+    LEAKED=$(find /tmp -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
+    rm -f "$MARKER"
+    if [ "$LEAKED" -gt 0 ]; then
+        echo "Temp files leaked: $LEAKED new file(s)" >&2
         exit 1
     fi
 ' _ "$SCLAUDE"

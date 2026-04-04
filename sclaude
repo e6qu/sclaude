@@ -47,13 +47,19 @@ portable_sha256() {
 
 get_dockerfile_content() {
     cat <<'DOCKERFILE_END'
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     curl git python3 python3-pip build-essential ca-certificates gnupg sudo \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
@@ -135,7 +141,7 @@ EOF
             "$SCRIPT_DIR" >&2
     fi
 
-    rm "$TEMP_DOCKERFILE"
+    rm -f "$TEMP_DOCKERFILE"
 
     if [ "$NO_CACHE" = "--no-cache" ]; then
         local NEW_VERSION
@@ -276,7 +282,7 @@ printf '%s' "$CREDS" | docker run --rm -i --user root \
                 echo "[sclaude] Warning: credentials found but appear malformed, skipping sync" >&2
             fi
         fi
-    ' 2>/dev/null || true
+    ' || echo "[sclaude] Warning: credential sync failed (non-fatal)" >&2
 
 # Validate workspace path doesn't contain colons (Docker -v delimiter)
 WORKSPACE_PATH="$(pwd)"
