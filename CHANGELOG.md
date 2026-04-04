@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/e6qu/sclaude/compare/v2.1.0...v2.2.0) (2026-04-04)
+
+
+### Features
+
+* add devcontainers, gh CLI, fix bugs [#26](https://github.com/e6qu/sclaude/issues/26)-32 ([#4](https://github.com/e6qu/sclaude/issues/4)) ([e754f07](https://github.com/e6qu/sclaude/commit/e754f0770cfd2c76b84d2e6d634df5c2f9549363))
+
 ## [2.1.0](https://github.com/e6qu/sclaude/compare/v2.0.0...v2.1.0) (2026-04-04)
 
 
