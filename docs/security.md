@@ -67,8 +67,8 @@ Comprehensive security analysis of sclaude's Docker sandbox for running Claude C
 ```dockerfile
 ARG USER_UID=1000
 ARG USER_GID=1000
-RUN (groupadd -g ${USER_GID} claude 2>/dev/null || groupadd claude) && \
-    useradd -u ${USER_UID} -g $(getent group ${USER_GID} | cut -d: -f1 || echo claude) -m -s /bin/bash claude
+RUN groupadd -f -g ${USER_GID} claude && \
+    useradd -o -u ${USER_UID} -g claude -m -s /bin/bash claude
 
 USER claude
 ```
@@ -139,7 +139,7 @@ RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/d
 --memory="4g" \
 --cpus="2" \
 --pids-limit="100" \
---ulimit nofile=1024:1024
+--ulimit nofile=8192:8192
 ```
 
 **Memory Limit (4GB)**:
@@ -157,7 +157,7 @@ RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/d
 - fork() fails at limit
 - System remains stable
 
-**File Descriptor Limit (1024)**:
+**File Descriptor Limit (8192)**:
 - Prevents FD exhaustion
 - Limits open files
 
