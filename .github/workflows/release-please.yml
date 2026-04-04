@@ -31,7 +31,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Upload sclaude script to release
+      - name: Upload sclaude script and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" sclaude
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          gh release upload "$TAG" sclaude
+
+          EXISTING=$(gh release view "$TAG" --json body --jq .body)
+          INSTALL_INSTRUCTIONS=$(cat <<'EOF'
+
+          ---
+
+          ## Install / Update
+
+          **Fresh install:**
+          ```bash
+          curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
+          chmod +x sclaude
+          sudo mv sclaude /usr/local/bin/sclaude
+          ```
+
+          **Update existing install:**
+          ```bash
+          sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
+          sudo chmod +x /usr/local/bin/sclaude
+          sclaude update   # also updates Claude CLI inside the container
+          ```
+
+          **From source:**
+          ```bash
+          git pull
+          sclaude --build
+          ```
+          EOF
+          )
+
+          gh release edit "$TAG" --notes "${EXISTING}${INSTALL_INSTRUCTIONS}"
