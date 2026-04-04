@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/e6qu/sclaude/compare/v1.0.0...v2.0.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* harden sclaude for cross-platform use, add CI and release automation ([#1](https://github.com/e6qu/sclaude/issues/1))
+
+### Features
+
+* harden sclaude for cross-platform use, add CI and release automation ([#1](https://github.com/e6qu/sclaude/issues/1)) ([6385591](https://github.com/e6qu/sclaude/commit/6385591dcee4586fdb40d8db23cd528c1059b9b8))
+
 ## [1.0.0](https://github.com/e6qu/sclaude/releases/tag/v1.0.0) (2026-04-05)
 
 ### Features
