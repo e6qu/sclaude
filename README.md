@@ -107,9 +107,26 @@ git commit                        # or: git reset --hard
 ## Uninstall
 
 ```bash
+sclaude cleanup                        # Remove old image versions
 sclaude reset                          # Remove volumes
-docker rmi sclaude-sandbox             # Remove image
+docker images sclaude-sandbox -q | xargs -r docker rmi # Remove all images
 sudo rm /usr/local/bin/sclaude         # Remove script
+```
+
+## Dev Containers
+
+Use the dev container for sclaude development, or copy an example into your own project:
+
+| Config | Purpose |
+|--------|---------|
+| [`.devcontainer/`](.devcontainer/) | Develop sclaude itself (Docker-in-Docker, shellcheck, zsh) |
+| [`examples/devcontainer-claude/`](examples/devcontainer-claude/) | Use Claude Code directly in any project |
+| [`examples/devcontainer-sclaude/`](examples/devcontainer-sclaude/) | Use Claude Code via sclaude (sandboxed) in any project |
+
+```bash
+# Test all devcontainers locally
+npm install -g @devcontainers/cli
+bash test_devcontainers.sh
 ```
 
 ## Docs

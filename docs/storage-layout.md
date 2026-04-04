@@ -24,7 +24,7 @@ $(pwd)                  →  $(pwd)                            Current workspace
 ## Key Files and Directories
 
 ### Credentials & Configuration
-- `/sclaude-config/.credentials.json` - OAuth credentials (auto-synced from macOS Keychain)
+- `/sclaude-config/.credentials.json` - OAuth credentials (auto-synced from macOS Keychain or `~/.claude/.credentials.json` / `$XDG_CONFIG_HOME/claude-code/credentials.json` on Linux)
 - `/sclaude-config/.claude.json` - Claude Code configuration
 - `/sclaude-config/projects/` - Session history
 

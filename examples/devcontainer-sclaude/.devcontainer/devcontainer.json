@@ -1,0 +1,24 @@
+// Example: Run Claude Code via sclaude (sandboxed) in a dev container.
+// Copy this .devcontainer/ folder into your project root.
+//
+// Claude Code runs inside a nested Docker container managed by sclaude,
+// providing filesystem isolation, resource limits, and capability dropping.
+// Requires Docker-in-Docker.
+{
+  "name": "claude-code-sclaude",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    // sclaude needs Docker to create sandboxed containers
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "none"
+    }
+  },
+  // Install sclaude from latest release; it builds its own sandbox image on first run
+  "postCreateCommand": "sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude && sudo chmod +x /usr/local/bin/sclaude",
+  // Pass your API key into the container.
+  // Set ANTHROPIC_API_KEY in your host environment or .env file.
+  "remoteEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+  },
+  "remoteUser": "vscode"
+}

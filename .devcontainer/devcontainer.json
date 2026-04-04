@@ -1,0 +1,26 @@
+// Dev container for working on sclaude itself.
+// Includes Docker-in-Docker (needed by E2E tests) and linting tools.
+{
+  "name": "sclaude-dev",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    // E2E tests build and run Docker containers
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "none"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "timonwong.shellcheck",
+        "mads-hartmann.bash-ide-vscode"
+      ]
+    }
+  },
+  // shellcheck and zsh are needed for CI-equivalent linting
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y shellcheck zsh",
+  "remoteUser": "vscode"
+}

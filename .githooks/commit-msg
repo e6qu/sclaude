@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Strip AI-attribution lines from commit messages.
+# Installed via: git config core.hooksPath .githooks
+
+msg_file="$1"
+
+# Patterns to remove (full lines):
+#   - Co-authored-by trailers referencing AI tools/models
+#   - Any "Generated with/by" line
+#   - Lines starting with robot emoji (🤖)
+sed -i.bak \
+  -e '/^[Cc]o-authored-by:.*[Cc]laude/d' \
+  -e '/^[Cc]o-authored-by:.*[Cc]opilot/d' \
+  -e '/^[Cc]o-authored-by:.*[Cc]hat[Gg][Pp][Tt]/d' \
+  -e '/^[Cc]o-authored-by:.*[Aa]nthropic/d' \
+  -e '/^[Cc]o-authored-by:.*[Oo]pen[Aa][Ii]/d' \
+  -e '/^[Cc]o-authored-by:.*[Gg]emini/d' \
+  -e '/^[Cc]o-authored-by:.*[Cc]ursor/d' \
+  -e '/[Gg]enerated with/d' \
+  -e '/[Gg]enerated by/d' \
+  -e '/^🤖/d' \
+  "$msg_file"
+rm -f "${msg_file}.bak"
+
+# Strip trailing blank lines left behind
+while [ "$(tail -c 1 "$msg_file" | wc -l)" -gt 0 ] && \
+      [ "$(tail -1 "$msg_file")" = "" ]; do
+    sed -i.bak '$ d' "$msg_file"
+    rm -f "${msg_file}.bak"
+done

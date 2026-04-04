@@ -1,0 +1,31 @@
+// Example: Run Claude Code directly in a dev container (no sclaude).
+// Copy this .devcontainer/ folder into your project root.
+//
+// Claude Code runs natively inside the container with full access.
+// For sandboxed execution, see the devcontainer-sclaude example instead.
+{
+  "name": "claude-code",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
+  },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code",
+  // Pass your API key into the container.
+  // Set ANTHROPIC_API_KEY in your host environment or .env file.
+  "remoteEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}

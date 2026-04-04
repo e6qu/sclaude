@@ -96,23 +96,39 @@ When a PR with conventional commits merges to `main`, release-please automatical
 2. Add a test case to `test_e2e.sh` that fails
 3. Fix the bug in `sclaude`
 4. Verify all tests pass: `bash test_e2e.sh`
-5. Verify shellcheck: `shellcheck sclaude test_e2e.sh`
+5. Verify shellcheck: `shellcheck sclaude test_e2e.sh test_devcontainers.sh`
 6. Commit with `fix: <description>`
 7. Update `BUGS.md` if applicable
+
+## Dev Containers
+
+Test all devcontainer configs:
+
+```bash
+npm install -g @devcontainers/cli
+bash test_devcontainers.sh
+```
+
+This verifies that all three configs (sclaude-dev, claude-code example, sclaude example) build and pass smoke tests. These tests also run in CI.
 
 ## Project Structure
 
 ```
-sclaude              # Main script (the whole project)
-test_e2e.sh          # E2E test suite
-README.md            # Quick start and usage
-CONTRIBUTING.md      # This file
-BUGS.md              # Bug tracker and fix history
-CHANGELOG.md         # Release history (managed by release-please)
-LICENSE              # MIT
-.github/workflows/   # CI + release-please automation
+sclaude                  # Main script (the whole project)
+test_e2e.sh              # E2E test suite
+test_devcontainers.sh    # Devcontainer build/smoke tests
+.devcontainer/           # Dev container for sclaude development
+examples/
+  devcontainer-claude/   # Example: Claude Code directly in a dev container
+  devcontainer-sclaude/  # Example: Claude Code via sclaude in a dev container
+README.md                # Quick start and usage
+CONTRIBUTING.md          # This file
+BUGS.md                  # Bug tracker and fix history
+CHANGELOG.md             # Release history (managed by release-please)
+LICENSE                  # MIT
+.github/workflows/       # CI + release-please automation
 docs/
-  security.md        # Threat model and security analysis
-  storage-layout.md  # Docker volume architecture
-  e2e-testing.md     # Test plan and VM setup
+  security.md            # Threat model and security analysis
+  storage-layout.md      # Docker volume architecture
+  e2e-testing.md         # Test plan and VM setup
 ```
