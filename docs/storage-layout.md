@@ -38,12 +38,16 @@ $(pwd)                  →  $(pwd)                            Current workspace
 
 ## Credential Sync Flow
 
-On macOS, credentials are stored in Keychain. sclaude automatically:
+sclaude syncs credentials from the host into the container on each run:
 
-1. Extracts OAuth token from macOS Keychain on each run
-2. Writes it to `sclaude-config` volume at `/sclaude-config/.credentials.json`
-3. Sets `CLAUDE_CONFIG_DIR=/sclaude-config` so Claude Code reads credentials from there
-4. Credentials persist in the Docker volume across container restarts
+**macOS**: Extracts OAuth token from Keychain (`security find-generic-password`)
+**Linux**: Reads from `~/.claude/.credentials.json` or `$XDG_CONFIG_HOME/claude-code/credentials.json`
+
+1. Reads credentials from host (Keychain on macOS, file on Linux)
+2. Validates JSON integrity inside the container
+3. Writes to `sclaude-config` volume at `/sclaude-config/.credentials.json`
+4. Sets `CLAUDE_CONFIG_DIR=/sclaude-config` so Claude Code reads credentials from there
+5. Credentials persist in the Docker volume across container restarts
 
 ## Why This Design?
 
