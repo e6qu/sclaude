@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/e6qu/sclaude/compare/v2.4.0...v2.5.0) (2026-05-21)
+
+
+### Features
+
+* idempotent update, --force-rebuild flag, wrapper version display, deeper smoke tests ([#10](https://github.com/e6qu/sclaude/issues/10)) ([feb212c](https://github.com/e6qu/sclaude/commit/feb212cb6685140f9e717fb0574cb05af581c5bc))
+
 ## [2.4.0](https://github.com/e6qu/sclaude/compare/v2.3.0...v2.4.0) (2026-05-21)
 
 
