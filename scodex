@@ -276,46 +276,78 @@ fetch_latest_release_tag() {
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true
 }
 
-# Download the named release asset (e.g. "scodex") for $tag into $dest. Returns 0 on success.
+# Returns 0 iff $1 is strictly greater than $2 under version sort. Empty strings sort lowest.
+version_gt() {
+    [ -n "$1" ] || return 1
+    [ "$1" = "$2" ] && return 1
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
+}
+
+# Download the named release asset for $tag into $dest. Verifies the asset is a bash script
+# that self-identifies as $asset at $tag. Returns 0 on success.
 download_release_asset() {
     local tag="$1"
     local asset="$2"
     local dest="$3"
     local url="https://github.com/$PROJECT_REPO/releases/download/$tag/$asset"
+    local expected_version="${tag#v}"
 
     if ! curl -fsSL --max-time 30 "$url" -o "$dest"; then
         echo "[$SCRIPT_NAME] Failed to download $url" >&2
         return 1
     fi
     if ! head -1 "$dest" | grep -q '^#!/usr/bin/env bash$'; then
-        echo "[$SCRIPT_NAME] Downloaded $asset does not look like the expected bash script; refusing to install" >&2
+        echo "[$SCRIPT_NAME] Downloaded $asset has unexpected shebang; refusing to install" >&2
+        return 1
+    fi
+    if ! grep -qE "^SCRIPT_NAME=\"$asset\"\$" "$dest"; then
+        echo "[$SCRIPT_NAME] Downloaded $asset does not declare SCRIPT_NAME=\"$asset\"; refusing to install" >&2
+        return 1
+    fi
+    if ! grep -qE "^WRAPPER_VERSION=\"$expected_version\"\$" "$dest"; then
+        echo "[$SCRIPT_NAME] Downloaded $asset does not declare WRAPPER_VERSION=\"$expected_version\"; refusing to install" >&2
         return 1
     fi
     chmod +x "$dest"
 }
 
-# Install $src to $dest, using sudo if $dest is not writable. Returns 0 on success.
+# Atomically install $src to $dest by staging into the destination directory and renaming
+# over the existing file. Uses sudo if the directory is not writable. Returns 0 on success.
 install_wrapper_file() {
     local src="$1"
     local dest="$2"
+    local dest_dir staged
 
-    if [ -w "$dest" ] || { [ ! -e "$dest" ] && [ -w "$(dirname "$dest")" ]; }; then
-        install -m 0755 "$src" "$dest"
+    dest_dir="$(dirname "$dest")"
+    staged="$dest_dir/.$(basename "$dest").$$.$(date +%s).tmp"
+
+    if [ -w "$dest_dir" ]; then
+        if ! cp "$src" "$staged" \
+            || ! chmod 0755 "$staged" \
+            || ! mv -f "$staged" "$dest"; then
+            rm -f "$staged" 2>/dev/null || true
+            return 1
+        fi
     elif command -v sudo >/dev/null 2>&1; then
-        echo "[$SCRIPT_NAME] $dest is not writable; installing with sudo..." >&2
-        sudo install -m 0755 "$src" "$dest"
+        echo "[$SCRIPT_NAME] $dest_dir is not writable; installing with sudo..." >&2
+        if ! sudo cp "$src" "$staged" \
+            || ! sudo chmod 0755 "$staged" \
+            || ! sudo mv -f "$staged" "$dest"; then
+            sudo rm -f "$staged" 2>/dev/null || true
+            return 1
+        fi
     else
-        echo "[$SCRIPT_NAME] Cannot write $dest and sudo is unavailable; skipping" >&2
+        echo "[$SCRIPT_NAME] Cannot write $dest_dir and sudo is unavailable; skipping" >&2
         return 1
     fi
 }
 
 # Self-update the running wrapper (and its paired wrapper if present) to the latest release.
-# Re-execs the running wrapper with the original command when the running script was replaced.
+# Downloads both assets first; only installs after both downloads succeed. Re-execs the new
+# wrapper to complete the update. Returns non-zero if any download or install step failed.
 self_update_wrapper() {
     local latest_tag script_path script_dir paired_name paired_path
-    local tmp_self tmp_paired
-    local replaced_self=false
+    local tmp_self tmp_paired=""
 
     if [ "${SAGENT_SKIP_SELF_UPDATE:-}" = "1" ]; then
         return 0
@@ -339,46 +371,66 @@ self_update_wrapper() {
         return 0
     fi
 
-    if [ "${latest_tag#v}" = "$WRAPPER_VERSION" ]; then
-        echo "[$SCRIPT_NAME] Wrapper already at $latest_tag" >&2
+    if ! version_gt "${latest_tag#v}" "$WRAPPER_VERSION"; then
+        echo "[$SCRIPT_NAME] Wrapper at v$WRAPPER_VERSION is at or newer than $latest_tag; skipping self-update" >&2
         return 0
     fi
 
     echo "[$SCRIPT_NAME] Updating wrapper from v$WRAPPER_VERSION to $latest_tag..." >&2
 
+    # Phase 1: download every asset to staging before touching the installed files.
     tmp_self=$(mktemp)
     TEMP_FILES+=("$tmp_self")
-    if download_release_asset "$latest_tag" "$SCRIPT_NAME" "$tmp_self"; then
-        if install_wrapper_file "$tmp_self" "$script_path"; then
-            echo "[$SCRIPT_NAME] Wrapper at $script_path is now $latest_tag" >&2
-            replaced_self=true
-        fi
+    if ! download_release_asset "$latest_tag" "$SCRIPT_NAME" "$tmp_self"; then
+        print_release_guidance "$latest_tag"
+        return 1
     fi
-
     if [ -n "$paired_path" ]; then
         tmp_paired=$(mktemp)
         TEMP_FILES+=("$tmp_paired")
-        if download_release_asset "$latest_tag" "$paired_name" "$tmp_paired"; then
-            if install_wrapper_file "$tmp_paired" "$paired_path"; then
-                echo "[$SCRIPT_NAME] Paired wrapper at $paired_path is now $latest_tag" >&2
-            fi
+        if ! download_release_asset "$latest_tag" "$paired_name" "$tmp_paired"; then
+            print_release_guidance "$latest_tag"
+            return 1
         fi
     fi
 
-    if [ "$replaced_self" = true ]; then
-        echo "[$SCRIPT_NAME] Re-running update with the new wrapper..." >&2
-        SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
+    # Phase 2: install. Each install is atomic per file via stage-then-rename. The two-file
+    # install is best-effort all-or-nothing — if the second fails we report the partial state.
+    if ! install_wrapper_file "$tmp_self" "$script_path"; then
+        echo "[$SCRIPT_NAME] ERROR: failed to install new wrapper at $script_path" >&2
+        print_release_guidance "$latest_tag"
+        return 1
     fi
+    if [ -n "$tmp_paired" ]; then
+        if ! install_wrapper_file "$tmp_paired" "$paired_path"; then
+            echo "[$SCRIPT_NAME] ERROR: $script_path is now $latest_tag but $paired_path failed to install" >&2
+            echo "[$SCRIPT_NAME] Install $paired_name manually:" >&2
+            echo "  sudo curl -fsSL https://github.com/$PROJECT_REPO/releases/download/$latest_tag/$paired_name -o $paired_path" >&2
+            echo "  sudo chmod +x $paired_path" >&2
+            return 1
+        fi
+        echo "[$SCRIPT_NAME] Paired wrapper at $paired_path is now $latest_tag" >&2
+    fi
+    echo "[$SCRIPT_NAME] Wrapper at $script_path is now $latest_tag" >&2
+
+    # Phase 3: re-exec the freshly installed self so the image rebuild runs on current logic.
+    echo "[$SCRIPT_NAME] Re-running update with the new wrapper..." >&2
+    cleanup_temp
+    SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
 }
 
-# Confirm a build succeeded by re-inspecting the image tag and printing the inner tool version.
+# Confirm a build succeeded by re-inspecting the image tag and verifying the inner tool runs.
 verify_image_built() {
     local tool_version
     if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] ERROR: build completed but $IMAGE_NAME was not tagged" >&2
         exit 1
     fi
-    tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
+    if ! tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>&1); then
+        echo "[$SCRIPT_NAME] ERROR: '$TOOL_BIN --version' failed inside the rebuilt image:" >&2
+        printf '%s\n' "$tool_version" | sed 's/^/  /' >&2
+        exit 1
+    fi
     echo "[$SCRIPT_NAME] $TOOL_NAME CLI is now: $tool_version" >&2
 }
 
@@ -637,7 +689,10 @@ select_engine
 
 case "$WRAPPER_COMMAND" in
     update)
-        self_update_wrapper
+        if ! self_update_wrapper; then
+            echo "[$SCRIPT_NAME] ERROR: wrapper self-update failed; not rebuilding image." >&2
+            exit 1
+        fi
         build_image --no-cache
         verify_image_built
         exit 0
