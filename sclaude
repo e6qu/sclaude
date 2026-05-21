@@ -213,8 +213,9 @@ show_version() {
     local tool_version
 
     echo "Script: $SCRIPT_NAME"
+    echo "Wrapper version: v$WRAPPER_VERSION"
     echo "Sandbox image: $IMAGE_NAME"
-    echo "Script version: $VERSION_HASH"
+    echo "Image hash: $VERSION_HASH"
     if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
         echo "$TOOL_NAME CLI: $tool_version"
@@ -421,6 +422,44 @@ self_update_wrapper() {
     SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
 }
 
+# Returns 0 if the current image is missing or its Claude/Codex CLIs lag behind the latest
+# published npm versions. Returns 1 (no rebuild needed) when both match. Any error along the
+# way (no curl, image probe fails, npm unreachable) defaults to "rebuild needed" so we never
+# silently skip a real update.
+needs_image_rebuild() {
+    local image_claude image_codex npm_claude npm_codex
+
+    if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    image_claude=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    image_codex=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" codex --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+
+    npm_claude=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" 2>/dev/null \
+        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    npm_codex=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/@openai/codex/latest" 2>/dev/null \
+        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+
+    if [ -z "$image_claude" ] || [ -z "$image_codex" ] || [ -z "$npm_claude" ] || [ -z "$npm_codex" ]; then
+        return 0
+    fi
+
+    if [ "$image_claude" = "$npm_claude" ] && [ "$image_codex" = "$npm_codex" ]; then
+        echo "[$SCRIPT_NAME] Image already at latest: Claude $image_claude, Codex $image_codex" >&2
+        return 1
+    fi
+
+    [ "$image_claude" != "$npm_claude" ] && echo "[$SCRIPT_NAME] Claude $image_claude -> $npm_claude" >&2
+    [ "$image_codex" != "$npm_codex" ] && echo "[$SCRIPT_NAME] Codex $image_codex -> $npm_codex" >&2
+    return 0
+}
+
 # Confirm a build succeeded by re-inspecting the image tag and verifying the inner tool runs.
 verify_image_built() {
     local tool_version
@@ -502,6 +541,7 @@ reset_volumes() {
 parse_args() {
     WRAPPER_COMMAND=""
     YOLO=true
+    FORCE_REBUILD=false
     ARGS=()
     for arg in "$@"; do
         case "$arg" in
@@ -510,6 +550,9 @@ parse_args() {
                 ;;
             --no-yolo)
                 YOLO=false
+                ;;
+            --force-rebuild)
+                FORCE_REBUILD=true
                 ;;
             build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
@@ -665,7 +708,9 @@ case "$WRAPPER_COMMAND" in
             echo "[$SCRIPT_NAME] ERROR: wrapper self-update failed; not rebuilding image." >&2
             exit 1
         fi
-        build_image --no-cache
+        if [ "$FORCE_REBUILD" = true ] || needs_image_rebuild; then
+            build_image --no-cache
+        fi
         verify_image_built
         exit 0
         ;;

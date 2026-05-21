@@ -320,6 +320,43 @@ run_test "T16: shebang uses env" bash -c '
 # ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
 run_test "T17: scodex version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
+# T17b exercises a deeper Codex code path than `--version`: `exec --help` actually
+# loads the Codex command tree and runs the early config-init code. This catches
+# regressions where the inner CLI errors out on configuration loading (e.g. cloud
+# requirements / managed policies) — T17's `--version` is too shallow to reach
+# that code path.
+run_test "T17b: scodex exec --help loads without config errors" bash -c '
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" exec --help 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "scodex exec --help exited $rc:" >&2
+        echo "$output" | tail -20 >&2
+        exit 1
+    fi
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load (Cloud requirements|.*policies)"; then
+        echo "scodex exec --help printed a config-load error:" >&2
+        echo "$output" | grep -iE "error|fail" >&2
+        exit 1
+    fi
+' _ "$SCODEX"
+
+# Same idea for sclaude — make sure `--help` reaches the Claude Code internals
+# without configuration errors. A shallow `--version` check would not.
+run_test "T17c: sclaude --help loads without config errors" bash -c '
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "sclaude --help exited $rc:" >&2
+        echo "$output" | tail -20 >&2
+        exit 1
+    fi
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load .*"; then
+        echo "sclaude --help printed a config-load error:" >&2
+        echo "$output" | grep -iE "error|fail" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '
     IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
