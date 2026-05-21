@@ -233,7 +233,16 @@ run_test "T09: reset (auto-confirm)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T10: update command ──────────────────────────────────────────────
-run_test "T10: update (no-cache rebuild)" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1' _ "$SCLAUDE"
+# Runs the full update flow including wrapper self-update. The wrapper is
+# copied into a tmpdir first so a successful self-update does not clobber the
+# under-test script and break subsequent tests.
+run_test "T10: update (self-update + no-cache rebuild)" bash -c '
+    tmpdir=$(mktemp -d)
+    trap "rm -rf $tmpdir" EXIT
+    cp "$1" "$tmpdir/sclaude"
+    chmod +x "$tmpdir/sclaude"
+    SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update 2>&1
+' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
 # Bug #25: timeout is not available on stock macOS; use portable fallback

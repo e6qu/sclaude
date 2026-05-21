@@ -55,6 +55,8 @@ None.
 | 45 | Scripts assume the `docker` command even when users run Podman directly | Added bounded container-engine detection with `SAGENT_CONTAINER_ENGINE=docker\|podman`, trying Docker first and Podman second when unset |
 | 46 | Test timeouts killed only the top-level command and could leave child Docker/devcontainer processes running | Added recursive child-process termination to the E2E and devcontainer test harnesses |
 | 47 | `test_devcontainers.sh` smoke phase can hang at `devcontainer up` against a Podman-backed Docker socket after the devcontainer image builds and the container starts | Recursive timeout cleanup fixed the stuck child process state; devcontainer suite now passes |
+| 48 | `sclaude update` / `scodex update` rebuilds the image without updating the wrapper script itself, so a pre-`sagent-sandbox`-rename install keeps looping on "image not found" because its hash never matches a build that survives | `update` now self-updates both wrapper scripts from the latest release before rebuilding, re-execs with the new wrapper (guarded by `SAGENT_SKIP_SELF_UPDATE`), then verifies the image tag and prints the resulting CLI version |
+| 49 | `--no-cache` rebuilds reuse the locally cached base image, so OS-level updates never land | `update` now passes `--pull` alongside `--no-cache` to refresh the base image |
 
 ## False Positives
 

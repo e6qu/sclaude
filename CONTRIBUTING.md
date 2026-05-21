@@ -10,6 +10,40 @@ chmod +x sclaude scodex test_e2e.sh
 
 Requirements: Docker (or Podman), bash, shellcheck.
 
+### Pre-commit hooks
+
+This repo uses [pre-commit](https://pre-commit.com) to enforce shell linting,
+GitHub Actions linting, Conventional Commit messages, AI-attribution stripping,
+and a hard block on `pull_request_target` triggers in workflows (see
+[Forbidden workflow triggers](#forbidden-workflow-triggers) below). Install
+once:
+
+```bash
+# Install pre-commit itself (pick whichever fits your environment)
+brew install pre-commit       # macOS
+pipx install pre-commit       # cross-platform
+
+# If you previously set `core.hooksPath=.githooks`, unset it so pre-commit can
+# manage the hooks directory:
+git config --unset core.hooksPath || true
+
+# Install the git hooks defined in .pre-commit-config.yaml
+pre-commit install --install-hooks
+```
+
+After install, `git commit` runs the configured pre-commit and commit-msg
+hooks automatically. Run them on demand with `pre-commit run --all-files`.
+
+### Forbidden workflow triggers
+
+GitHub Actions' `pull_request_target` trigger is **prohibited** in this repo.
+It runs in the base-repo context with secrets available, but PRs can supply
+arbitrary refs and scripts — a well-known exfiltration footgun. Use
+`pull_request` for untrusted contexts (no secrets) and `push: branches: [main]`
+for trusted post-merge coverage. The `forbid-pull-request-target` pre-commit
+hook fails any commit that introduces the token under `.github/workflows/`.
+Do not work around it.
+
 ## Development
 
 The project ships two physical bash scripts: `sclaude` for Claude Code and
@@ -123,6 +157,7 @@ sclaude                  # Claude Code sandbox script
 scodex                   # Codex CLI sandbox script
 test_e2e.sh              # E2E test suite
 test_devcontainers.sh    # Devcontainer build/smoke tests
+cleanup.sh               # macOS-only helper for reclaiming disk space and Docker/Podman state
 .devcontainer/           # Dev container for sclaude development
 examples/
   devcontainer-claude/   # Example: Claude Code directly in a dev container
@@ -130,6 +165,7 @@ examples/
 README.md                # Quick start and usage
 CONTRIBUTING.md          # This file
 BUGS.md                  # Bug tracker and fix history
+PLAN.md                  # Design doc for the Codex CLI support work
 CHANGELOG.md             # Release history (managed by release-please)
 LICENSE                  # MIT
 .github/workflows/       # CI + release-please automation

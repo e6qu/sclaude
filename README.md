@@ -31,14 +31,14 @@ sudo ln -s "$(pwd)/scodex" /usr/local/bin/scodex
 ## Update
 
 ```bash
-sclaude update                 # Update Claude and Codex CLIs inside the shared container
-scodex update                  # Same shared image update
-sclaude check-update           # Check whether newer wrapper scripts are available
+sclaude update                 # Self-update both wrappers and rebuild the shared image with latest CLIs
+scodex update                  # Same — self-updates wrappers and rebuilds the shared image
+sclaude check-update           # Check (don't install) whether newer wrapper scripts are available
 
 # Update sclaude itself (from source)
 git pull && sclaude --build
 
-# Or re-download latest release
+# Or re-download latest release manually
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
 chmod +x /usr/local/bin/sclaude
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o /usr/local/bin/scodex
@@ -77,8 +77,8 @@ passed through.
 
 | Command | Description |
 |---------|-------------|
-| `sclaude update` / `scodex update` | Rebuild shared image with latest Claude and Codex CLIs |
-| `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available |
+| `sclaude update` / `scodex update` | Self-update both wrapper scripts to the latest release, then rebuild the shared image with the latest Claude and Codex CLIs (use `SAGENT_SKIP_SELF_UPDATE=1` to skip the wrapper download) |
+| `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version and build metadata |
 | `sclaude volumes` | Show Docker volume info |

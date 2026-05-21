@@ -1,0 +1,60 @@
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|cleanup\.sh|\.githooks/.*\.sh)$
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - feat
+          - fix
+          - docs
+          - style
+          - refactor
+          - perf
+          - test
+          - build
+          - ci
+          - chore
+          - revert
+
+  - repo: local
+    hooks:
+      - id: forbid-pull-request-target
+        name: forbid pull_request_target in GitHub Actions workflows
+        language: pygrep
+        entry: 'pull_request_target'
+        files: ^\.github/workflows/.*\.ya?ml$
+
+      - id: zsh-syntax-check
+        name: zsh -n on wrapper scripts
+        language: system
+        entry: zsh -n
+        files: ^(sclaude|scodex)$
+
+      - id: bash-syntax-check
+        name: bash -n on shell scripts
+        language: system
+        entry: bash -n
+        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|cleanup\.sh|\.githooks/.*\.sh)$
+
+      - id: strip-ai-attribution
+        name: Strip AI attribution from commit message
+        language: script
+        entry: .githooks/strip-ai-attribution.sh
+        stages: [commit-msg]
+        always_run: true
+        pass_filenames: true

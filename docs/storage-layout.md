@@ -35,6 +35,8 @@ $(pwd)                  →  $(pwd)                            Current workspace
 - `/sclaude-config/projects/` - Session history
 - `/scodex-config/auth.json` - Codex auth copied from `${CODEX_HOME:-$HOME/.codex}/auth.json`
 - `/scodex-config/config.toml` - Codex config copied from `${CODEX_HOME:-$HOME/.codex}/config.toml` when present
+- `/scodex-config/instructions.md` - Codex instructions copied from `${CODEX_HOME:-$HOME/.codex}/instructions.md` when present
+- `/scodex-config/AGENTS.md` - Codex agent guide copied from `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` when present
 
 ### User Files
 - `/home/agent/` - Shared user home directory (theme preferences, CLI state, etc.)

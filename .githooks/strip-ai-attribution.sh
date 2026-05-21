@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Strip AI-attribution lines from commit messages.
-# Installed via: git config core.hooksPath .githooks
+# Wired up via .pre-commit-config.yaml as a commit-msg stage hook.
 
 msg_file="$1"
 
