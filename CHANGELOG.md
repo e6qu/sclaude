@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/e6qu/sclaude/compare/v2.3.0...v2.4.0) (2026-05-21)
+
+
+### Features
+
+* self-update wrappers on update + pre-commit and CI from prior PR ([#8](https://github.com/e6qu/sclaude/issues/8)) ([b94b17a](https://github.com/e6qu/sclaude/commit/b94b17afeacf67dec52f66e7f4906bb3b39ebfd6))
+
 ## [2.3.0](https://github.com/e6qu/sclaude/compare/v2.2.0...v2.3.0) (2026-05-21)
 
 
