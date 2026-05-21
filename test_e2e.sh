@@ -235,13 +235,28 @@ run_test "T09: reset (auto-confirm)" bash -c '
 # ── T10: update command ──────────────────────────────────────────────
 # Runs the full update flow including wrapper self-update. The wrapper is
 # copied into a tmpdir first so a successful self-update does not clobber the
-# under-test script and break subsequent tests.
-run_test "T10: update (self-update + no-cache rebuild)" bash -c '
+# under-test script and break subsequent tests. --force-rebuild bypasses the
+# new npm-version skip path so this test still asserts the no-cache rebuild
+# actually runs, regardless of whether the CLIs in the current image happen
+# to match the npm "latest" tag.
+run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
+    set -e
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
-    SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update 2>&1
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update --force-rebuild 2>&1)
+    rc=$?
+    echo "$output"
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    # Assert the rebuild actually ran — guards against future regressions
+    # where the skip-if-up-to-date path accidentally swallows --force-rebuild.
+    if ! echo "$output" | grep -q "Updating shared sandbox image"; then
+        echo "T10: expected the no-cache rebuild banner, did not find it" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
@@ -319,6 +334,57 @@ run_test "T16: shebang uses env" bash -c '
 
 # ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
 run_test "T17: scodex version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
+
+# T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
+# so cap their per-test timeout at 120s regardless of the global default — a
+# hang in inner-CLI config loading shouldn't waste 10 minutes per test in CI.
+# Users can still raise it via T17_TIMEOUT_SECONDS for slow builders.
+_t17_prev_timeout="$TEST_TIMEOUT_SECONDS"
+_t17_cap="${T17_TIMEOUT_SECONDS:-120}"
+if [ "$TEST_TIMEOUT_SECONDS" -gt "$_t17_cap" ]; then
+    TEST_TIMEOUT_SECONDS="$_t17_cap"
+fi
+
+# T17b exercises a deeper Codex code path than `--version`: `exec --help` actually
+# loads the Codex command tree and runs the early config-init code. This catches
+# regressions where the inner CLI errors out on configuration loading (e.g. cloud
+# requirements / managed policies) — T17's `--version` is too shallow to reach
+# that code path.
+run_test "T17b: scodex exec --help loads without config errors" bash -c '
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" exec --help 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "scodex exec --help exited $rc:" >&2
+        echo "$output" | tail -20 >&2
+        exit 1
+    fi
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load Cloud requirements|Failed to load workspace-managed policies|Failed to load managed (config|hooks|requirements)"; then
+        echo "scodex exec --help printed a config-load error:" >&2
+        echo "$output" | grep -iE "error|fail" >&2
+        exit 1
+    fi
+' _ "$SCODEX"
+
+# Same idea for sclaude — make sure `--help` reaches the Claude Code internals
+# without configuration errors. A shallow `--version` check would not.
+run_test "T17c: sclaude --help loads without config errors" bash -c '
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "sclaude --help exited $rc:" >&2
+        echo "$output" | tail -20 >&2
+        exit 1
+    fi
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load configuration|Failed to load settings|Failed to load claude\.json"; then
+        echo "sclaude --help printed a config-load error:" >&2
+        echo "$output" | grep -iE "error|fail" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
+# Restore the global timeout for tests after T17c.
+TEST_TIMEOUT_SECONDS="$_t17_prev_timeout"
+unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '
