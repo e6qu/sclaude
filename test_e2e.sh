@@ -335,6 +335,16 @@ run_test "T16: shebang uses env" bash -c '
 # ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
 run_test "T17: scodex version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
+# T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
+# so cap their per-test timeout at 120s regardless of the global default — a
+# hang in inner-CLI config loading shouldn't waste 10 minutes per test in CI.
+# Users can still raise it via T17_TIMEOUT_SECONDS for slow builders.
+_t17_prev_timeout="$TEST_TIMEOUT_SECONDS"
+_t17_cap="${T17_TIMEOUT_SECONDS:-120}"
+if [ "$TEST_TIMEOUT_SECONDS" -gt "$_t17_cap" ]; then
+    TEST_TIMEOUT_SECONDS="$_t17_cap"
+fi
+
 # T17b exercises a deeper Codex code path than `--version`: `exec --help` actually
 # loads the Codex command tree and runs the early config-init code. This catches
 # regressions where the inner CLI errors out on configuration loading (e.g. cloud
@@ -371,6 +381,10 @@ run_test "T17c: sclaude --help loads without config errors" bash -c '
         exit 1
     fi
 ' _ "$SCLAUDE"
+
+# Restore the global timeout for tests after T17c.
+TEST_TIMEOUT_SECONDS="$_t17_prev_timeout"
+unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '

@@ -448,16 +448,18 @@ try:
         print(v)
 except Exception:
     pass
-' 2>/dev/null
+' 2>/dev/null || true
         return 0
     fi
     # Fallback for hosts without python3: extract the first "version": "..." pair in the
     # JSON document. The npm /latest endpoint returns the top-level package metadata, and
-    # the version field is reliably present in the first 1KB of the response.
+    # the version field is reliably present in the first 1KB of the response. Trailing
+    # `|| true` keeps an empty match from tripping `set -e` in the caller.
     printf '%s' "$resp" | head -c 1024 \
         | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
         | head -1 \
-        | sed -E 's/.*"([^"]+)"$/\1/'
+        | sed -E 's/.*"([^"]+)"$/\1/' || true
+    return 0
 }
 
 # Returns 0 if the current image is missing or its Claude/Codex CLIs lag behind the latest
@@ -474,11 +476,13 @@ needs_image_rebuild() {
         return 0
     fi
 
-    # Match full semver including optional prerelease/build (e.g. 1.2.3-beta.1) on both sides.
+    # Match full semver shape including optional prerelease AND build metadata on both
+    # sides (e.g. 1.2.3, 1.2.3-beta.1, 1.2.3-beta.1+build.5). Anything narrower truncates
+    # valid semver and causes endless rebuilds.
     image_claude=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?' | head -1 || true)
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -1 || true)
     image_codex=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" codex --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?' | head -1 || true)
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -1 || true)
 
     npm_claude=$(fetch_npm_latest "@anthropic-ai/claude-code")
     npm_codex=$(fetch_npm_latest "@openai/codex")
