@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/e6qu/sclaude/compare/v2.2.0...v2.3.0) (2026-05-21)
+
+
+### Features
+
+* add Codex sandbox wrapper, engine selection, and pre-commit hooks ([#6](https://github.com/e6qu/sclaude/issues/6)) ([3afc723](https://github.com/e6qu/sclaude/commit/3afc7234e92585070d13cb58a58c5a9059b68953))
+
 ## [2.2.0](https://github.com/e6qu/sclaude/compare/v2.1.0...v2.2.0) (2026-04-04)
 
 
