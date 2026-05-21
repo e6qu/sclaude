@@ -30,13 +30,16 @@ PIP_VOLUME="sagent-pip"
 APT_CACHE_VOLUME="sagent-apt-cache"
 APT_LISTS_VOLUME="sagent-apt-lists"
 
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
 TEMP_FILES=()
 cleanup_temp() {
     for f in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
         rm -f "$f"
     done
 }
-trap cleanup_temp EXIT
+trap cleanup_temp EXIT INT TERM HUP
 
 portable_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -153,8 +156,8 @@ get_version_hash() {
         echo "MEMORY_LIMIT=$MEMORY_LIMIT"
         echo "CPU_LIMIT=$CPU_LIMIT"
         echo "PIDS_LIMIT=$PIDS_LIMIT"
-        echo "USER_UID=$(id -u)"
-        echo "USER_GID=$(id -g)"
+        echo "USER_UID=$HOST_UID"
+        echo "USER_GID=$HOST_GID"
     } | portable_sha256 | cut -c1-8
 }
 
@@ -165,9 +168,11 @@ build_image() {
     local no_cache="${1:-}"
     local temp_dockerfile
     local build_timestamp
+    local build_args=()
 
     if [ "$no_cache" = "--no-cache" ]; then
         echo "[$SCRIPT_NAME] Updating shared sandbox image (version: $VERSION_HASH)..." >&2
+        build_args+=("--no-cache")
     else
         echo "[$SCRIPT_NAME] Building shared sandbox image (version: $VERSION_HASH)..." >&2
     fi
@@ -184,21 +189,12 @@ RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' >
 USER agent
 EOF
 
-    if [ -n "$no_cache" ]; then
-        "$ENGINE_CMD" build "$no_cache" \
-            --build-arg USER_UID="$(id -u)" \
-            --build-arg USER_GID="$(id -g)" \
-            -t "$IMAGE_NAME" \
-            -f "$temp_dockerfile" \
-            "$SCRIPT_DIR"
-    else
-        "$ENGINE_CMD" build \
-            --build-arg USER_UID="$(id -u)" \
-            --build-arg USER_GID="$(id -g)" \
-            -t "$IMAGE_NAME" \
-            -f "$temp_dockerfile" \
-            "$SCRIPT_DIR"
-    fi
+    "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
+        --build-arg USER_UID="$HOST_UID" \
+        --build-arg USER_GID="$HOST_GID" \
+        -t "$IMAGE_NAME" \
+        -f "$temp_dockerfile" \
+        "$SCRIPT_DIR"
 
     rm -f "$temp_dockerfile"
 
@@ -239,10 +235,12 @@ show_version() {
 cleanup_images() {
     echo "[$SCRIPT_NAME] Current version: $VERSION_HASH" >&2
     echo "[$SCRIPT_NAME] Removing old $IMAGE_REPO images..." >&2
-    "$ENGINE_CMD" images "$IMAGE_REPO" --format "{{.Tag}}" | { grep -v "^$VERSION_HASH$" || true; } | { grep -v "^latest$" || true; } | while read -r tag; do
+    "$ENGINE_CMD" images "$IMAGE_REPO" --format "{{.Tag}}" \
+        | { grep -vE "^($VERSION_HASH|latest)$" || true; } \
+        | while read -r tag; do
         if [ -n "$tag" ]; then
             echo "  Removing $IMAGE_REPO:$tag" >&2
-            "$ENGINE_CMD" rmi "$IMAGE_REPO:$tag" 2>&1 | grep -v "^Untagged:" | grep -v "^Deleted:" >&2 || true
+            "$ENGINE_CMD" rmi "$IMAGE_REPO:$tag" 2>&1 | grep -vE "^(Untagged|Deleted):" >&2 || true
         fi
     done
     echo "[$SCRIPT_NAME] Cleanup complete" >&2
@@ -316,8 +314,14 @@ check_release() {
 
 reset_volumes() {
     echo "[$SCRIPT_NAME] WARNING: This will delete all persisted sandbox data (credentials, packages, preferences, sessions)." >&2
-    echo "[$SCRIPT_NAME] Press Ctrl+C to cancel, or Enter to continue..." >&2
-    read -r
+    if [ "${SAGENT_ASSUME_YES:-}" != "1" ]; then
+        if [ ! -t 0 ]; then
+            echo "[$SCRIPT_NAME] ERROR: refusing to delete volumes non-interactively. Set SAGENT_ASSUME_YES=1 to override." >&2
+            exit 1
+        fi
+        echo "[$SCRIPT_NAME] Press Ctrl+C to cancel, or Enter to continue..." >&2
+        read -r
+    fi
     echo "[$SCRIPT_NAME] Removing Docker volumes..." >&2
     "$ENGINE_CMD" volume rm \
         sclaude-config scodex-config \
@@ -353,12 +357,13 @@ parse_args() {
 }
 
 create_volumes() {
-    "$ENGINE_CMD" volume create "$CONFIG_VOLUME" >/dev/null 2>&1 || true
-    "$ENGINE_CMD" volume create "$ROOTFS_VOLUME" >/dev/null 2>&1 || true
-    "$ENGINE_CMD" volume create "$NPM_VOLUME" >/dev/null 2>&1 || true
-    "$ENGINE_CMD" volume create "$PIP_VOLUME" >/dev/null 2>&1 || true
-    "$ENGINE_CMD" volume create "$APT_CACHE_VOLUME" >/dev/null 2>&1 || true
-    "$ENGINE_CMD" volume create "$APT_LISTS_VOLUME" >/dev/null 2>&1 || true
+    local existing v
+    existing=$("$ENGINE_CMD" volume ls --format '{{.Name}}' 2>/dev/null || true)
+    for v in "$CONFIG_VOLUME" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME"; do
+        if ! printf '%s\n' "$existing" | grep -qFx "$v"; then
+            "$ENGINE_CMD" volume create "$v" >/dev/null 2>&1 || true
+        fi
+    done
 }
 
 read_credentials() {
@@ -378,11 +383,6 @@ read_credentials() {
 }
 
 sync_state() {
-    local container_uid
-    local container_gid
-
-    container_uid=$(id -u)
-    container_gid=$(id -g)
     read_credentials
 
     # shellcheck disable=SC2016
@@ -395,8 +395,8 @@ sync_state() {
         -v "$APT_LISTS_VOLUME":/vol-apt-lists \
         "$IMAGE_NAME" \
         bash -c '
-            TARGET_UID='"$container_uid"'
-            TARGET_GID='"$container_gid"'
+            TARGET_UID='"$HOST_UID"'
+            TARGET_GID='"$HOST_GID"'
             for d in /vol-config /vol-rootfs /vol-npm /vol-pip; do
                 if [ "$(stat -c %u "$d" 2>/dev/null)" != "$TARGET_UID" ]; then
                     chown -R "$TARGET_UID:$TARGET_GID" "$d"
@@ -471,7 +471,11 @@ run_tool() {
         --network bridge \
         --ulimit nofile=8192:8192 \
         -e "$CONFIG_ENV_NAME=$CONFIG_MOUNT" \
-        -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" \
+        -e ANTHROPIC_API_KEY \
+        -e ANTHROPIC_AUTH_TOKEN \
+        -e ANTHROPIC_BASE_URL \
+        -e ANTHROPIC_MODEL \
+        -e CLAUDE_CODE_OAUTH_TOKEN \
         -e "TERM=${TERM:-xterm-256color}" \
         "$IMAGE_NAME" \
         "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}"

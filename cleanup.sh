@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Cleanup helper for recovering local disk space and Podman/Docker state.
+# macOS-only: references ~/.Trash and the Apple Hypervisor Podman machine path.
 set -euo pipefail
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "cleanup.sh: macOS only (references ~/.Trash and applehv machine paths)" >&2
+    exit 1
+fi
 
 confirm() {
     local prompt="$1"
@@ -33,7 +39,9 @@ du -sh "$HOME"/.local/share/containers/podman/machine/applehv/sclaude-test-*.raw
 show_disk
 
 if confirm "Delete Trash contents and known temporary sockerless caches?"; then
-    rm -rf "$HOME/.Trash"/*
+    if [ -d "$HOME/.Trash" ]; then
+        find "$HOME/.Trash" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    fi
     rm -rf /private/tmp/sockerless-go-cache /private/tmp/sockerless-gocache
 fi
 
