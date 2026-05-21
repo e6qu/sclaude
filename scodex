@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# sclaude: Run Claude Code in a Docker sandbox
+# scodex: Run Codex CLI in a Docker sandbox
 # Supported shells: bash, zsh (via #!/usr/bin/env bash shebang)
 # Supported platforms: macOS (Darwin), Linux
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-SCRIPT_NAME="sclaude"
-TOOL_NAME="Claude Code"
-TOOL_BIN="claude"
-CONFIG_VOLUME="sclaude-config"
-CONFIG_MOUNT="/sclaude-config"
-CONFIG_ENV_NAME="CLAUDE_CONFIG_DIR"
-YOLO_FLAG="--dangerously-skip-permissions"
+SCRIPT_NAME="scodex"
+TOOL_NAME="Codex"
+TOOL_BIN="codex"
+CONFIG_VOLUME="scodex-config"
+CONFIG_MOUNT="/scodex-config"
+CONFIG_ENV_NAME="CODEX_HOME"
+YOLO_FLAG="--dangerously-bypass-approvals-and-sandbox"
 WRAPPER_VERSION="2.2.0"
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
@@ -367,19 +367,44 @@ create_volumes() {
 }
 
 read_credentials() {
+    local codex_home
+    local auth_path
+
     CREDS=""
-    if [ "$(uname -s)" = "Darwin" ]; then
-        CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)
-    else
-        for cred_path in \
-            "${HOME}/.claude/.credentials.json" \
-            "${XDG_CONFIG_HOME:-${HOME}/.config}/claude-code/credentials.json"; do
-            if [ -f "$cred_path" ]; then
-                CREDS=$(cat "$cred_path" 2>/dev/null || true)
-                break
-            fi
-        done
+    codex_home="${CODEX_HOME:-${HOME}/.codex}"
+    auth_path="${codex_home}/auth.json"
+    if [ -f "$auth_path" ]; then
+        CREDS=$(cat "$auth_path" 2>/dev/null || true)
     fi
+}
+
+sync_codex_config_files() {
+    local codex_home="${CODEX_HOME:-${HOME}/.codex}"
+
+    if [ ! -d "$codex_home" ] || [ -L "$codex_home" ]; then
+        return 0
+    fi
+    if [[ "$codex_home" == *:* ]]; then
+        echo "[$SCRIPT_NAME] Warning: CODEX_HOME contains a colon, skipping config file sync: $codex_home" >&2
+        return 0
+    fi
+
+    # shellcheck disable=SC2016
+    "$ENGINE_CMD" run --rm --user root \
+        -v "$CONFIG_VOLUME":/vol-config \
+        -v "$codex_home":/host-codex:ro \
+        "$IMAGE_NAME" \
+        bash -c '
+            TARGET_UID='"$HOST_UID"'
+            TARGET_GID='"$HOST_GID"'
+            for name in config.toml instructions.md AGENTS.md; do
+                if [ -f "/host-codex/$name" ] && [ ! -L "/host-codex/$name" ]; then
+                    cp "/host-codex/$name" "/vol-config/$name"
+                    chown "$TARGET_UID:$TARGET_GID" "/vol-config/$name"
+                    chmod 600 "/vol-config/$name" 2>/dev/null || true
+                fi
+            done
+        ' || echo "[$SCRIPT_NAME] Warning: Codex config file sync failed (non-fatal)" >&2
 }
 
 sync_state() {
@@ -408,14 +433,16 @@ sync_state() {
             CREDS=$(cat)
             if [ -n "$CREDS" ]; then
                 if printf "%s" "$CREDS" | python3 -m json.tool >/dev/null 2>&1; then
-                    printf "%s" "$CREDS" > /vol-config/.credentials.json
-                    chown "$TARGET_UID:$TARGET_GID" /vol-config/.credentials.json
-                    chmod 600 /vol-config/.credentials.json
+                    printf "%s" "$CREDS" > /vol-config/auth.json
+                    chown "$TARGET_UID:$TARGET_GID" /vol-config/auth.json
+                    chmod 600 /vol-config/auth.json
                 else
-                    echo "['"$SCRIPT_NAME"'] Warning: credentials found but appear malformed, skipping sync" >&2
+                    echo "['"$SCRIPT_NAME"'] Warning: auth.json found but appears malformed, skipping sync" >&2
                 fi
             fi
         ' || echo "[$SCRIPT_NAME] Warning: credential sync failed (non-fatal)" >&2
+
+    sync_codex_config_files
 }
 
 validate_workspace() {
@@ -471,11 +498,14 @@ run_tool() {
         --network bridge \
         --ulimit nofile=8192:8192 \
         -e "$CONFIG_ENV_NAME=$CONFIG_MOUNT" \
-        -e ANTHROPIC_API_KEY \
-        -e ANTHROPIC_AUTH_TOKEN \
-        -e ANTHROPIC_BASE_URL \
-        -e ANTHROPIC_MODEL \
-        -e CLAUDE_CODE_OAUTH_TOKEN \
+        -e OPENAI_API_KEY \
+        -e CODEX_API_KEY \
+        -e OPENAI_BASE_URL \
+        -e OPENAI_ORGANIZATION \
+        -e OPENAI_PROJECT \
+        -e CODEX_ACCESS_TOKEN \
+        -e CODEX_CA_CERTIFICATE \
+        -e SSL_CERT_FILE \
         -e "TERM=${TERM:-xterm-256color}" \
         "$IMAGE_NAME" \
         "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}"

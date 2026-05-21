@@ -5,21 +5,22 @@
 ```bash
 git clone https://github.com/e6qu/sclaude.git
 cd sclaude
-chmod +x sclaude test_e2e.sh
+chmod +x sclaude scodex test_e2e.sh
 ```
 
 Requirements: Docker (or Podman), bash, shellcheck.
 
 ## Development
 
-The entire project is a single bash script (`sclaude`). Edit it directly.
+The project ships two physical bash scripts: `sclaude` for Claude Code and
+`scodex` for Codex CLI. They intentionally share the same Docker image design.
 
 After any change, the version hash updates automatically and the image rebuilds on next run.
 
 ## Code Standards
 
-- Must pass `shellcheck sclaude` with zero warnings
-- Must pass `zsh -n sclaude` (zsh syntax compatibility)
+- Must pass `shellcheck sclaude scodex` with zero warnings
+- Must pass `zsh -n sclaude` and `zsh -n scodex` (zsh syntax compatibility)
 - Must work on both macOS and Linux
 - Shebang: `#!/usr/bin/env bash`
 - Use `printf` instead of `echo -e`
@@ -36,7 +37,7 @@ Run the E2E test suite:
 bash test_e2e.sh
 ```
 
-All 16 tests must pass. Tests cover:
+All 23 tests must pass. Tests cover:
 - Basic commands (version, build, cleanup, reset, update)
 - TTY/non-TTY detection
 - Credential sync (macOS Keychain / Linux file)
@@ -44,6 +45,10 @@ All 16 tests must pass. Tests cover:
 - Resource limits (PID containment)
 - Path handling (spaces, colons)
 - Portability (zsh invocation, shebang, printf)
+- Codex wrapper smoke coverage
+- In-container `sudo apt` package installation
+- Shared image contents, Codex auth sync, release-check caching, and native arg pass-through
+- Explicit Docker/Podman engine selection
 
 ### Testing on Linux from macOS
 
@@ -96,7 +101,7 @@ When a PR with conventional commits merges to `main`, release-please automatical
 2. Add a test case to `test_e2e.sh` that fails
 3. Fix the bug in `sclaude`
 4. Verify all tests pass: `bash test_e2e.sh`
-5. Verify shellcheck: `shellcheck sclaude test_e2e.sh test_devcontainers.sh`
+5. Verify shellcheck: `shellcheck sclaude scodex test_e2e.sh test_devcontainers.sh`
 6. Commit with `fix: <description>`
 7. Update `BUGS.md` if applicable
 
@@ -114,7 +119,8 @@ This verifies that all three configs (sclaude-dev, claude-code example, sclaude 
 ## Project Structure
 
 ```
-sclaude                  # Main script (the whole project)
+sclaude                  # Claude Code sandbox script
+scodex                   # Codex CLI sandbox script
 test_e2e.sh              # E2E test suite
 test_devcontainers.sh    # Devcontainer build/smoke tests
 .devcontainer/           # Dev container for sclaude development

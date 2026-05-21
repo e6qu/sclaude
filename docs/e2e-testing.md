@@ -42,7 +42,7 @@ lima sclaude-alpine bash ~/projects/sclaude/test_e2e.sh
 | T03: Piped input (no TTY) | Non-TTY detection, `-it` flag handling | #6 |
 | T04: `--yolo` flag conversion | Flag rewriting | -- |
 | T05: Credential sync | macOS Keychain / Linux file-based creds | #12, #14, #17 |
-| T06: Volume creation & permissions | All 5 volumes writable by claude user | #3 |
+| T06: Volume creation & permissions | Shared user volumes writable by agent user | #3 |
 | T07: Volume persistence | Data survives across container runs | -- |
 | T08: Cleanup command | Old image removal | -- |
 | T09: Reset command | Volume deletion (non-interactive) | #11 |
@@ -53,6 +53,13 @@ lima sclaude-alpine bash ~/projects/sclaude/test_e2e.sh
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #18 |
 | T15: Temp file cleanup on failure | No leaked temp files after failed build | #1 |
 | T16: Shebang portability | Script runs via `env bash` | #19 |
+| T17: scodex version command | Codex wrapper smoke test | #40 |
+| T18: sudo apt works in sandbox | Package installation support | #33, #36 |
+| T19: Shared image has both CLIs | One image contains Claude and Codex CLIs | #40 |
+| T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config` | #38, #40 |
+| T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
+| T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
+| T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
 
 ## Test Script: `test_e2e.sh`
 
@@ -67,6 +74,16 @@ See [`test_e2e.sh`](../test_e2e.sh) for the full source. The test matrix above d
 ```bash
 cd ~/projects/sclaude
 bash test_e2e.sh
+```
+
+Each test has a portable timeout so Docker or devcontainer hangs fail cleanly
+instead of blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when
+testing on a slow builder.
+
+Run against native Podman instead of Docker-compatible Podman/Docker with:
+
+```bash
+SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 ```
 
 ### On Linux (native)

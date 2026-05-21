@@ -31,12 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Upload sclaude script and update release notes
+      - name: Upload scripts and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          gh release upload "$TAG" sclaude
+          gh release upload "$TAG" sclaude scodex
 
           EXISTING=$(gh release view "$TAG" --json body --jq .body)
           INSTALL_INSTRUCTIONS=$(cat <<'EOF'
@@ -50,19 +50,26 @@ jobs:
           curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
           chmod +x sclaude
           sudo mv sclaude /usr/local/bin/sclaude
+          curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
+          chmod +x scodex
+          sudo mv scodex /usr/local/bin/scodex
           ```
 
           **Update existing install:**
           ```bash
           sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
           sudo chmod +x /usr/local/bin/sclaude
-          sclaude update   # also updates Claude CLI inside the container
+          sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o /usr/local/bin/scodex
+          sudo chmod +x /usr/local/bin/scodex
+          sclaude update   # updates Claude and Codex CLIs inside the shared container
           ```
 
           **From source:**
           ```bash
           git pull
           sclaude --build
+          sudo install -m 0755 sclaude /usr/local/bin/sclaude
+          sudo install -m 0755 scodex /usr/local/bin/scodex
           ```
           EOF
           )

@@ -1,10 +1,11 @@
-# sclaude - Sandboxed Claude Code
+# sclaude / scodex - Sandboxed Agent CLIs
 
-Run [Claude Code](https://claude.ai/code) in a secure Docker sandbox. Same CLI, isolated filesystem.
+Run [Claude Code](https://claude.ai/code) or OpenAI Codex CLI in a Docker sandbox.
+Same CLI, isolated filesystem.
 
 ## Requirements
 
-- Docker (or Podman)
+- Docker or Podman
 - macOS or Linux
 - bash (zsh also works)
 
@@ -15,18 +16,24 @@ Run [Claude Code](https://claude.ai/code) in a secure Docker sandbox. Same CLI, 
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
 chmod +x sclaude
 sudo mv sclaude /usr/local/bin/sclaude
+curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
+chmod +x scodex
+sudo mv scodex /usr/local/bin/scodex
 
 # Or from source
 git clone https://github.com/e6qu/sclaude.git
 cd sclaude
-chmod +x sclaude
+chmod +x sclaude scodex
 sudo ln -s "$(pwd)/sclaude" /usr/local/bin/sclaude
+sudo ln -s "$(pwd)/scodex" /usr/local/bin/scodex
 ```
 
 ## Update
 
 ```bash
-sclaude update                 # Update Claude CLI inside the container
+sclaude update                 # Update Claude and Codex CLIs inside the shared container
+scodex update                  # Same shared image update
+sclaude check-update           # Check whether newer wrapper scripts are available
 
 # Update sclaude itself (from source)
 git pull && sclaude --build
@@ -34,6 +41,8 @@ git pull && sclaude --build
 # Or re-download latest release
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
 chmod +x /usr/local/bin/sclaude
+curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o /usr/local/bin/scodex
+chmod +x /usr/local/bin/scodex
 ```
 
 ## Usage
@@ -44,17 +53,32 @@ sclaude "fix the bug"        # Direct prompt
 sclaude --resume             # Resume last session
 sclaude -p "query"           # Print mode (headless/CI, no TTY needed)
 sclaude --no-yolo            # Disable default yolo mode
+
+scodex                       # Interactive Codex mode
+scodex "fix the bug"         # Direct prompt
+scodex exec "query"          # Non-interactive Codex mode
+scodex --no-yolo             # Disable Docker-boundary yolo mode
 ```
 
-Yolo mode (`--dangerously-skip-permissions`) is on by default since you're already sandboxed. Pass `--no-yolo` to disable.
+Yolo mode is on by default since Docker is the outer sandbox. `sclaude` maps it
+to `--dangerously-skip-permissions`; `scodex` maps it to
+`--dangerously-bypass-approvals-and-sandbox`. Pass `--no-yolo` to disable.
 
-All `claude` flags work: `--resume`, `-p`, `--output-format`, `--verbose`, etc. OAuth credentials auto-sync from the host (macOS Keychain or `~/.claude/.credentials.json` on Linux).
+All native CLI flags are passed through unchanged. Note that `-p` means Claude
+print mode for `sclaude`, but Codex profile selection for `scodex`; use native
+Codex syntax such as `scodex exec "query"` for non-interactive Codex runs.
+
+Claude OAuth credentials auto-sync from the host (macOS Keychain or
+`~/.claude/.credentials.json` on Linux). Codex auth auto-syncs
+`${CODEX_HOME:-$HOME/.codex}/auth.json`; API key environment variables are also
+passed through.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `sclaude update` | Rebuild with latest Claude CLI |
+| `sclaude update` / `scodex update` | Rebuild shared image with latest Claude and Codex CLIs |
+| `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version and build metadata |
 | `sclaude volumes` | Show Docker volume info |
@@ -64,11 +88,13 @@ All `claude` flags work: `--resume`, `-p`, `--output-format`, `--verbose`, etc. 
 
 ```
 sclaude [args]  -->  Docker container  -->  claude [args]
+scodex [args]   -->  Docker container  -->  codex [args]
                      - Workspace mounted at $(pwd)
                      - Non-root user (your UID/GID)
+                     - Shared image with both CLIs
                      - 4GB RAM / 2 CPUs / 100 PIDs
-                     - All capabilities dropped
-                     - Credentials from Docker volume
+                     - Limited capabilities for sudo apt package installs
+                     - Credentials from tool-specific Docker volumes
 ```
 
 Workspace is the only host directory accessible. Everything else is isolated.
@@ -79,11 +105,13 @@ Data survives across runs via Docker volumes:
 
 | Volume | Contents |
 |--------|----------|
-| `sclaude-config` | Credentials, config |
-| `sclaude-rootfs` | Home directory, preferences |
-| `sclaude-npm` | npm global packages |
-| `sclaude-pip` | pip user packages |
-| `sclaude-apt` | apt package cache |
+| `sclaude-config` | Claude credentials, config |
+| `scodex-config` | Codex auth and config |
+| `sagent-rootfs` | Shared home directory, preferences |
+| `sagent-npm` | Shared npm global packages |
+| `sagent-pip` | Shared pip user packages |
+| `sagent-apt-cache` | Shared apt package cache |
+| `sagent-apt-lists` | Shared apt package lists |
 
 ## Configuration
 
@@ -94,6 +122,17 @@ MEMORY_LIMIT="8g"    # Default: 4g
 CPU_LIMIT="4"        # Default: 2
 PIDS_LIMIT="200"     # Default: 100
 ```
+
+Container engine selection:
+
+```bash
+SAGENT_CONTAINER_ENGINE=docker sclaude version
+SAGENT_CONTAINER_ENGINE=podman scodex version
+```
+
+If `SAGENT_CONTAINER_ENGINE` is unset, the scripts try `docker` first and then
+`podman`. Engine health checks are bounded; tune with
+`SAGENT_ENGINE_TIMEOUT_SECONDS`.
 
 ## Best Practice
 
@@ -107,10 +146,10 @@ git commit                        # or: git reset --hard
 ## Uninstall
 
 ```bash
-sclaude cleanup                        # Remove old image versions
+sclaude cleanup                        # Remove old shared image versions
 sclaude reset                          # Remove volumes
-docker images sclaude-sandbox -q | xargs -r docker rmi # Remove all images
-sudo rm /usr/local/bin/sclaude         # Remove script
+docker images sagent-sandbox -q | xargs -r docker rmi # Remove all images
+sudo rm /usr/local/bin/sclaude /usr/local/bin/scodex
 ```
 
 ## Dev Containers
