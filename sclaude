@@ -172,7 +172,7 @@ build_image() {
 
     if [ "$no_cache" = "--no-cache" ]; then
         echo "[$SCRIPT_NAME] Updating shared sandbox image (version: $VERSION_HASH)..." >&2
-        build_args+=("--no-cache")
+        build_args+=("--no-cache" "--pull")
     else
         echo "[$SCRIPT_NAME] Building shared sandbox image (version: $VERSION_HASH)..." >&2
     fi
@@ -265,6 +265,121 @@ print_release_guidance() {
     echo "  sudo chmod +x /usr/local/bin/sclaude" >&2
     echo "  sudo curl -fsSL https://github.com/$PROJECT_REPO/releases/latest/download/scodex -o /usr/local/bin/scodex" >&2
     echo "  sudo chmod +x /usr/local/bin/scodex" >&2
+}
+
+# Fetch the latest release tag (e.g. "v2.4.0") or print empty on failure.
+fetch_latest_release_tag() {
+    if ! command -v curl >/dev/null 2>&1; then
+        return 0
+    fi
+    curl -fsSL --max-time 5 "https://api.github.com/repos/$PROJECT_REPO/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true
+}
+
+# Download the named release asset (e.g. "sclaude") for $tag into $dest. Returns 0 on success.
+download_release_asset() {
+    local tag="$1"
+    local asset="$2"
+    local dest="$3"
+    local url="https://github.com/$PROJECT_REPO/releases/download/$tag/$asset"
+
+    if ! curl -fsSL --max-time 30 "$url" -o "$dest"; then
+        echo "[$SCRIPT_NAME] Failed to download $url" >&2
+        return 1
+    fi
+    if ! head -1 "$dest" | grep -q '^#!/usr/bin/env bash$'; then
+        echo "[$SCRIPT_NAME] Downloaded $asset does not look like the expected bash script; refusing to install" >&2
+        return 1
+    fi
+    chmod +x "$dest"
+}
+
+# Install $src to $dest, using sudo if $dest is not writable. Returns 0 on success.
+install_wrapper_file() {
+    local src="$1"
+    local dest="$2"
+
+    if [ -w "$dest" ] || { [ ! -e "$dest" ] && [ -w "$(dirname "$dest")" ]; }; then
+        install -m 0755 "$src" "$dest"
+    elif command -v sudo >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] $dest is not writable; installing with sudo..." >&2
+        sudo install -m 0755 "$src" "$dest"
+    else
+        echo "[$SCRIPT_NAME] Cannot write $dest and sudo is unavailable; skipping" >&2
+        return 1
+    fi
+}
+
+# Self-update the running wrapper (and its paired wrapper if present) to the latest release.
+# Re-execs the running wrapper with the original command when the running script was replaced.
+self_update_wrapper() {
+    local latest_tag script_path script_dir paired_name paired_path
+    local tmp_self tmp_paired
+    local replaced_self=false
+
+    if [ "${SAGENT_SKIP_SELF_UPDATE:-}" = "1" ]; then
+        return 0
+    fi
+
+    script_path="$(realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-$0}")"
+    script_dir="$(dirname "$script_path")"
+    case "$SCRIPT_NAME" in
+        sclaude) paired_name="scodex" ;;
+        scodex)  paired_name="sclaude" ;;
+        *)       paired_name="" ;;
+    esac
+    paired_path=""
+    if [ -n "$paired_name" ] && [ -f "$script_dir/$paired_name" ]; then
+        paired_path="$script_dir/$paired_name"
+    fi
+
+    latest_tag=$(fetch_latest_release_tag)
+    if [ -z "$latest_tag" ]; then
+        echo "[$SCRIPT_NAME] Could not reach the releases API; skipping wrapper self-update" >&2
+        return 0
+    fi
+
+    if [ "${latest_tag#v}" = "$WRAPPER_VERSION" ]; then
+        echo "[$SCRIPT_NAME] Wrapper already at $latest_tag" >&2
+        return 0
+    fi
+
+    echo "[$SCRIPT_NAME] Updating wrapper from v$WRAPPER_VERSION to $latest_tag..." >&2
+
+    tmp_self=$(mktemp)
+    TEMP_FILES+=("$tmp_self")
+    if download_release_asset "$latest_tag" "$SCRIPT_NAME" "$tmp_self"; then
+        if install_wrapper_file "$tmp_self" "$script_path"; then
+            echo "[$SCRIPT_NAME] Wrapper at $script_path is now $latest_tag" >&2
+            replaced_self=true
+        fi
+    fi
+
+    if [ -n "$paired_path" ]; then
+        tmp_paired=$(mktemp)
+        TEMP_FILES+=("$tmp_paired")
+        if download_release_asset "$latest_tag" "$paired_name" "$tmp_paired"; then
+            if install_wrapper_file "$tmp_paired" "$paired_path"; then
+                echo "[$SCRIPT_NAME] Paired wrapper at $paired_path is now $latest_tag" >&2
+            fi
+        fi
+    fi
+
+    if [ "$replaced_self" = true ]; then
+        echo "[$SCRIPT_NAME] Re-running update with the new wrapper..." >&2
+        SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
+    fi
+}
+
+# Confirm a build succeeded by re-inspecting the image tag and printing the inner tool version.
+verify_image_built() {
+    local tool_version
+    if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] ERROR: build completed but $IMAGE_NAME was not tagged" >&2
+        exit 1
+    fi
+    tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
+    echo "[$SCRIPT_NAME] $TOOL_NAME CLI is now: $tool_version" >&2
 }
 
 check_release() {
@@ -492,8 +607,9 @@ select_engine
 
 case "$WRAPPER_COMMAND" in
     update)
-        check_release true
+        self_update_wrapper
         build_image --no-cache
+        verify_image_built
         exit 0
         ;;
     build|--build)
