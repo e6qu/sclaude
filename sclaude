@@ -438,8 +438,13 @@ fetch_npm_latest() {
     if [ -z "$resp" ]; then
         return 0
     fi
-    if command -v python3 >/dev/null 2>&1; then
-        printf '%s' "$resp" | python3 -c '
+    if ! command -v python3 >/dev/null 2>&1; then
+        # No JSON parser available — return empty so `needs_image_rebuild` defaults to
+        # rebuild. A regex over a registry document can misattribute a nested "version"
+        # key, so we prefer empty-and-rebuild over a wrong version.
+        return 0
+    fi
+    printf '%s' "$resp" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -449,17 +454,24 @@ try:
 except Exception:
     pass
 ' 2>/dev/null || true
-        return 0
-    fi
-    # Fallback for hosts without python3: extract the first "version": "..." pair in the
-    # JSON document. The npm /latest endpoint returns the top-level package metadata, and
-    # the version field is reliably present in the first 1KB of the response. Trailing
-    # `|| true` keeps an empty match from tripping `set -e` in the caller.
-    printf '%s' "$resp" | head -c 1024 \
-        | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
-        | head -1 \
-        | sed -E 's/.*"([^"]+)"$/\1/' || true
     return 0
+}
+
+# Probe the inner $1 CLI's --version inside the current image with a bounded timeout.
+# Output is the first semver-shaped token on the first line of the CLI's output (avoids
+# capturing an update banner before the actual version). Empty on any failure.
+probe_image_tool_version() {
+    local tool="$1"
+    local -a timeout_cmd=()
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd=(timeout 15)
+    elif command -v gtimeout >/dev/null 2>&1; then
+        timeout_cmd=(gtimeout 15)
+    fi
+    "${timeout_cmd[@]+"${timeout_cmd[@]}"}" "$ENGINE_CMD" run --rm "$IMAGE_NAME" "$tool" --version 2>/dev/null \
+        | head -1 \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' \
+        | head -1 || true
 }
 
 # Returns 0 if the current image is missing or its Claude/Codex CLIs lag behind the latest
@@ -476,13 +488,8 @@ needs_image_rebuild() {
         return 0
     fi
 
-    # Match full semver shape including optional prerelease AND build metadata on both
-    # sides (e.g. 1.2.3, 1.2.3-beta.1, 1.2.3-beta.1+build.5). Anything narrower truncates
-    # valid semver and causes endless rebuilds.
-    image_claude=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -1 || true)
-    image_codex=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" codex --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?' | head -1 || true)
+    image_claude=$(probe_image_tool_version claude)
+    image_codex=$(probe_image_tool_version codex)
 
     npm_claude=$(fetch_npm_latest "@anthropic-ai/claude-code")
     npm_codex=$(fetch_npm_latest "@openai/codex")
@@ -502,19 +509,28 @@ needs_image_rebuild() {
     return 0
 }
 
-# Confirm a build succeeded by re-inspecting the image tag and verifying the inner tool runs.
+# Confirm a build succeeded by re-inspecting the image tag and verifying both inner
+# CLIs run inside the rebuilt image. The image is shared between sclaude and scodex,
+# so a broken Claude install in `scodex update` is just as bad as a broken Codex
+# install in `sclaude update` — verify both regardless of which wrapper was invoked.
 verify_image_built() {
-    local tool_version
+    local claude_version codex_version
     if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] ERROR: build completed but $IMAGE_NAME was not tagged" >&2
         exit 1
     fi
-    if ! tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>&1); then
-        echo "[$SCRIPT_NAME] ERROR: '$TOOL_BIN --version' failed inside the rebuilt image:" >&2
-        printf '%s\n' "$tool_version" | sed 's/^/  /' >&2
+    if ! claude_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>&1); then
+        echo "[$SCRIPT_NAME] ERROR: 'claude --version' failed inside the rebuilt image:" >&2
+        printf '%s\n' "$claude_version" | sed 's/^/  /' >&2
         exit 1
     fi
-    echo "[$SCRIPT_NAME] $TOOL_NAME CLI is now: $tool_version" >&2
+    if ! codex_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" codex --version 2>&1); then
+        echo "[$SCRIPT_NAME] ERROR: 'codex --version' failed inside the rebuilt image:" >&2
+        printf '%s\n' "$codex_version" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    echo "[$SCRIPT_NAME] Claude Code CLI is now: $claude_version" >&2
+    echo "[$SCRIPT_NAME] Codex CLI is now:        $codex_version" >&2
 }
 
 check_release() {
@@ -608,6 +624,13 @@ parse_args() {
                 ;;
         esac
     done
+
+    # --force-rebuild is meaningful only for `update`. Catch misuse early so a user
+    # running `sclaude --force-rebuild "do a thing"` does not silently lose the flag.
+    if [ "$FORCE_REBUILD" = true ] && [ "$WRAPPER_COMMAND" != "update" ]; then
+        echo "[$SCRIPT_NAME] ERROR: --force-rebuild is only valid with the 'update' command" >&2
+        exit 1
+    fi
 }
 
 create_volumes() {
