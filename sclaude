@@ -13,7 +13,7 @@ CONFIG_VOLUME="sclaude-config"
 CONFIG_MOUNT="/sclaude-config"
 CONFIG_ENV_NAME="CLAUDE_CONFIG_DIR"
 YOLO_FLAG="--dangerously-skip-permissions"
-WRAPPER_VERSION="2.2.0"
+WRAPPER_VERSION="2.2.0" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
 ENGINE_CMD=""
@@ -304,9 +304,11 @@ download_release_asset() {
         echo "[$SCRIPT_NAME] Downloaded $asset does not declare SCRIPT_NAME=\"$asset\"; refusing to install" >&2
         return 1
     fi
-    if ! grep -qE "^WRAPPER_VERSION=\"$expected_version\"\$" "$dest"; then
-        echo "[$SCRIPT_NAME] Downloaded $asset does not declare WRAPPER_VERSION=\"$expected_version\"; refusing to install" >&2
-        return 1
+    # WRAPPER_VERSION mismatch is a warning, not a hard reject: release-please cannot
+    # always be relied on to bump the constant in the published asset, and blocking
+    # self-update on that release-time bug would defeat the point of self-update.
+    if ! grep -qE "^WRAPPER_VERSION=\"$expected_version\"( *#.*)?\$" "$dest"; then
+        echo "[$SCRIPT_NAME] WARNING: downloaded $asset does not declare WRAPPER_VERSION=\"$expected_version\" (release packaging out of sync); install proceeding" >&2
     fi
     chmod +x "$dest"
 }
