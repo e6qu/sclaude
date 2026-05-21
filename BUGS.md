@@ -40,6 +40,21 @@ None.
 | 30 | `docs/e2e-testing.md` embedded script stale: `((PASS++))` fails at zero with `set -e`, non-portable `stat -c`, missing timeout fallback | Removed embedded copy; docs now reference `test_e2e.sh` directly |
 | 31 | `docs/storage-layout.md` credential sync only mentions macOS Keychain | Added Linux file-based sync paths |
 | 32 | README uninstall: `docker rmi sclaude-sandbox` won't work (images tagged with hash) | Changed to `sclaude cleanup` then `docker rmi` |
+| 33 | Runtime `sudo apt` support broken by `no-new-privileges` | Removed `no-new-privileges`, kept allowlisted sudo for `apt`/`apt-get`/`dpkg`, added the capabilities needed for package management, documented the tradeoff, and added an E2E package-install test |
+| 34 | Management commands build the Docker image before dispatch | Dispatch wrapper commands before `ensure_image`; only build for actual CLI execution, `--build`, and `update` |
+| 35 | Dockerfile GID handling still fragile when host GID exists in base image | Resolve existing groups by numeric GID with `getent`, create a group only when needed, and avoid assuming the group is named `agent` |
+| 36 | `sclaude-apt` volume misleading and incomplete | Replaced it with shared `sagent-apt-cache` and `sagent-apt-lists` volumes used by the supported package-install path |
+| 37 | Security docs overstate Docker bridge isolation | Updated docs to describe container localhost versus host gateway/alias reachability and outbound exfiltration risk |
+| 38 | Credential-volume secret risk understated | Documented `sclaude-config` and `scodex-config` as secret-bearing volumes; Codex auth/config sync makes `scodex-config` sensitive |
+| 39 | Wrapper flags parsed too late | Added wrapper parsing before dispatch while preserving native CLI args after the first non-wrapper argument |
+| 40 | Codex CLI not supported | Added physical `scodex` script, one shared image with both CLIs, and tool-specific config/auth volumes |
+| 41 | Claude and Codex flag semantics collide | Do not translate short flags; pass native args unchanged and document `scodex exec` for non-interactive Codex |
+| 42 | Codex inner sandbox needs Docker-aware yolo mapping | `scodex` maps default yolo to `--dangerously-bypass-approvals-and-sandbox`; `--no-yolo` leaves native Codex behavior intact |
+| 43 | Docker/devcontainer test commands can hang indefinitely when Docker becomes unresponsive | Added portable per-test timeouts and a bounded Docker readiness check to fail cleanly with captured output |
+| 44 | Docker image builds hide useful progress because `docker build -q` only prints the final image ID | Removed quiet builds so `sclaude --build`, `scodex --build`, and `update` show full Docker build output |
+| 45 | Scripts assume the `docker` command even when users run Podman directly | Added bounded container-engine detection with `SAGENT_CONTAINER_ENGINE=docker\|podman`, trying Docker first and Podman second when unset |
+| 46 | Test timeouts killed only the top-level command and could leave child Docker/devcontainer processes running | Added recursive child-process termination to the E2E and devcontainer test harnesses |
+| 47 | `test_devcontainers.sh` smoke phase can hang at `devcontainer up` against a Podman-backed Docker socket after the devcontainer image builds and the container starts | Recursive timeout cleanup fixed the stuck child process state; devcontainer suite now passes |
 
 ## False Positives
 

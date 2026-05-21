@@ -42,7 +42,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
       - name: Shellcheck sclaude
-        run: shellcheck sclaude
+        run: shellcheck sclaude scodex
       - name: Shellcheck test_e2e.sh
         run: shellcheck test_e2e.sh
       - name: Shellcheck test_devcontainers.sh
@@ -51,6 +51,7 @@ jobs:
         run: |
           sudo apt-get install -y zsh
           zsh -n sclaude
+          zsh -n scodex
 
   lint-macos:
     runs-on: macos-latest
@@ -59,9 +60,9 @@ jobs:
       - name: Install shellcheck
         run: brew install shellcheck
       - name: Shellcheck
-        run: shellcheck sclaude test_e2e.sh test_devcontainers.sh
+        run: shellcheck sclaude scodex test_e2e.sh test_devcontainers.sh
       - name: Zsh syntax check
-        run: zsh -n sclaude
+        run: zsh -n sclaude && zsh -n scodex
 
   test-linux:
     # Only run E2E on trusted contexts (push to main or PRs from same repo)

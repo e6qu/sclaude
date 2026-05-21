@@ -5,28 +5,85 @@ set -euo pipefail
 # ── Resolve sclaude path ──────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCLAUDE="$SCRIPT_DIR/sclaude"
+SCODEX="$SCRIPT_DIR/scodex"
 
 if [ ! -x "$SCLAUDE" ]; then
     echo "ERROR: sclaude not found or not executable at $SCLAUDE" >&2
     exit 1
 fi
+if [ ! -x "$SCODEX" ]; then
+    echo "ERROR: scodex not found or not executable at $SCODEX" >&2
+    exit 1
+fi
 
 OS="$(uname -s)"
+ENGINE="${SAGENT_CONTAINER_ENGINE:-docker}"
+export SAGENT_CONTAINER_ENGINE="$ENGINE"
+export ENGINE
 PASS=0
 FAIL=0
 SKIP=0
+TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
 
 # ── Test harness ──────────────────────────────────────────────────────
+terminate_process_tree() {
+    local pid="$1"
+    local children
+    local child
+
+    if command -v pgrep >/dev/null 2>&1; then
+        children=$(pgrep -P "$pid" 2>/dev/null || true)
+        for child in $children; do
+            terminate_process_tree "$child"
+        done
+    fi
+    kill "$pid" 2>/dev/null || true
+}
+
+run_with_timeout_capture() {
+    local output_file="$1"; shift
+    local cmd_pid
+    local timer_pid
+    local rc
+
+    "$@" >"$output_file" 2>&1 &
+    cmd_pid=$!
+    (
+        sleep "$TEST_TIMEOUT_SECONDS"
+        terminate_process_tree "$cmd_pid"
+    ) &
+    timer_pid=$!
+
+    if wait "$cmd_pid"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    kill "$timer_pid" 2>/dev/null || true
+    wait "$timer_pid" 2>/dev/null || true
+
+    if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
+        printf 'Timed out after %s seconds\n' "$TEST_TIMEOUT_SECONDS" >> "$output_file"
+    fi
+    return "$rc"
+}
+
 run_test() {
     local name="$1"; shift
     printf "  %-45s " "$name"
     local output
-    if output=$("$@" 2>&1); then
+    local output_file
+    output_file=$(mktemp)
+    if run_with_timeout_capture "$output_file" "$@"; then
+        output=$(cat "$output_file")
+        rm -f "$output_file"
         printf "PASS\n"
         PASS=$((PASS + 1))
     else
+        output=$(cat "$output_file")
+        rm -f "$output_file"
         printf "FAIL\n"
-        printf "    Output: %s\n" "${output:-(empty)}" | head -5
+        printf "    Output: %s\n" "${output:-(empty)}"
         FAIL=$((FAIL + 1))
     fi
 }
@@ -40,42 +97,46 @@ skip_test() {
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "=== sclaude E2E Tests ==="
 echo "Platform: $OS ($(uname -m))"
-echo "Docker:   $(docker --version 2>/dev/null || echo 'NOT FOUND')"
+echo "Engine:   $ENGINE ($("$ENGINE" --version 2>/dev/null || echo 'NOT FOUND'))"
 echo "Bash:     ${BASH_VERSION}"
 echo ""
 
-# Ensure Docker is running
-if ! docker info >/dev/null 2>&1; then
-    echo "ERROR: Docker is not running" >&2
+# Ensure the selected container engine is running
+INFO_OUTPUT=$(mktemp)
+if ! run_with_timeout_capture "$INFO_OUTPUT" "$ENGINE" info; then
+    cat "$INFO_OUTPUT" >&2
+    rm -f "$INFO_OUTPUT"
+    echo "ERROR: container engine is not running: $ENGINE" >&2
     exit 1
 fi
+rm -f "$INFO_OUTPUT"
 
 # ── T01: version command ─────────────────────────────────────────────
 # Validates basic execution and that the hashing tool works
 # (shasum on macOS, sha256sum on Linux — Bug #13)
-run_test "T01: version command" bash -c '"$1" version' _ "$SCLAUDE"
+run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version' _ "$SCLAUDE" "$SCODEX"
 
 # ── T02: image build ─────────────────────────────────────────────────
 # Validates Dockerfile generation, UID/GID build args (Bug #4, #5)
-run_test "T02: image build" bash -c '"$1" --build' _ "$SCLAUDE"
+run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
 # ── T03: piped input (no TTY) ────────────────────────────────────────
 # Bug #6: -it flags should adapt when stdin is not a terminal
 run_test "T03: piped/no-TTY mode" bash -c '
-    echo "exit" | "$1" version 2>&1
+    echo "exit" | SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>&1
 ' _ "$SCLAUDE"
 
 # ── T04: --yolo / --no-yolo flags ─────────────────────────────────────
 # Verify both yolo (default) and --no-yolo work without crashing
-run_test "T04: --yolo flag" bash -c '"$1" version --yolo 2>&1 && "$1" version --no-yolo 2>&1' _ "$SCLAUDE"
+run_test "T04: --yolo flag" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
     # macOS: check that Keychain creds (if present) are synced into the volume
     run_test "T05: credential sync (macOS)" bash -c '
-        "$1" version >/dev/null 2>&1
+        SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null 2>&1
         # Volume should exist after a run; check it is readable
-        docker run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
+        "$ENGINE" run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
     ' _ "$SCLAUDE"
 else
     # Linux: Bug #14 — check file-based credential sync
@@ -85,10 +146,10 @@ else
         mkdir -p ~/.claude
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
         trap "rm -f ~/.claude/.credentials.json" EXIT
-        docker volume create sclaude-config >/dev/null 2>&1 || true
-        IMG=$(docker images sclaude-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+        "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
+        IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
         if [ -z "$IMG" ]; then echo "No image" >&2; exit 1; fi
-        printf "{\"test_cred\":true}" | docker run --rm -i --user root \
+        printf "{\"test_cred\":true}" | "$ENGINE" run --rm -i --user root \
             -v sclaude-config:/vol-config \
             "$IMG" bash -c "
                 CREDS=\$(cat)
@@ -96,19 +157,19 @@ else
                     printf \"%s\" \"\$CREDS\" > /vol-config/.credentials.json
                 fi
             "
-        docker run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
+        "$ENGINE" run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
     ' _ "$SCLAUDE"
 fi
 
 # ── T06: volume creation & permissions ────────────────────────────────
-# Bug #3: all volumes must be writable by the claude user
+# Bug #3: user-writable volumes must be writable by the agent user
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -c '
-    for vol in sclaude-config sclaude-rootfs sclaude-npm sclaude-pip sclaude-apt; do
-        docker volume create "$vol" >/dev/null 2>&1 || true
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+        "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
-    IMG=$(docker images sclaude-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
     if [ -z "$IMG" ]; then
         echo "No sclaude image found" >&2
         exit 1
@@ -116,21 +177,23 @@ run_test "T06: volume permissions" bash -c '
     # Run permission fix
     HOST_UID="$(id -u)"
     HOST_GID="$(id -g)"
-    docker run --rm --user root \
+    "$ENGINE" run --rm --user root \
         -v sclaude-config:/vol-config \
-        -v sclaude-rootfs:/vol-rootfs \
-        -v sclaude-npm:/vol-npm \
-        -v sclaude-pip:/vol-pip \
+        -v sagent-rootfs:/vol-rootfs \
+        -v sagent-npm:/vol-npm \
+        -v sagent-pip:/vol-pip \
+        -v sagent-apt-cache:/vol-apt-cache \
+        -v sagent-apt-lists:/vol-apt-lists \
         "$IMG" \
-        bash -c "chown -R \"$HOST_UID:$HOST_GID\" /vol-config /vol-rootfs /vol-npm /vol-pip" 2>/dev/null || true
-    # Verify the claude user can actually write to each volume
-    docker run --rm \
+        bash -c "chown -R \"$HOST_UID:$HOST_GID\" /vol-config /vol-rootfs /vol-npm /vol-pip && mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial" 2>/dev/null || true
+    # Verify the agent user can actually write to each user-writable volume
+    "$ENGINE" run --rm \
         -v sclaude-config:/sclaude-config:rw \
-        -v sclaude-rootfs:/home/claude:rw \
-        -v sclaude-npm:/home/claude/.npm-global:rw \
-        -v sclaude-pip:/home/claude/.local:rw \
+        -v sagent-rootfs:/home/agent:rw \
+        -v sagent-npm:/home/agent/.npm-global:rw \
+        -v sagent-pip:/home/agent/.local:rw \
         "$IMG" bash -c "
-            for d in /sclaude-config /home/claude /home/claude/.npm-global /home/claude/.local; do
+            for d in /sclaude-config /home/agent /home/agent/.npm-global /home/agent/.local; do
                 if ! touch \"\$d/.perm-test\" 2>/dev/null; then
                     echo \"\$d: NOT WRITABLE\" >&2
                     exit 1
@@ -143,26 +206,26 @@ run_test "T06: volume permissions" bash -c '
 # ── T07: volume persistence ──────────────────────────────────────────
 run_test "T07: volume persistence" bash -c '
     # Write a marker into the rootfs volume
-    docker run --rm -v sclaude-rootfs:/home/claude alpine \
-        sh -c "echo sclaude-test-marker > /home/claude/.test_persist"
+    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+        sh -c "echo sagent-test-marker > /home/agent/.test_persist"
     # Check it survives
-    docker run --rm -v sclaude-rootfs:/home/claude alpine \
-        cat /home/claude/.test_persist | grep -q sclaude-test-marker
+    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+        cat /home/agent/.test_persist | grep -q sagent-test-marker
     # Clean up
-    docker run --rm -v sclaude-rootfs:/home/claude alpine \
-        rm -f /home/claude/.test_persist
+    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+        rm -f /home/agent/.test_persist
 '
 
 # ── T08: cleanup command ─────────────────────────────────────────────
-run_test "T08: cleanup" bash -c '"$1" cleanup 2>&1' _ "$SCLAUDE"
+run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' _ "$SCLAUDE"
 
 # ── T09: reset command (non-interactive) ──────────────────────────────
 # Bug #11: errors should go to stderr not stdout
 run_test "T09: reset (auto-confirm)" bash -c '
-    echo "" | "$1" reset 2>/dev/null
+    echo "" | SAGENT_SKIP_RELEASE_CHECK=1 "$1" reset 2>/dev/null
     # Volumes should be gone (or already absent)
-    for vol in sclaude-config sclaude-rootfs sclaude-npm sclaude-pip sclaude-apt; do
-        if docker volume inspect "$vol" >/dev/null 2>&1; then
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+        if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
             exit 1
         fi
@@ -170,7 +233,7 @@ run_test "T09: reset (auto-confirm)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T10: update command ──────────────────────────────────────────────
-run_test "T10: update (no-cache rebuild)" bash -c '"$1" update 2>&1' _ "$SCLAUDE"
+run_test "T10: update (no-cache rebuild)" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
 # Bug #25: timeout is not available on stock macOS; use portable fallback
@@ -182,7 +245,7 @@ run_test "T11: PID limit (fork bomb)" bash -c '
         TIMEOUT_CMD="gtimeout 15"
     fi
     # Run a fork bomb in a PID-limited container; it must not escape
-    $TIMEOUT_CMD docker run --rm --pids-limit=50 alpine \
+    $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 alpine \
         sh -c "for i in \$(seq 1 200); do sleep 999 & done" 2>&1 || true
     # If we reach here, containment worked
     true
@@ -194,14 +257,14 @@ run_test "T12: path with spaces" bash -c '
     TEST_DIR="/tmp/sclaude test dir"
     mkdir -p "$TEST_DIR"
     cd "$TEST_DIR"
-    "$1" version
+    SAGENT_SKIP_RELEASE_CHECK=1 "$1" version
     rm -rf "$TEST_DIR"
 ' _ "$SCLAUDE"
 
 # ── T13: echo -e portability ─────────────────────────────────────────
 # Bug #15: echo -e should not print literal "-e"
 run_test "T13: no literal -e in output" bash -c '
-    OUTPUT=$("$1" volumes 2>&1)
+    OUTPUT=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" volumes 2>&1)
     if echo "$OUTPUT" | grep -q "^-e"; then
         echo "Found literal -e in output" >&2
         exit 1
@@ -211,7 +274,7 @@ run_test "T13: no literal -e in output" bash -c '
 # ── T14: zsh invocation ──────────────────────────────────────────────
 # Bug #18: BASH_SOURCE fallback
 if command -v zsh >/dev/null 2>&1; then
-    run_test "T14: zsh invocation" zsh "$SCLAUDE" version
+    run_test "T14: zsh invocation" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 zsh "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 zsh "$2" version' _ "$SCLAUDE" "$SCODEX"
 else
     skip_test "T14: zsh invocation" "zsh not installed"
 fi
@@ -222,7 +285,7 @@ run_test "T15: no leaked temp files" bash -c '
     # Snapshot existing tmp files, run build, check for new ones
     MARKER="/tmp/.sclaude-t15-$$"
     touch "$MARKER"
-    "$1" --build >/dev/null 2>&1 || true
+    SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
     # Any tmp.* files newer than our marker were created during the build
     LEAKED=$(find /tmp -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
     rm -f "$MARKER"
@@ -236,13 +299,84 @@ run_test "T15: no leaked temp files" bash -c '
 # Bug #19: script should use /usr/bin/env bash
 run_test "T16: shebang uses env" bash -c '
     HEAD=$(head -1 "$1")
-    if [ "$HEAD" = "#!/usr/bin/env bash" ]; then
+    HEAD2=$(head -1 "$2")
+    if [ "$HEAD" = "#!/usr/bin/env bash" ] && [ "$HEAD2" = "#!/usr/bin/env bash" ]; then
         exit 0
     else
-        echo "Shebang is: $HEAD (expected #!/usr/bin/env bash)" >&2
+        echo "Shebangs are: $HEAD / $HEAD2 (expected #!/usr/bin/env bash)" >&2
         exit 1
     fi
+' _ "$SCLAUDE" "$SCODEX"
+
+# ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
+run_test "T17: scodex version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
+
+# ── T18: package install support ─────────────────────────────────────
+run_test "T18: sudo apt works in sandbox" bash -c '
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    if [ -z "$IMG" ]; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    "$ENGINE" volume create sagent-rootfs >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-apt-cache >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-apt-lists >/dev/null 2>&1 || true
+    "$ENGINE" run --rm \
+        -v sagent-rootfs:/home/agent:rw \
+        -v sagent-apt-cache:/var/cache/apt:rw \
+        -v sagent-apt-lists:/var/lib/apt/lists:rw \
+        --cap-drop=ALL \
+        --cap-add=CHOWN \
+        --cap-add=DAC_OVERRIDE \
+        --cap-add=FOWNER \
+        --cap-add=FSETID \
+        --cap-add=SETGID \
+        --cap-add=SETUID \
+        --cap-add=SYS_CHROOT \
+        "$IMG" bash -c "sudo apt-get update >/dev/null && sudo apt-get install -y --no-install-recommends file >/dev/null"
 ' _ "$SCLAUDE"
+
+# ── T19: shared image contains both CLIs ─────────────────────────────
+run_test "T19: shared image has both CLIs" bash -c '
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    if [ -z "$IMG" ]; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm "$IMG" claude --version >/dev/null
+    "$ENGINE" run --rm "$IMG" codex --version >/dev/null
+' _ "$SCLAUDE"
+
+# ── T20: Codex config sync ───────────────────────────────────────────
+run_test "T20: scodex config sync" bash -c '
+    TMP_CODEX_HOME=$(mktemp -d)
+    trap "rm -rf \"$TMP_CODEX_HOME\"" EXIT
+    printf "%s" "{\"test_codex_auth\":true}" > "$TMP_CODEX_HOME/auth.json"
+    printf "%s\n" "model = \"gpt-5\"" > "$TMP_CODEX_HOME/config.toml"
+    "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
+    CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
+    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/auth.json 2>/dev/null | grep -q test_codex_auth
+    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/config.toml 2>/dev/null | grep -q "model"
+' _ "$SCODEX"
+
+# ── T21: release check is non-fatal and cache-safe ───────────────────
+run_test "T21: release check non-fatal" bash -c '
+    TMP_CACHE=$(mktemp -d)
+    trap "rm -rf \"$TMP_CACHE\"" EXIT
+    XDG_CACHE_HOME="$TMP_CACHE" "$1" check-update >/dev/null 2>&1
+    test -f "$TMP_CACHE/sagent/release-check"
+' _ "$SCLAUDE"
+
+# ── T22: native args after command are not wrapper-dispatched ─────────
+run_test "T22: native args pass through" bash -c '
+    SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help update 2>&1 | grep -q "Run Codex non-interactively"
+' _ "$SCODEX"
+
+# ── T23: explicit engine selection works ─────────────────────────────
+run_test "T23: explicit engine selection" bash -c '
+    SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
+    SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$2" version >/dev/null
+' _ "$SCLAUDE" "$SCODEX"
 
 # ── Results ───────────────────────────────────────────────────────────
 echo ""
