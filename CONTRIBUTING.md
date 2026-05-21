@@ -10,6 +10,28 @@ chmod +x sclaude scodex test_e2e.sh
 
 Requirements: Docker (or Podman), bash, shellcheck.
 
+### Pre-commit hooks
+
+This repo uses [pre-commit](https://pre-commit.com) to enforce shell linting,
+GitHub Actions linting, Conventional Commit messages, and AI-attribution
+stripping locally. Install once:
+
+```bash
+# Install pre-commit itself (pick whichever fits your environment)
+brew install pre-commit       # macOS
+pipx install pre-commit       # cross-platform
+
+# If you previously set `core.hooksPath=.githooks`, unset it so pre-commit can
+# manage the hooks directory:
+git config --unset core.hooksPath || true
+
+# Install the git hooks defined in .pre-commit-config.yaml
+pre-commit install --install-hooks
+```
+
+After install, `git commit` runs the configured pre-commit and commit-msg
+hooks automatically. Run them on demand with `pre-commit run --all-files`.
+
 ## Development
 
 The project ships two physical bash scripts: `sclaude` for Claude Code and
