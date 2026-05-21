@@ -13,8 +13,10 @@ Requirements: Docker (or Podman), bash, shellcheck.
 ### Pre-commit hooks
 
 This repo uses [pre-commit](https://pre-commit.com) to enforce shell linting,
-GitHub Actions linting, Conventional Commit messages, and AI-attribution
-stripping locally. Install once:
+GitHub Actions linting, Conventional Commit messages, AI-attribution stripping,
+and a hard block on `pull_request_target` triggers in workflows (see
+[Forbidden workflow triggers](#forbidden-workflow-triggers) below). Install
+once:
 
 ```bash
 # Install pre-commit itself (pick whichever fits your environment)
@@ -31,6 +33,16 @@ pre-commit install --install-hooks
 
 After install, `git commit` runs the configured pre-commit and commit-msg
 hooks automatically. Run them on demand with `pre-commit run --all-files`.
+
+### Forbidden workflow triggers
+
+GitHub Actions' `pull_request_target` trigger is **prohibited** in this repo.
+It runs in the base-repo context with secrets available, but PRs can supply
+arbitrary refs and scripts — a well-known exfiltration footgun. Use
+`pull_request` for untrusted contexts (no secrets) and `push: branches: [main]`
+for trusted post-merge coverage. The `forbid-pull-request-target` pre-commit
+hook fails any commit that introduces the token under `.github/workflows/`.
+Do not work around it.
 
 ## Development
 
