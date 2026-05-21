@@ -123,6 +123,7 @@ sclaude                  # Claude Code sandbox script
 scodex                   # Codex CLI sandbox script
 test_e2e.sh              # E2E test suite
 test_devcontainers.sh    # Devcontainer build/smoke tests
+cleanup.sh               # macOS-only helper for reclaiming disk space and Docker/Podman state
 .devcontainer/           # Dev container for sclaude development
 examples/
   devcontainer-claude/   # Example: Claude Code directly in a dev container
@@ -130,6 +131,7 @@ examples/
 README.md                # Quick start and usage
 CONTRIBUTING.md          # This file
 BUGS.md                  # Bug tracker and fix history
+PLAN.md                  # Design doc for the Codex CLI support work
 CHANGELOG.md             # Release history (managed by release-please)
 LICENSE                  # MIT
 .github/workflows/       # CI + release-please automation
