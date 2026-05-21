@@ -417,9 +417,47 @@ self_update_wrapper() {
     echo "[$SCRIPT_NAME] Wrapper at $script_path is now $latest_tag" >&2
 
     # Phase 3: re-exec the freshly installed self so the image rebuild runs on current logic.
+    # Preserve --force-rebuild across the exec so the user's intent survives the wrapper swap.
     echo "[$SCRIPT_NAME] Re-running update with the new wrapper..." >&2
     cleanup_temp
-    SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
+    if [ "${FORCE_REBUILD:-false}" = true ]; then
+        SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update --force-rebuild
+    else
+        SAGENT_SKIP_SELF_UPDATE=1 exec "$script_path" update
+    fi
+}
+
+# Fetch the latest published "version" for the npm package $1 (e.g. "@openai/codex"). Uses
+# python3 for robust JSON parsing when available, falling back to a precise grep that only
+# matches the top-level "version" field in the npm registry's /latest document. Empty output
+# on any failure.
+fetch_npm_latest() {
+    local pkg="$1"
+    local resp
+    resp=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/$pkg/latest" 2>/dev/null) || return 0
+    if [ -z "$resp" ]; then
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    v = d.get("version", "")
+    if isinstance(v, str):
+        print(v)
+except Exception:
+    pass
+' 2>/dev/null
+        return 0
+    fi
+    # Fallback for hosts without python3: extract the first "version": "..." pair in the
+    # JSON document. The npm /latest endpoint returns the top-level package metadata, and
+    # the version field is reliably present in the first 1KB of the response.
+    printf '%s' "$resp" | head -c 1024 \
+        | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -1 \
+        | sed -E 's/.*"([^"]+)"$/\1/'
 }
 
 # Returns 0 if the current image is missing or its Claude/Codex CLIs lag behind the latest
@@ -436,15 +474,14 @@ needs_image_rebuild() {
         return 0
     fi
 
+    # Match full semver including optional prerelease/build (e.g. 1.2.3-beta.1) on both sides.
     image_claude=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?' | head -1 || true)
     image_codex=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" codex --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?' | head -1 || true)
 
-    npm_claude=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" 2>/dev/null \
-        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-    npm_codex=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/@openai/codex/latest" 2>/dev/null \
-        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    npm_claude=$(fetch_npm_latest "@anthropic-ai/claude-code")
+    npm_codex=$(fetch_npm_latest "@openai/codex")
 
     if [ -z "$image_claude" ] || [ -z "$image_codex" ] || [ -z "$npm_claude" ] || [ -z "$npm_codex" ]; then
         return 0
@@ -452,6 +489,7 @@ needs_image_rebuild() {
 
     if [ "$image_claude" = "$npm_claude" ] && [ "$image_codex" = "$npm_codex" ]; then
         echo "[$SCRIPT_NAME] Image already at latest: Claude $image_claude, Codex $image_codex" >&2
+        echo "[$SCRIPT_NAME] Run \`$SCRIPT_NAME update --force-rebuild\` to refresh OS packages and the base image." >&2
         return 1
     fi
 

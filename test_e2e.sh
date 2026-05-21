@@ -235,13 +235,28 @@ run_test "T09: reset (auto-confirm)" bash -c '
 # ── T10: update command ──────────────────────────────────────────────
 # Runs the full update flow including wrapper self-update. The wrapper is
 # copied into a tmpdir first so a successful self-update does not clobber the
-# under-test script and break subsequent tests.
-run_test "T10: update (self-update + no-cache rebuild)" bash -c '
+# under-test script and break subsequent tests. --force-rebuild bypasses the
+# new npm-version skip path so this test still asserts the no-cache rebuild
+# actually runs, regardless of whether the CLIs in the current image happen
+# to match the npm "latest" tag.
+run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
+    set -e
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
-    SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update 2>&1
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update --force-rebuild 2>&1)
+    rc=$?
+    echo "$output"
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    # Assert the rebuild actually ran — guards against future regressions
+    # where the skip-if-up-to-date path accidentally swallows --force-rebuild.
+    if ! echo "$output" | grep -q "Updating shared sandbox image"; then
+        echo "T10: expected the no-cache rebuild banner, did not find it" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
@@ -333,7 +348,7 @@ run_test "T17b: scodex exec --help loads without config errors" bash -c '
         echo "$output" | tail -20 >&2
         exit 1
     fi
-    if echo "$output" | grep -qiE "Error loading configuration|Failed to load (Cloud requirements|.*policies)"; then
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load Cloud requirements|Failed to load workspace-managed policies|Failed to load managed (config|hooks|requirements)"; then
         echo "scodex exec --help printed a config-load error:" >&2
         echo "$output" | grep -iE "error|fail" >&2
         exit 1
@@ -350,7 +365,7 @@ run_test "T17c: sclaude --help loads without config errors" bash -c '
         echo "$output" | tail -20 >&2
         exit 1
     fi
-    if echo "$output" | grep -qiE "Error loading configuration|Failed to load .*"; then
+    if echo "$output" | grep -qiE "Error loading configuration|Failed to load configuration|Failed to load settings|Failed to load claude\.json"; then
         echo "sclaude --help printed a config-load error:" >&2
         echo "$output" | grep -iE "error|fail" >&2
         exit 1
