@@ -11,7 +11,7 @@ repos:
     rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|cleanup\.sh|\.githooks/.*\.sh)$
+        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|test_lib\.sh|cleanup\.sh|\.githooks/.*\.sh)$
 
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.6.0
@@ -49,7 +49,7 @@ repos:
         name: bash -n on shell scripts
         language: system
         entry: bash -n
-        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|cleanup\.sh|\.githooks/.*\.sh)$
+        files: ^(sclaude|scodex|test_e2e\.sh|test_devcontainers\.sh|test_lib\.sh|cleanup\.sh|\.githooks/.*\.sh)$
 
       - id: strip-ai-attribution
         name: Strip AI attribution from commit message

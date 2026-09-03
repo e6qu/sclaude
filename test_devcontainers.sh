@@ -5,9 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-PASS=0
-FAIL=0
 TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-900}"
+# shellcheck source=test_lib.sh disable=SC1091
+. "$SCRIPT_DIR/test_lib.sh"
 
 # Track workspace folders that were started so we can clean up
 STARTED_WORKSPACES=()
@@ -25,62 +25,6 @@ cleanup_containers() {
     done
 }
 trap cleanup_containers EXIT
-
-terminate_process_tree() {
-    local pid="$1"
-    local children
-    local child
-
-    if command -v pgrep >/dev/null 2>&1; then
-        children=$(pgrep -P "$pid" 2>/dev/null || true)
-        for child in $children; do
-            terminate_process_tree "$child"
-        done
-    fi
-    kill "$pid" 2>/dev/null || true
-}
-
-run_test() {
-    local name="$1"; shift
-    printf "  %-55s " "$name"
-    local output
-    local output_file
-    local cmd_pid
-    local timer_pid
-    local rc
-
-    output_file=$(mktemp)
-    "$@" >"$output_file" 2>&1 &
-    cmd_pid=$!
-    (
-        sleep "$TEST_TIMEOUT_SECONDS"
-        terminate_process_tree "$cmd_pid"
-    ) &
-    timer_pid=$!
-
-    if wait "$cmd_pid"; then
-        rc=0
-    else
-        rc=$?
-    fi
-    kill "$timer_pid" 2>/dev/null || true
-    wait "$timer_pid" 2>/dev/null || true
-
-    if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
-        printf 'Timed out after %s seconds\n' "$TEST_TIMEOUT_SECONDS" >> "$output_file"
-    fi
-    output=$(cat "$output_file")
-    rm -f "$output_file"
-
-    if [ "$rc" -eq 0 ]; then
-        printf "PASS\n"
-        PASS=$((PASS + 1))
-    else
-        printf "FAIL\n"
-        printf "    Output: %s\n" "${output:-(empty)}"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # Check prerequisites
 if ! command -v devcontainer >/dev/null 2>&1; then
@@ -151,16 +95,4 @@ run_test "devcontainer-sclaude: docker-in-docker works" \
     devcontainer exec --workspace-folder "$SCRIPT_DIR/examples/devcontainer-sclaude" docker version
 
 # ── Results ──────────────────────────────────────────────────────────
-echo ""
-echo "=== Results ==="
-echo "  Passed:  $PASS"
-echo "  Failed:  $FAIL"
-echo ""
-
-if [ "$FAIL" -gt 0 ]; then
-    echo "SOME TESTS FAILED"
-    exit 1
-else
-    echo "ALL TESTS PASSED"
-    exit 0
-fi
+print_results
