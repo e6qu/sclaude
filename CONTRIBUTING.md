@@ -71,7 +71,7 @@ Run the E2E test suite:
 bash test_e2e.sh
 ```
 
-All 23 tests must pass. Tests cover:
+All tests must pass. Tests cover:
 - Basic commands (version, build, cleanup, reset, update)
 - TTY/non-TTY detection
 - Credential sync (macOS Keychain / Linux file)
@@ -84,18 +84,8 @@ All 23 tests must pass. Tests cover:
 - Shared image contents, Codex auth sync, release-check caching, and native arg pass-through
 - Explicit Docker/Podman engine selection
 
-### Testing on Linux from macOS
-
-Use Lima to spin up a Linux VM:
-
-```bash
-brew install lima
-limactl create --name=sclaude-linux --vm-type=vz --mount-writable template://docker
-limactl start sclaude-linux
-lima sclaude-linux bash ~/projects/sclaude/test_e2e.sh
-```
-
-See [docs/e2e-testing.md](docs/e2e-testing.md) for full details.
+See [docs/e2e-testing.md](docs/e2e-testing.md) for the full test matrix,
+Podman runs, and testing Linux from a macOS host.
 
 ## Commits
 
@@ -127,7 +117,7 @@ git commit -m "docs: update security notes for new capabilities"
 
 When a PR with conventional commits merges to `main`, release-please automatically:
 1. Opens a release PR with updated CHANGELOG.md and version bump
-2. When the release PR merges, creates a GitHub release with the `sclaude` script attached
+2. When the release PR merges, creates a GitHub release with the `sclaude` and `scodex` scripts attached
 
 ## Adding a Bug Fix
 
@@ -165,7 +155,6 @@ examples/
 README.md                # Quick start and usage
 CONTRIBUTING.md          # This file
 BUGS.md                  # Bug tracker and fix history
-PLAN.md                  # Design doc for the Codex CLI support work
 CHANGELOG.md             # Release history (managed by release-please)
 LICENSE                  # MIT
 .github/workflows/       # CI + release-please automation

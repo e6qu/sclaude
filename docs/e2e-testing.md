@@ -1,37 +1,13 @@
-# E2E Testing Plan for sclaude
+# E2E Testing
 
-A single cross-platform test suite that runs on both macOS and Linux, validating sclaude works correctly on each.
+A single cross-platform test suite (`test_e2e.sh`) that runs on macOS and
+Linux, against Docker or Podman.
 
 ## Prerequisites
 
-- Docker installed and running
+- Docker or Podman installed and running
 - bash (for running the test script)
-- zsh (for zsh compatibility tests; skip gracefully if absent)
-
-### Additional: Testing Linux from a macOS host
-
-To test Linux without a dedicated machine, use Lima to spin up a Linux VM:
-
-```bash
-brew install lima
-
-# Create and start a Docker-enabled Ubuntu VM
-limactl create --name=sclaude-linux --vm-type=vz --mount-writable template://docker
-limactl start sclaude-linux
-
-# Run the test suite inside the VM (home dir is auto-mounted)
-lima sclaude-linux bash ~/projects/sclaude/test_e2e.sh
-```
-
-Optional Alpine VM (tests `/usr/bin/env bash` shebang portability):
-
-```bash
-limactl create --name=sclaude-alpine template://alpine
-limactl start sclaude-alpine
-lima sclaude-alpine apk add docker bash
-lima sclaude-alpine rc-service docker start
-lima sclaude-alpine bash ~/projects/sclaude/test_e2e.sh
-```
+- zsh (for zsh compatibility tests; skipped gracefully if absent)
 
 ## Test Matrix
 
@@ -64,74 +40,42 @@ lima sclaude-alpine bash ~/projects/sclaude/test_e2e.sh
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
 | T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
 
-## Test Script: `test_e2e.sh`
-
-Single script, runs on macOS and Linux. Platform-specific tests are gated by OS detection.
-
-See [`test_e2e.sh`](../test_e2e.sh) for the full source. The test matrix above documents what each test validates.
+Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 ## Running the Tests
 
-### On macOS (native)
+From the repo root on macOS or Linux:
 
 ```bash
-cd ~/projects/sclaude
-bash test_e2e.sh
+bash test_e2e.sh                                # against Docker (default)
+SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh # against Podman
 ```
 
-Each test has a portable timeout so Docker or devcontainer hangs fail cleanly
-instead of blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when
-testing on a slow builder.
+Each test has a portable timeout so engine hangs fail cleanly instead of
+blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
+a slow builder.
 
-Run against native Podman instead of Docker-compatible Podman/Docker with:
+### Testing Linux from a macOS host
+
+Any Linux VM with a container engine works. Two options that need no extra
+setup beyond their own tooling:
 
 ```bash
-SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
+# Rootless Podman inside the Podman machine VM (SELinux-enforcing Fedora CoreOS)
+podman machine ssh --username core podman-machine-default \
+    'SAGENT_CONTAINER_ENGINE=podman bash /path/to/sclaude/test_e2e.sh'
+
+# Docker inside this repo's docker-in-docker devcontainer (UID-1000 Ubuntu)
+npm install -g @devcontainers/cli
+devcontainer up --workspace-folder .
+devcontainer exec --workspace-folder . bash /workspaces/sclaude/test_e2e.sh
 ```
 
-### On Linux (native)
-
-```bash
-cd ~/projects/sclaude
-bash test_e2e.sh
-```
-
-### On Linux via Lima VM (from macOS host)
-
-```bash
-# One-time setup
-brew install lima
-limactl create --name=sclaude-linux --vm-type=vz --mount-writable template://docker
-limactl start sclaude-linux
-
-# Run (home dir auto-mounted)
-lima sclaude-linux bash ~/projects/sclaude/test_e2e.sh
-
-# Cleanup VM when done
-limactl stop sclaude-linux && limactl delete sclaude-linux
-```
+These two configurations exercise real platform differences: SELinux label
+enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
 
 ### CI (GitHub Actions)
 
 CI runs the suite on Linux (`ubuntu-latest`) for pushes to main and same-repo
 PRs; see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). macOS and
 Podman runs are done locally (GitHub's macOS runners cannot run Docker).
-
-## Bug Coverage Map
-
-| Bug | Test | Notes |
-|---|---|---|
-| #1 Temp file leak | T15 | Checks /tmp before/after build |
-| #3 Volume perms | T06 | Checks ownership of all 4 user volumes |
-| #4 UID in hash | T06 | Ownership mismatch reveals stale image |
-| #35 Group creation (getent GID resolution) | T02 | Fails on Linux if the host GID already exists in the base image |
-| #6 TTY check | T03 | Piped stdin |
-| #10 Colons in path | T12 | Spaces tested; colons are filesystem-dependent |
-| #11 Reset stderr | T09 | Checks volumes are actually removed |
-| #12 Cred integrity | T05 | Checks creds land in volume |
-| #13 shasum | T01 | Fails on Linux without fix |
-| #14 Linux creds | T05 (Linux) | File-based sync path |
-| #15 echo -e | T13 | Checks for literal "-e" |
-| #16 D-Bus | T05 (Linux) | Credential storage in container |
-| #17 BASH_SOURCE | T14 | zsh invocation |
-| #18 Shebang | T16 | Checks first line of script |

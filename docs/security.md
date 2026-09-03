@@ -426,34 +426,7 @@ PIDS_LIMIT="50"
 --runtime=runsc
 ```
 
-## Comparison
-
-| Feature | sclaude / scodex | Native CLI |
-|---------|------------------|------------|
-| Filesystem | Workspace only | Full system |
-| Credentials | Docker volume | Keychain/file |
-| Path traversal | Blocked | Possible |
-| In-container root | Allowed for package management | Depends on OS |
-| Resource limits | Enforced | None |
-| Network isolation | Bridge | Full access |
-| Container escape | Protected | N/A |
-| Performance | Native speed | Native speed |
-
-## Conclusion
-
-sclaude and scodex provide **strong isolation** while maintaining agent CLI
-functionality:
-
-**Strong Protections**:
-- ✅ Path traversal blocked
-- ✅ Container escape prevented
-- ✅ Host privilege escalation constrained by Docker isolation
-- ✅ Resource exhaustion prevented
-- ✅ Credentials persist securely
-
-**Moderate Protections**:
-- ⚠️ Network access (needed for packages)
-- ⚠️ Workspace fully accessible (by design)
+## Scope
 
 **Best Used For**:
 - Development tasks with version control
