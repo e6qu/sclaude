@@ -34,36 +34,27 @@ jobs:
             exit 1
           fi
 
+  # Lint via pre-commit so CI enforces exactly the hook set contributors run
+  # locally (shellcheck, actionlint, zsh/bash syntax, forbidden-trigger ban).
   lint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
-      - name: Shellcheck sclaude
-        run: shellcheck sclaude scodex
-      - name: Shellcheck test_e2e.sh
-        run: shellcheck test_e2e.sh
-      - name: Shellcheck test_devcontainers.sh
-        run: shellcheck test_devcontainers.sh
-      - name: Zsh syntax check
-        run: |
-          sudo apt-get install -y zsh
-          zsh -n sclaude
-          zsh -n scodex
+      - name: Install lint dependencies
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Run pre-commit hooks
+        run: pipx run pre-commit run --all-files --show-diff-on-failure
 
   lint-macos:
     if: github.event_name == 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install shellcheck
-        run: brew install shellcheck
-      - name: Shellcheck
-        run: shellcheck sclaude scodex test_e2e.sh test_devcontainers.sh
-      - name: Zsh syntax check
-        run: zsh -n sclaude && zsh -n scodex
+      - name: Install pre-commit
+        run: brew install pre-commit
+      - name: Run pre-commit hooks
+        run: pre-commit run --all-files --show-diff-on-failure
 
   test-linux:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).
@@ -76,13 +67,26 @@ jobs:
       - name: Run E2E tests
         run: bash test_e2e.sh
 
+  test-linux-podman:
+    # Trusted contexts only: push to main, or PRs from same repo (not forks).
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+      - name: Run E2E tests against podman
+        run: SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
+
   test-devcontainers:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - name: Setup Node.js
@@ -93,3 +97,10 @@ jobs:
         run: npm install -g @devcontainers/cli
       - name: Run devcontainer build tests
         run: bash test_devcontainers.sh
+      # The dev container runs as UID-1000 vscode with a nested Docker daemon —
+      # the configuration that exposed bugs #56 (ubuntu-user sudoers collision)
+      # and #57 (SELinux) classes of platform bugs. Run the full suite inside.
+      - name: Run E2E suite inside the dev container (UID 1000, Docker-in-Docker)
+        run: |
+          devcontainer up --workspace-folder .
+          devcontainer exec --workspace-folder . bash test_e2e.sh

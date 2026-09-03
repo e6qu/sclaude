@@ -473,6 +473,51 @@ run_test "T23: explicit engine selection" bash -c '
     SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$2" version >/dev/null
 ' _ "$SCLAUDE" "$SCODEX"
 
+# ── T24: wrapper parity ──────────────────────────────────────────────
+# sclaude and scodex share their sandbox implementation; only the tool-specific
+# functions may differ. Any drift in a shared function is a bug. Functions are
+# auto-discovered from sclaude, so new shared functions are covered without
+# updating this test. Script-name mentions in comments are normalized.
+run_test "T24: wrapper shared functions identical" bash -c '
+    tmpdir=$(mktemp -d)
+    trap "rm -rf \"$tmpdir\"" EXIT
+    divergent="read_credentials sync_state sync_codex_config_files run_tool"
+    rc=0
+    for fn in $(grep -oE "^[a-z_0-9]+\(\)" "$1" | tr -d "()"); do
+        case " $divergent " in *" $fn "*) continue ;; esac
+        for f in "$1" "$2"; do
+            awk -v fn="$fn" "\$0 ~ \"^\"fn\"\\\\(\\\\) {\" {inf=1} inf {print} inf && /^}/ {inf=0}" "$f" \
+                | sed "s/scodex/sclaude/g" > "$tmpdir/$(basename "$f").fn"
+        done
+        if ! diff -u "$tmpdir/$(basename "$1").fn" "$tmpdir/$(basename "$2").fn"; then
+            echo "Shared function diverges between wrappers: $fn" >&2
+            rc=1
+        fi
+    done
+    exit "$rc"
+' _ "$SCLAUDE" "$SCODEX"
+
+# ── T25: corrupted release-check cache is non-fatal ──────────────────
+# Non-numeric cache content used to kill the wrapper with an unbound-variable
+# arithmetic error under set -u before the CLI ever launched.
+run_test "T25: corrupted release cache non-fatal" bash -c '
+    TMP_CACHE=$(mktemp -d)
+    trap "rm -rf \"$TMP_CACHE\"" EXIT
+    mkdir -p "$TMP_CACHE/sagent"
+    printf "garbage:data\n" > "$TMP_CACHE/sagent/release-check"
+    XDG_CACHE_HOME="$TMP_CACHE" "$1" --help >/dev/null 2>&1
+' _ "$SCLAUDE"
+
+# ── T26: --force-rebuild rejected outside update ─────────────────────
+run_test "T26: --force-rebuild only valid with update" bash -c '
+    if SAGENT_SKIP_RELEASE_CHECK=1 "$1" --force-rebuild >/dev/null 2>&1; then
+        echo "--force-rebuild without update should fail" >&2
+        exit 1
+    fi
+    SAGENT_SKIP_RELEASE_CHECK=1 "$1" --force-rebuild 2>&1 \
+        | grep -q "only valid with the .update. command"
+' _ "$SCLAUDE"
+
 # ── Results ───────────────────────────────────────────────────────────
 echo ""
 echo "=== Results ==="

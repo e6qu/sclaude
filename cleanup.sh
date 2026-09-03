@@ -28,21 +28,19 @@ show_disk() {
     df -h /Users /private/tmp 2>/dev/null || df -h
 }
 
-echo "This script can delete local Trash contents, known temporary caches,"
-echo "failed sclaude-test Podman machine artifacts, and optionally prune"
-echo "Docker/Podman images, containers, build cache, networks, and volumes."
+echo "This script can delete local Trash contents, failed sclaude-test Podman"
+echo "machine artifacts, and optionally prune Docker/Podman images, containers,"
+echo "build cache, networks, and volumes."
 echo ""
 echo "Current candidates:"
 du -sh "$HOME/.Trash" 2>/dev/null || true
-du -sh /private/tmp/sockerless-go-cache /private/tmp/sockerless-gocache 2>/dev/null || true
 du -sh "$HOME"/.local/share/containers/podman/machine/applehv/sclaude-test-*.raw 2>/dev/null || true
 show_disk
 
-if confirm "Delete Trash contents and known temporary sockerless caches?"; then
+if confirm "Delete Trash contents?"; then
     if [ -d "$HOME/.Trash" ]; then
         find "$HOME/.Trash" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
     fi
-    rm -rf /private/tmp/sockerless-go-cache /private/tmp/sockerless-gocache
 fi
 
 if confirm "Remove failed sclaude-test Podman machine artifacts if present?"; then
