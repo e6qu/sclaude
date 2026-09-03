@@ -9,6 +9,11 @@ permissions:
   contents: write
   pull-requests: write
 
+# Serialize runs: two quick merges to main must not race each other's
+# release PR updates or asset uploads.
+concurrency:
+  group: release-please
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -36,9 +41,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          gh release upload "$TAG" sclaude scodex
+          # --clobber keeps a re-run of a partially failed workflow idempotent.
+          gh release upload "$TAG" sclaude scodex --clobber
 
           EXISTING=$(gh release view "$TAG" --json body --jq .body)
+          # A re-run must not append the install instructions a second time.
+          case "$EXISTING" in
+            *"## Install / Update"*)
+              echo "Install instructions already present; skipping body edit."
+              exit 0
+              ;;
+          esac
           INSTALL_INSTRUCTIONS=$(cat <<'EOF'
 
           ---
@@ -75,3 +88,24 @@ jobs:
           )
 
           gh release edit "$TAG" --notes "${EXISTING}${INSTALL_INSTRUCTIONS}"
+
+      # Verify the published assets pass the exact checks the wrapper
+      # self-updater applies (plus a bash syntax check), so a broken release —
+      # e.g. release-please failing to stamp WRAPPER_VERSION — is caught here
+      # instead of on users' machines.
+      - name: Verify published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          expected_version="${TAG#v}"
+          tmpdir=$(mktemp -d)
+          for asset in sclaude scodex; do
+            gh release download "$TAG" --pattern "$asset" --dir "$tmpdir"
+            downloaded="$tmpdir/$asset"
+            head -1 "$downloaded" | grep -qx '#!/usr/bin/env bash'
+            grep -qE "^SCRIPT_NAME=\"$asset\"\$" "$downloaded"
+            grep -qE "^WRAPPER_VERSION=\"$expected_version\"( *#.*)?\$" "$downloaded"
+            bash -n "$downloaded"
+            echo "$asset: shebang, SCRIPT_NAME, WRAPPER_VERSION=$expected_version, syntax OK"
+          done

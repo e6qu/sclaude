@@ -265,6 +265,9 @@ cleanup_images() {
             "$ENGINE_CMD" rmi "$IMAGE_REPO:$tag" 2>&1 | grep -vE "^(Untagged|Deleted):" >&2 || true
         fi
     done
+    if [ "$ENGINE_CMD" = "docker" ]; then
+        echo "[$SCRIPT_NAME] Note: --no-cache rebuilds accumulate buildx cache; run \`docker builder prune\` to reclaim it." >&2
+    fi
     echo "[$SCRIPT_NAME] Cleanup complete" >&2
 }
 

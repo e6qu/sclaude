@@ -47,6 +47,12 @@ Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 ## Running the Tests
 
+**The suite is destructive to sandbox state on the selected engine**: T09
+deletes all `sclaude-`/`scodex-`/`sagent-` volumes (persisted credentials,
+packages, sessions) and T10 force-rebuilds the shared image. Credentials
+re-sync automatically on the next run, but shell history, preferences, and
+installed packages in the sandbox are lost.
+
 From the repo root on macOS or Linux:
 
 ```bash
