@@ -24,6 +24,10 @@ PASS=0
 FAIL=0
 SKIP=0
 TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
+# Space-separated test IDs (e.g. "T10 T15") to skip — for CI jobs whose
+# platform is slow enough that a test's cost outweighs its added coverage
+# there. Skipped tests are reported as SKIP, never silently dropped.
+SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 
 # ── Test harness ──────────────────────────────────────────────────────
 terminate_process_tree() {
@@ -70,6 +74,12 @@ run_with_timeout_capture() {
 
 run_test() {
     local name="$1"; shift
+    case " $SAGENT_TEST_SKIP " in
+        *" ${name%%:*} "*)
+            skip_test "$name" "SAGENT_TEST_SKIP"
+            return 0
+            ;;
+    esac
     printf "  %-45s " "$name"
     local output
     local output_file
@@ -120,6 +130,12 @@ run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" versio
 # Validates Dockerfile generation, UID/GID build args (Bug #4, #35)
 run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
+# Image under test, computed once right after the build: per-test derivation
+# through `version` proved flaky under daemon load (its engine probe has a
+# bounded timeout), and `images | head -1` ordering is unreliable (#61).
+SUITE_IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SECONDS=60 "$SCLAUDE" version 2>/dev/null | sed -n 's/^Image hash: //p')"
+export SUITE_IMG
+
 # ── T03: piped input (no TTY) ────────────────────────────────────────
 # Bug #6: -it flags should adapt when stdin is not a terminal
 run_test "T03: piped/no-TTY mode" bash -c '
@@ -129,6 +145,9 @@ run_test "T03: piped/no-TTY mode" bash -c '
 # ── T04: --yolo / --no-yolo flags ─────────────────────────────────────
 # Verify both yolo (default) and --no-yolo work without crashing
 run_test "T04: --yolo flag" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
+
+# ── T04b: --docker / --no-docker flags parse ─────────────────────────
+run_test "T04b: --docker flags" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_DOCKER=0 "$2" version >/dev/null 2>&1' _ "$SCLAUDE" "$SCODEX"
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
@@ -147,8 +166,8 @@ else
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
         trap "rm -f ~/.claude/.credentials.json" EXIT
         "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
-        IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-        if [ -z "$IMG" ]; then echo "No image" >&2; exit 1; fi
+        IMG="$SUITE_IMG"
+        if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then echo "No image" >&2; exit 1; fi
         printf "{\"test_cred\":true}" | "$ENGINE" run --rm -i --user root \
             -v sclaude-config:/vol-config \
             "$IMG" bash -c "
@@ -166,11 +185,11 @@ fi
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -c '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sclaude image found" >&2
         exit 1
     fi
@@ -224,7 +243,7 @@ run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' 
 run_test "T09: reset (auto-confirm)" bash -c '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/dev/null
     # Volumes should be gone (or already absent)
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
             exit 1
@@ -393,8 +412,8 @@ unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -421,8 +440,8 @@ run_test "T18: sudo apt works in sandbox" bash -c '
 # PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
 # sagent-pip volume instead of erroring out.
 run_test "T18b: pip install --user works in sandbox" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -436,8 +455,8 @@ run_test "T18b: pip install --user works in sandbox" bash -c '
 
 # ── T19: shared image contains both CLIs ─────────────────────────────
 run_test "T19: shared image has both CLIs" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -519,6 +538,77 @@ run_test "T26: --force-rebuild only valid with update" bash -c '
     fi
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --force-rebuild 2>&1 \
         | grep -q "only valid with the .update. command"
+' _ "$SCLAUDE"
+
+# ── T27: nested containers (--docker mode) ───────────────────────────
+# Replicates the exact run configuration the wrappers use for --docker and
+# verifies the full nested workflow: pull+run, build, and run the built image.
+run_test "T27: nested containers (--docker mode)" bash -c '
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    "$ENGINE" volume create sagent-containers >/dev/null 2>&1 || true
+    "$ENGINE" run --rm --user root -v sagent-containers:/vol-containers "$IMG" \
+        chown -R "$(id -u):$(id -g)" /vol-containers
+    "$ENGINE" run --rm \
+        -v sagent-containers:/home/agent/.local/share/containers:rw \
+        --device /dev/fuse --device /dev/net/tun \
+        --security-opt seccomp=unconfined \
+        --security-opt apparmor=unconfined \
+        --security-opt label=disable \
+        --cap-drop=ALL \
+        --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
+        --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
+        --pids-limit=512 \
+        "$IMG" bash -c "
+            set -e
+            docker run --rm docker.io/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
+            printf \"FROM docker.io/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
+            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
+            docker run --rm nested-t27 | grep -q built
+        "
+' _ "$SCLAUDE"
+
+# ── T28: config file ─────────────────────────────────────────────────
+# The config file is sourced at startup and may set tunables; a MEMORY_LIMIT
+# override is observable in the version output's Limits line. Environment
+# variables must take precedence over the file, and a config file with a
+# syntax error must fail with a clear message naming the file.
+run_test "T28: config file sourced with env precedence" bash -c '
+    TMP_CFG_DIR=$(mktemp -d)
+    trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
+    printf "MEMORY_LIMIT=\"9g\"\n" > "$TMP_CFG_DIR/config"
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version \
+        | grep -q "^Limits: memory=9g "
+    # Env var must beat a config-file value for SAGENT_CONTAINER_ENGINE: the
+    # config points at a nonexistent engine; the env var must rescue the run.
+    printf "SAGENT_CONTAINER_ENGINE=\"no-such-engine\"\n" > "$TMP_CFG_DIR/config"
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" SAGENT_CONTAINER_ENGINE="$ENGINE" "$1" version >/dev/null
+    # A config file with a syntax error must be rejected with a clear message.
+    printf "if then fi(\n" > "$TMP_CFG_DIR/config"
+    if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version >/dev/null 2>"$TMP_CFG_DIR/err"; then
+        echo "broken config file should have failed the run" >&2
+        exit 1
+    fi
+    grep -q "config file has a syntax error" "$TMP_CFG_DIR/err"
+' _ "$SCLAUDE"
+
+# ── T29: browser-open shim ───────────────────────────────────────────
+# The sandbox has no browser: xdg-open/$BROWSER render each URL as an OSC 8
+# terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
+# reach the host browser via Cmd/Ctrl+click in the terminal.
+run_test "T29: browser-open shim renders clickable URL" bash -c '
+    IMG="$SUITE_IMG"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    out=$("$ENGINE" run --rm "$IMG" sh -c "printenv BROWSER && xdg-open https://example.com/sagent-test 2>&1")
+    printf "%s" "$out" | grep -q "host-open"
+    printf "%s" "$out" | grep -c "https://example.com/sagent-test" | grep -qx 2
+    printf "%s" "$out" | grep -q "]8;;"
 ' _ "$SCLAUDE"
 
 # ── Results ───────────────────────────────────────────────────────────

@@ -42,6 +42,10 @@ Linux, against Docker or Podman.
 | T24: Wrapper parity | Shared functions identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
+| T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
+| T27: Nested containers | `--docker` mode: nested pull/run/build via rootless podman | -- |
+| T28: Config file | Config sourced at startup; env vars take precedence | -- |
+| T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -85,8 +89,18 @@ enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
 
 ### CI (GitHub Actions)
 
-For pushes to main and same-repo PRs, CI runs the suite on Linux
-(`ubuntu-latest`) against Docker and against Podman, and again inside the
-UID-1000 docker-in-docker dev container; see
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml). macOS runs are done
-locally (GitHub's macOS runners cannot run Docker).
+For pushes to main and same-repo PRs, CI runs the suite across the full
+engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
+
+| Job | Topology |
+|---|---|
+| test-linux | docker CLI on docker server (Ubuntu, AppArmor enforcing) |
+| test-linux-podman | rootless podman CLI on podman |
+| test-linux-docker-cli-podman | real docker CLI on podman's docker-compat socket |
+| test-linux-podman-shim | podman fronted as the `docker` command |
+| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization) |
+| test-devcontainers | UID-1000 docker-in-docker dev container |
+
+T27 inside each job adds one more nesting level (nested podman in the
+sandbox), so the devcontainer and macOS jobs exercise three to four layers of
+container/VM nesting.

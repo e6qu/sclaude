@@ -19,6 +19,7 @@ sagent-npm              →  /home/agent/.npm-global/          Shared npm global
 sagent-pip              →  /home/agent/.local/               Shared pip user packages (Linux)
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
+sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
 $(pwd)                  →  $(pwd)                            Current workspace directory
 ```
 
@@ -96,7 +97,7 @@ Docker volumes provide strong isolation while allowing persistence:
 - ✅ Cannot access files outside mounted workspace
 - ✅ Starts as a non-root user
 - ✅ Capabilities limited to the set needed for package management
-- ✅ Resource limits enforced (4GB RAM, 2 CPUs, 100 PIDs)
+- ✅ Resource limits enforced (4GB RAM, 2 CPUs, 100 PIDs; 512 PIDs with container tooling)
 - ✅ Ephemeral container (`--rm` flag, filesystem reset on exit)
 - ✅ Workspace sandboxed to current directory only
 
@@ -128,5 +129,5 @@ docker volume inspect sclaude-config
 docker volume rm sagent-apt-cache
 
 # Remove all sclaude volumes
-docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists
+docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers
 ```
