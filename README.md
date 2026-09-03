@@ -35,7 +35,8 @@ sclaude update                 # Self-update both wrappers and rebuild the share
 scodex update                  # Same — self-updates wrappers and rebuilds the shared image
 sclaude check-update           # Check (don't install) whether newer wrapper scripts are available
 
-# Update sclaude itself (from source)
+# Update sclaude itself (from source; `update` detects a git checkout and
+# skips the wrapper self-download so it never clobbers your working tree)
 git pull && sclaude --build
 
 # Or re-download latest release manually
