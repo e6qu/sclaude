@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/e6qu/sclaude/compare/v2.5.3...v2.6.0) (2026-09-03)
+
+
+### Features
+
+* nested containers by default, engine flavor autodetection, config file, browser-open shim ([#18](https://github.com/e6qu/sclaude/issues/18)) ([55ebd08](https://github.com/e6qu/sclaude/commit/55ebd08de2f9b94d92f9666f0ddd9fabeb4a7382))
+
 ## [2.5.3](https://github.com/e6qu/sclaude/compare/v2.5.2...v2.5.3) (2026-09-03)
 
 
