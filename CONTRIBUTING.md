@@ -33,6 +33,8 @@ pre-commit install --install-hooks
 
 After install, `git commit` runs the configured pre-commit and commit-msg
 hooks automatically. Run them on demand with `pre-commit run --all-files`.
+CI runs the same `pre-commit run --all-files` on Linux and macOS, so the local
+hooks and CI linting cannot drift apart.
 
 ### Forbidden workflow triggers
 

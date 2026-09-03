@@ -587,6 +587,11 @@ check_release() {
     last_check="0"
     if [ "$explicit" != "true" ] && [ -f "$cache_file" ]; then
         last_check=$(cat "$cache_file" 2>/dev/null || echo "0")
+        # A corrupted cache file must not break the wrapper: non-numeric content
+        # would make the arithmetic below fatal under set -u.
+        case "$last_check" in
+            '' | *[!0-9]*) last_check=0 ;;
+        esac
         if [ $((now - last_check)) -lt "$RELEASE_CHECK_INTERVAL_SECONDS" ]; then
             return 0
         fi

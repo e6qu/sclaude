@@ -39,6 +39,9 @@ Linux, against Docker or Podman.
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
 | T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
+| T24: Wrapper parity | Shared functions identical between `sclaude` and `scodex` (drift guard) | -- |
+| T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
+| T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -76,6 +79,8 @@ enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
 
 ### CI (GitHub Actions)
 
-CI runs the suite on Linux (`ubuntu-latest`) for pushes to main and same-repo
-PRs; see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). macOS and
-Podman runs are done locally (GitHub's macOS runners cannot run Docker).
+For pushes to main and same-repo PRs, CI runs the suite on Linux
+(`ubuntu-latest`) against Docker and against Podman, and again inside the
+UID-1000 docker-in-docker dev container; see
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml). macOS runs are done
+locally (GitHub's macOS runners cannot run Docker).
