@@ -919,7 +919,7 @@ run_tool() {
     # dropped and the host engine socket is never exposed; nested containers
     # live entirely inside the sandbox.
     if [ "$DOCKER_TOOLING" = true ]; then
-        nested_args=(--device /dev/fuse --device /dev/net/tun --security-opt seccomp=unconfined)
+        nested_args=(--device /dev/fuse --device /dev/net/tun --security-opt seccomp=unconfined --security-opt apparmor=unconfined)
         pids_limit="$PIDS_LIMIT_NESTED"
     fi
 

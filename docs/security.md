@@ -215,7 +215,9 @@ Design choices, safest first:
   `CAP_SYS_ADMIN` is NOT granted.
 - **What the mode relaxes**: the default seccomp profile is disabled
   (`seccomp=unconfined` — nested mount/user-namespace syscalls are otherwise
-  blocked), `/dev/fuse` and `/dev/net/tun` are passed in, and the PID limit is
+  blocked), the AppArmor profile is disabled on hosts that enforce one
+  (Ubuntu/Debian docker denies mounts inside user namespaces regardless of
+  seccomp), `/dev/fuse` and `/dev/net/tun` are passed in, and the PID limit is
   raised to 512. This widens kernel attack surface relative to a hardened run —
   a kernel exploit has more syscalls to aim at. Set `SAGENT_DOCKER=0` (or pass
   `--no-docker`) to run with the default seccomp profile and no extra devices

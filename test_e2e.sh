@@ -540,6 +540,7 @@ run_test "T27: nested containers (--docker mode)" bash -c '
         -v sagent-containers:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \
+        --security-opt apparmor=unconfined \
         --security-opt label=disable \
         --cap-drop=ALL \
         --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
