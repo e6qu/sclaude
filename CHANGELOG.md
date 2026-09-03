@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/e6qu/sclaude/compare/v2.5.0...v2.5.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* image loading, pip, UID-1000 sudo, and SELinux support across docker/podman ([#12](https://github.com/e6qu/sclaude/issues/12)) ([f18cfe4](https://github.com/e6qu/sclaude/commit/f18cfe4a1fcac90dddb1471cdb369aa66617b603))
+
 ## [2.5.0](https://github.com/e6qu/sclaude/compare/v2.4.0...v2.5.0) (2026-05-21)
 
 
