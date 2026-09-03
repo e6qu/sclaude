@@ -167,7 +167,7 @@ hosts.
 - Throttles to 2 CPUs max
 - Host remains responsive
 
-**Process Limit (100)**:
+**Process Limit (100; 512 with container tooling)**:
 - Prevents fork bombs
 - fork() fails at limit
 - System remains stable

@@ -80,6 +80,48 @@ jobs:
       - name: Run E2E tests against podman
         run: SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 
+  # Real docker CLI talking to a podman server through the docker-compat
+  # socket — the flavor combo where builds must use the classic builder
+  # endpoint (DOCKER_BUILDKIT=0) instead of buildx.
+  test-linux-docker-cli-podman:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install podman and expose its docker-compat socket
+        run: |
+          sudo apt-get update && sudo apt-get install -y podman
+          podman system service --time=0 "unix:///tmp/podman-compat.sock" &
+          for _ in $(seq 1 20); do
+            [ -S /tmp/podman-compat.sock ] && break
+            sleep 0.5
+          done
+          echo "DOCKER_HOST=unix:///tmp/podman-compat.sock" >> "$GITHUB_ENV"
+      - name: Verify flavor detection
+        run: docker version | grep -qi podman
+      - name: Run E2E tests (docker CLI on podman server)
+        run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
+
+  # A `docker` command that is actually podman (the podman-docker shim
+  # arrangement), exercised via a podman symlink named docker on PATH.
+  test-linux-podman-shim:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install podman and front it as the docker command
+        run: |
+          sudo apt-get update && sudo apt-get install -y podman
+          mkdir -p "$HOME/shimbin"
+          ln -s "$(command -v podman)" "$HOME/shimbin/docker"
+          echo "$HOME/shimbin" >> "$GITHUB_PATH"
+      - name: Run E2E tests (podman as the docker command)
+        run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
+
   test-macos:
     # Real macOS host with a Linux VM behind the engine — the Docker Desktop /
     # podman machine topology (docker CLI on the host, dockerd in a VM). Runs

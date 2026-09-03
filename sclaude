@@ -41,6 +41,12 @@ HOST_GID=$(id -g)
 # precedence over the file.
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
 if [ -f "$SAGENT_CONFIG_FILE" ]; then
+    # Validate before sourcing: a syntax error mid-source would abort the
+    # wrapper with a message that never names the config file.
+    if ! bash -n "$SAGENT_CONFIG_FILE" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] ERROR: config file has a syntax error: $SAGENT_CONFIG_FILE" >&2
+        exit 1
+    fi
     _env_sagent_docker="${SAGENT_DOCKER:-}"
     _env_sagent_engine="${SAGENT_CONTAINER_ENGINE:-}"
     # shellcheck disable=SC1090
@@ -247,12 +253,12 @@ ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:${PATH}"
 DOCKERFILE_END
 }
 
+# The hash covers image content only: the Dockerfile and the UID/GID build
+# args. Runtime limits (memory/cpu/pids) are container run flags — including
+# them here forced a full rebuild whenever a limit was tuned.
 get_version_hash() {
     {
         get_dockerfile_content
-        echo "MEMORY_LIMIT=$MEMORY_LIMIT"
-        echo "CPU_LIMIT=$CPU_LIMIT"
-        echo "PIDS_LIMIT=$PIDS_LIMIT"
         echo "USER_UID=$HOST_UID"
         echo "USER_GID=$HOST_GID"
     } | portable_sha256 | cut -c1-8
@@ -335,6 +341,7 @@ show_version() {
     echo "Engine: $ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR)"
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
+    echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
     if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
         echo "$TOOL_NAME CLI: $tool_version"

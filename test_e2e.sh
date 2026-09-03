@@ -150,8 +150,8 @@ else
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
         trap "rm -f ~/.claude/.credentials.json" EXIT
         "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
-        IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-        if [ -z "$IMG" ]; then echo "No image" >&2; exit 1; fi
+        IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+        if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then echo "No image" >&2; exit 1; fi
         printf "{\"test_cred\":true}" | "$ENGINE" run --rm -i --user root \
             -v sclaude-config:/vol-config \
             "$IMG" bash -c "
@@ -172,8 +172,8 @@ run_test "T06: volume permissions" bash -c '
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sclaude image found" >&2
         exit 1
     fi
@@ -396,8 +396,8 @@ unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -424,8 +424,8 @@ run_test "T18: sudo apt works in sandbox" bash -c '
 # PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
 # sagent-pip volume instead of erroring out.
 run_test "T18b: pip install --user works in sandbox" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -439,8 +439,8 @@ run_test "T18b: pip install --user works in sandbox" bash -c '
 
 # ── T19: shared image contains both CLIs ─────────────────────────────
 run_test "T19: shared image has both CLIs" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -528,8 +528,8 @@ run_test "T26: --force-rebuild only valid with update" bash -c '
 # Replicates the exact run configuration the wrappers use for --docker and
 # verifies the full nested workflow: pull+run, build, and run the built image.
 run_test "T27: nested containers (--docker mode)" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi
@@ -556,23 +556,27 @@ run_test "T27: nested containers (--docker mode)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T28: config file ─────────────────────────────────────────────────
-# The config file is sourced at startup and may set tunables. MEMORY_LIMIT is
-# part of the image version hash, so a config override observably changes the
-# "Image hash" line. Environment variables must take precedence over the file.
+# The config file is sourced at startup and may set tunables; a MEMORY_LIMIT
+# override is observable in the version output's Limits line. Environment
+# variables must take precedence over the file, and a config file with a
+# syntax error must fail with a clear message naming the file.
 run_test "T28: config file sourced with env precedence" bash -c '
     TMP_CFG_DIR=$(mktemp -d)
     trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
-    default_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Image hash: //p")
     printf "MEMORY_LIMIT=\"9g\"\n" > "$TMP_CFG_DIR/config"
-    cfg_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version | sed -n "s/^Image hash: //p")
-    if [ -z "$default_hash" ] || [ "$default_hash" = "$cfg_hash" ]; then
-        echo "config file MEMORY_LIMIT did not change the version hash ($default_hash vs $cfg_hash)" >&2
-        exit 1
-    fi
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version \
+        | grep -q "^Limits: memory=9g "
     # Env var must beat a config-file value for SAGENT_CONTAINER_ENGINE: the
     # config points at a nonexistent engine; the env var must rescue the run.
     printf "SAGENT_CONTAINER_ENGINE=\"no-such-engine\"\n" > "$TMP_CFG_DIR/config"
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" SAGENT_CONTAINER_ENGINE="$ENGINE" "$1" version >/dev/null
+    # A config file with a syntax error must be rejected with a clear message.
+    printf "if then fi(\n" > "$TMP_CFG_DIR/config"
+    if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version >/dev/null 2>"$TMP_CFG_DIR/err"; then
+        echo "broken config file should have failed the run" >&2
+        exit 1
+    fi
+    grep -q "config file has a syntax error" "$TMP_CFG_DIR/err"
 ' _ "$SCLAUDE"
 
 # ── T29: browser-open shim ───────────────────────────────────────────
@@ -580,8 +584,8 @@ run_test "T28: config file sourced with env precedence" bash -c '
 # terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
 # reach the host browser via Cmd/Ctrl+click in the terminal.
 run_test "T29: browser-open shim renders clickable URL" bash -c '
-    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
-    if [ -z "$IMG" ]; then
+    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
     fi

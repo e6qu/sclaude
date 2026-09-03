@@ -97,7 +97,7 @@ Docker volumes provide strong isolation while allowing persistence:
 - ✅ Cannot access files outside mounted workspace
 - ✅ Starts as a non-root user
 - ✅ Capabilities limited to the set needed for package management
-- ✅ Resource limits enforced (4GB RAM, 2 CPUs, 100 PIDs)
+- ✅ Resource limits enforced (4GB RAM, 2 CPUs, 100 PIDs; 512 PIDs with container tooling)
 - ✅ Ephemeral container (`--rm` flag, filesystem reset on exit)
 - ✅ Workspace sandboxed to current directory only
 

@@ -112,7 +112,7 @@ scodex [args]   -->  Docker container  -->  codex [args]
                      - Workspace mounted at $(pwd)
                      - Non-root user (your UID/GID)
                      - Shared image with both CLIs
-                     - 4GB RAM / 2 CPUs / 100 PIDs
+                     - 4GB RAM / 2 CPUs / 100 PIDs (512 with container tooling)
                      - Limited capabilities for sudo apt package installs
                      - Credentials from tool-specific Docker volumes
 ```
