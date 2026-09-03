@@ -233,13 +233,16 @@ run_test "T09: reset (auto-confirm)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T10: update command ──────────────────────────────────────────────
-# Runs the full update flow including wrapper self-update. The wrapper is
-# copied into a tmpdir first so a successful self-update does not clobber the
-# under-test script and break subsequent tests. --force-rebuild bypasses the
-# new npm-version skip path so this test still asserts the no-cache rebuild
-# actually runs, regardless of whether the CLIs in the current image happen
-# to match the npm "latest" tag.
-run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
+# Runs the update flow with wrapper self-update pinned off: whenever the
+# checked-out WRAPPER_VERSION is older than the latest published release (every
+# open branch after a release), self-update would replace the copy with the
+# released wrapper and re-exec THAT — silently testing released code instead of
+# the code under test. The wrapper is still copied into a tmpdir so the test
+# never touches the under-test script. --force-rebuild bypasses the npm-version
+# skip path so this test always asserts the no-cache rebuild actually runs.
+# The self-update download path is verified against the real assets by the
+# release workflow after each release upload.
+run_test "T10: update (forced no-cache rebuild)" bash -c '
     set -e
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
@@ -248,7 +251,7 @@ run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
     # Capture with || so a failing update does not set -e out of the subshell
     # before the output is echoed (a failing T10 used to report "(empty)").
     rc=0
-    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update --force-rebuild 2>&1) || rc=$?
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_SKIP_SELF_UPDATE=1 "$tmpdir/sclaude" update --force-rebuild 2>&1) || rc=$?
     echo "$output"
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
