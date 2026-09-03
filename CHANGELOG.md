@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.2](https://github.com/e6qu/sclaude/compare/v2.5.1...v2.5.2) (2026-09-03)
+
+
+### Bug Fixes
+
+* corrupted release-check cache crash; expand CI and local test coverage ([#14](https://github.com/e6qu/sclaude/issues/14)) ([e3da91f](https://github.com/e6qu/sclaude/commit/e3da91f6da8b922a4b3eef4ad893a0ab6d44f2d9))
+
 ## [2.5.1](https://github.com/e6qu/sclaude/compare/v2.5.0...v2.5.1) (2026-09-03)
 
 
