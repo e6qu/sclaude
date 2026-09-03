@@ -24,6 +24,10 @@ PASS=0
 FAIL=0
 SKIP=0
 TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
+# Space-separated test IDs (e.g. "T10 T15") to skip — for CI jobs whose
+# platform is slow enough that a test's cost outweighs its added coverage
+# there. Skipped tests are reported as SKIP, never silently dropped.
+SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 
 # ── Test harness ──────────────────────────────────────────────────────
 terminate_process_tree() {
@@ -70,6 +74,12 @@ run_with_timeout_capture() {
 
 run_test() {
     local name="$1"; shift
+    case " $SAGENT_TEST_SKIP " in
+        *" ${name%%:*} "*)
+            skip_test "$name" "SAGENT_TEST_SKIP"
+            return 0
+            ;;
+    esac
     printf "  %-45s " "$name"
     local output
     local output_file
@@ -120,6 +130,12 @@ run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" versio
 # Validates Dockerfile generation, UID/GID build args (Bug #4, #35)
 run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
+# Image under test, computed once right after the build: per-test derivation
+# through `version` proved flaky under daemon load (its engine probe has a
+# bounded timeout), and `images | head -1` ordering is unreliable (#61).
+SUITE_IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SECONDS=60 "$SCLAUDE" version 2>/dev/null | sed -n 's/^Image hash: //p')"
+export SUITE_IMG
+
 # ── T03: piped input (no TTY) ────────────────────────────────────────
 # Bug #6: -it flags should adapt when stdin is not a terminal
 run_test "T03: piped/no-TTY mode" bash -c '
@@ -150,7 +166,7 @@ else
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
         trap "rm -f ~/.claude/.credentials.json" EXIT
         "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
-        IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+        IMG="$SUITE_IMG"
         if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then echo "No image" >&2; exit 1; fi
         printf "{\"test_cred\":true}" | "$ENGINE" run --rm -i --user root \
             -v sclaude-config:/vol-config \
@@ -172,7 +188,7 @@ run_test "T06: volume permissions" bash -c '
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sclaude image found" >&2
         exit 1
@@ -396,7 +412,7 @@ unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
 run_test "T18: sudo apt works in sandbox" bash -c '
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
@@ -424,7 +440,7 @@ run_test "T18: sudo apt works in sandbox" bash -c '
 # PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
 # sagent-pip volume instead of erroring out.
 run_test "T18b: pip install --user works in sandbox" bash -c '
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
@@ -439,7 +455,7 @@ run_test "T18b: pip install --user works in sandbox" bash -c '
 
 # ── T19: shared image contains both CLIs ─────────────────────────────
 run_test "T19: shared image has both CLIs" bash -c '
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
@@ -528,7 +544,7 @@ run_test "T26: --force-rebuild only valid with update" bash -c '
 # Replicates the exact run configuration the wrappers use for --docker and
 # verifies the full nested workflow: pull+run, build, and run the built image.
 run_test "T27: nested containers (--docker mode)" bash -c '
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
@@ -584,7 +600,7 @@ run_test "T28: config file sourced with env precedence" bash -c '
 # terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
 # reach the host browser via Cmd/Ctrl+click in the terminal.
 run_test "T29: browser-open shim renders clickable URL" bash -c '
-    IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>/dev/null | sed -n "s/^Image hash: //p")"
+    IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
         exit 1
