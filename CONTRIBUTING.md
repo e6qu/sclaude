@@ -148,6 +148,7 @@ This verifies that all three configs (sclaude-dev, claude-code example, sclaude 
 sclaude                  # Claude Code sandbox script
 scodex                   # Codex CLI sandbox script
 test_e2e.sh              # E2E test suite
+test_lib.sh              # Shared test harness (timeouts, skip knob, results)
 test_devcontainers.sh    # Devcontainer build/smoke tests
 cleanup.sh               # macOS-only helper for reclaiming disk space and Docker/Podman state
 .devcontainer/           # Dev container for sclaude development

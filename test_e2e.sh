@@ -20,89 +20,9 @@ OS="$(uname -s)"
 ENGINE="${SAGENT_CONTAINER_ENGINE:-docker}"
 export SAGENT_CONTAINER_ENGINE="$ENGINE"
 export ENGINE
-PASS=0
-FAIL=0
-SKIP=0
-TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
-# Space-separated test IDs (e.g. "T10 T15") to skip — for CI jobs whose
-# platform is slow enough that a test's cost outweighs its added coverage
-# there. Skipped tests are reported as SKIP, never silently dropped.
-SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 
-# ── Test harness ──────────────────────────────────────────────────────
-terminate_process_tree() {
-    local pid="$1"
-    local children
-    local child
-
-    if command -v pgrep >/dev/null 2>&1; then
-        children=$(pgrep -P "$pid" 2>/dev/null || true)
-        for child in $children; do
-            terminate_process_tree "$child"
-        done
-    fi
-    kill "$pid" 2>/dev/null || true
-}
-
-run_with_timeout_capture() {
-    local output_file="$1"; shift
-    local cmd_pid
-    local timer_pid
-    local rc
-
-    "$@" >"$output_file" 2>&1 &
-    cmd_pid=$!
-    (
-        sleep "$TEST_TIMEOUT_SECONDS"
-        terminate_process_tree "$cmd_pid"
-    ) &
-    timer_pid=$!
-
-    if wait "$cmd_pid"; then
-        rc=0
-    else
-        rc=$?
-    fi
-    kill "$timer_pid" 2>/dev/null || true
-    wait "$timer_pid" 2>/dev/null || true
-
-    if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
-        printf 'Timed out after %s seconds\n' "$TEST_TIMEOUT_SECONDS" >> "$output_file"
-    fi
-    return "$rc"
-}
-
-run_test() {
-    local name="$1"; shift
-    case " $SAGENT_TEST_SKIP " in
-        *" ${name%%:*} "*)
-            skip_test "$name" "SAGENT_TEST_SKIP"
-            return 0
-            ;;
-    esac
-    printf "  %-45s " "$name"
-    local output
-    local output_file
-    output_file=$(mktemp)
-    if run_with_timeout_capture "$output_file" "$@"; then
-        output=$(cat "$output_file")
-        rm -f "$output_file"
-        printf "PASS\n"
-        PASS=$((PASS + 1))
-    else
-        output=$(cat "$output_file")
-        rm -f "$output_file"
-        printf "FAIL\n"
-        printf "    Output: %s\n" "${output:-(empty)}"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-skip_test() {
-    local name="$1" reason="$2"
-    printf "  %-45s SKIP (%s)\n" "$name" "$reason"
-    SKIP=$((SKIP + 1))
-}
+# shellcheck source=test_lib.sh disable=SC1091
+. "$SCRIPT_DIR/test_lib.sh"
 
 # ── Setup ─────────────────────────────────────────────────────────────
 echo "=== sclaude E2E Tests ==="
@@ -122,12 +42,9 @@ fi
 rm -f "$INFO_OUTPUT"
 
 # ── T01: version command ─────────────────────────────────────────────
-# Validates basic execution and that the hashing tool works
-# (shasum on macOS, sha256sum on Linux — Bug #13)
 run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version' _ "$SCLAUDE" "$SCODEX"
 
 # ── T02: image build ─────────────────────────────────────────────────
-# Validates Dockerfile generation, UID/GID build args (Bug #4, #35)
 run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
 # Image under test, computed once right after the build: per-test derivation
@@ -137,13 +54,11 @@ SUITE_IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SE
 export SUITE_IMG
 
 # ── T03: piped input (no TTY) ────────────────────────────────────────
-# Bug #6: -it flags should adapt when stdin is not a terminal
 run_test "T03: piped/no-TTY mode" bash -c '
     echo "exit" | SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>&1
 ' _ "$SCLAUDE"
 
 # ── T04: --yolo / --no-yolo flags ─────────────────────────────────────
-# Verify both yolo (default) and --no-yolo work without crashing
 run_test "T04: --yolo flag" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
 
 # ── T04b: --docker / --no-docker flags parse ─────────────────────────
@@ -151,16 +66,11 @@ run_test "T04b: --docker flags" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" versio
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
-    # macOS: check that Keychain creds (if present) are synced into the volume
     run_test "T05: credential sync (macOS)" bash -c '
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null 2>&1
-        # Volume should exist after a run; check it is readable
         "$ENGINE" run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
     ' _ "$SCLAUDE"
 else
-    # Linux: Bug #14 — check file-based credential sync
-    # We test the sync mechanism directly: write a dummy cred file,
-    # run the helper container the same way sclaude does, verify it lands.
     run_test "T05: credential sync (Linux)" bash -c '
         mkdir -p ~/.claude
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
@@ -181,7 +91,6 @@ else
 fi
 
 # ── T06: volume creation & permissions ────────────────────────────────
-# Bug #3: user-writable volumes must be writable by the agent user
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -c '
@@ -193,7 +102,6 @@ run_test "T06: volume permissions" bash -c '
         echo "No sclaude image found" >&2
         exit 1
     fi
-    # Run permission fix
     HOST_UID="$(id -u)"
     HOST_GID="$(id -g)"
     "$ENGINE" run --rm --user root \
@@ -205,7 +113,6 @@ run_test "T06: volume permissions" bash -c '
         -v sagent-apt-lists:/vol-apt-lists \
         "$IMG" \
         bash -c "chown -R \"$HOST_UID:$HOST_GID\" /vol-config /vol-rootfs /vol-npm /vol-pip && mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial" 2>/dev/null || true
-    # Verify the agent user can actually write to each user-writable volume
     "$ENGINE" run --rm \
         -v sclaude-config:/sclaude-config:rw \
         -v sagent-rootfs:/home/agent:rw \
@@ -224,13 +131,10 @@ run_test "T06: volume permissions" bash -c '
 
 # ── T07: volume persistence ──────────────────────────────────────────
 run_test "T07: volume persistence" bash -c '
-    # Write a marker into the rootfs volume
     "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
         sh -c "echo sagent-test-marker > /home/agent/.test_persist"
-    # Check it survives
     "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
         cat /home/agent/.test_persist | grep -q sagent-test-marker
-    # Clean up
     "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
         rm -f /home/agent/.test_persist
 '
@@ -239,10 +143,8 @@ run_test "T07: volume persistence" bash -c '
 run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' _ "$SCLAUDE"
 
 # ── T09: reset command (non-interactive) ──────────────────────────────
-# Bug #11: errors should go to stderr not stdout
 run_test "T09: reset (auto-confirm)" bash -c '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/dev/null
-    # Volumes should be gone (or already absent)
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
@@ -284,7 +186,6 @@ run_test "T10: update (forced no-cache rebuild)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
-# Bug #24: timeout is not available on stock macOS; use portable fallback
 run_test "T11: PID limit (fork bomb)" bash -c '
     TIMEOUT_CMD=""
     if command -v timeout >/dev/null 2>&1; then
@@ -295,12 +196,10 @@ run_test "T11: PID limit (fork bomb)" bash -c '
     # Run a fork bomb in a PID-limited container; it must not escape
     $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 alpine \
         sh -c "for i in \$(seq 1 200); do sleep 999 & done" 2>&1 || true
-    # If we reach here, containment worked
     true
 '
 
 # ── T12: path with spaces ────────────────────────────────────────────
-# Bug #10: quoting in volume mount
 run_test "T12: path with spaces" bash -c '
     TEST_DIR="/tmp/sclaude test dir"
     mkdir -p "$TEST_DIR"
@@ -310,7 +209,6 @@ run_test "T12: path with spaces" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T13: echo -e portability ─────────────────────────────────────────
-# Bug #15: echo -e should not print literal "-e"
 run_test "T13: no literal -e in output" bash -c '
     OUTPUT=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" volumes 2>&1)
     if echo "$OUTPUT" | grep -q "^-e"; then
@@ -320,7 +218,6 @@ run_test "T13: no literal -e in output" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T14: zsh invocation ──────────────────────────────────────────────
-# Bug #17: BASH_SOURCE fallback
 if command -v zsh >/dev/null 2>&1; then
     run_test "T14: zsh invocation" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 zsh "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 zsh "$2" version' _ "$SCLAUDE" "$SCODEX"
 else
@@ -328,9 +225,7 @@ else
 fi
 
 # ── T15: temp file cleanup on build failure ───────────────────────────
-# Bug #1: temp Dockerfile should be cleaned up even on failure
 run_test "T15: no leaked temp files" bash -c '
-    # Snapshot existing tmp files, run build, check for new ones
     MARKER="/tmp/.sclaude-t15-$$"
     touch "$MARKER"
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
@@ -344,7 +239,6 @@ run_test "T15: no leaked temp files" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T16: shebang portability ─────────────────────────────────────────
-# Bug #18: script should use /usr/bin/env bash
 run_test "T16: shebang uses env" bash -c '
     HEAD=$(head -1 "$1")
     HEAD2=$(head -1 "$2")
@@ -516,6 +410,14 @@ run_test "T24: wrapper shared functions identical" bash -c '
             rc=1
         fi
     done
+    # The main dispatch after the function definitions is shared too.
+    for f in "$1" "$2"; do
+        sed -n "/^parse_args \"\$@\"/,\$p" "$f" | sed "s/scodex/sclaude/g" > "$tmpdir/$(basename "$f").tail"
+    done
+    if ! diff -u "$tmpdir/$(basename "$1").tail" "$tmpdir/$(basename "$2").tail"; then
+        echo "Main dispatch diverges between wrappers" >&2
+        rc=1
+    fi
     exit "$rc"
 ' _ "$SCLAUDE" "$SCODEX"
 
@@ -611,18 +513,4 @@ run_test "T29: browser-open shim renders clickable URL" bash -c '
     printf "%s" "$out" | grep -q "]8;;"
 ' _ "$SCLAUDE"
 
-# ── Results ───────────────────────────────────────────────────────────
-echo ""
-echo "=== Results ==="
-echo "  Passed:  $PASS"
-echo "  Failed:  $FAIL"
-echo "  Skipped: $SKIP"
-echo ""
-
-if [ "$FAIL" -gt 0 ]; then
-    echo "SOME TESTS FAILED"
-    exit 1
-else
-    echo "ALL TESTS PASSED"
-    exit 0
-fi
+print_results

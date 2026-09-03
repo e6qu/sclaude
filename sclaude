@@ -747,8 +747,6 @@ parse_args() {
     WRAPPER_COMMAND=""
     YOLO=true
     FORCE_REBUILD=false
-    # Nested container tooling is on by default; SAGENT_DOCKER=0 (env or config
-    # file) or --no-docker turns it off.
     DOCKER_TOOLING=true
     if [ "${SAGENT_DOCKER:-}" = "0" ]; then
         DOCKER_TOOLING=false
