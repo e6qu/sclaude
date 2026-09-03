@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/e6qu/sclaude/compare/v2.5.2...v2.5.3) (2026-09-03)
+
+
+### Bug Fixes
+
+* T10 CI validity after releases; idempotent release workflow with asset verification ([#16](https://github.com/e6qu/sclaude/issues/16)) ([368179a](https://github.com/e6qu/sclaude/commit/368179a194957c821ff376cb7728f84dc3546c64))
+
 ## [2.5.2](https://github.com/e6qu/sclaude/compare/v2.5.1...v2.5.2) (2026-09-03)
 
 
