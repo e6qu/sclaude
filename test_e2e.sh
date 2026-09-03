@@ -117,7 +117,7 @@ rm -f "$INFO_OUTPUT"
 run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version' _ "$SCLAUDE" "$SCODEX"
 
 # ── T02: image build ─────────────────────────────────────────────────
-# Validates Dockerfile generation, UID/GID build args (Bug #4, #5)
+# Validates Dockerfile generation, UID/GID build args (Bug #4, #35)
 run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
 # ── T03: piped input (no TTY) ────────────────────────────────────────
@@ -245,8 +245,10 @@ run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
-    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update --force-rebuild 2>&1)
-    rc=$?
+    # Capture with || so a failing update does not set -e out of the subshell
+    # before the output is echoed (a failing T10 used to report "(empty)").
+    rc=0
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" update --force-rebuild 2>&1) || rc=$?
     echo "$output"
     if [ "$rc" -ne 0 ]; then
         exit "$rc"
@@ -260,7 +262,7 @@ run_test "T10: update (self-update + forced no-cache rebuild)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
-# Bug #25: timeout is not available on stock macOS; use portable fallback
+# Bug #24: timeout is not available on stock macOS; use portable fallback
 run_test "T11: PID limit (fork bomb)" bash -c '
     TIMEOUT_CMD=""
     if command -v timeout >/dev/null 2>&1; then
@@ -296,7 +298,7 @@ run_test "T13: no literal -e in output" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T14: zsh invocation ──────────────────────────────────────────────
-# Bug #18: BASH_SOURCE fallback
+# Bug #17: BASH_SOURCE fallback
 if command -v zsh >/dev/null 2>&1; then
     run_test "T14: zsh invocation" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 zsh "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 zsh "$2" version' _ "$SCLAUDE" "$SCODEX"
 else
@@ -320,7 +322,7 @@ run_test "T15: no leaked temp files" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T16: shebang portability ─────────────────────────────────────────
-# Bug #19: script should use /usr/bin/env bash
+# Bug #18: script should use /usr/bin/env bash
 run_test "T16: shebang uses env" bash -c '
     HEAD=$(head -1 "$1")
     HEAD2=$(head -1 "$2")
@@ -409,6 +411,24 @@ run_test "T18: sudo apt works in sandbox" bash -c '
         --cap-add=SETUID \
         --cap-add=SYS_CHROOT \
         "$IMG" bash -c "sudo apt-get update >/dev/null && sudo apt-get install -y --no-install-recommends file >/dev/null"
+' _ "$SCLAUDE"
+
+# ── T18b: pip user install works despite PEP 668 ─────────────────────
+# Ubuntu 24.04 marks system Python externally managed; the image sets
+# PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
+# sagent-pip volume instead of erroring out.
+run_test "T18b: pip install --user works in sandbox" bash -c '
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    if [ -z "$IMG" ]; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    "$ENGINE" volume create sagent-pip >/dev/null 2>&1 || true
+    # Fresh volumes mount root-owned; mirror the ownership fix sclaude applies.
+    "$ENGINE" run --rm --user root -v sagent-pip:/vol-pip "$IMG" \
+        chown -R "$(id -u):$(id -g)" /vol-pip
+    "$ENGINE" run --rm -v sagent-pip:/home/agent/.local:rw "$IMG" \
+        bash -c "pip3 install --user --quiet cowsay >/dev/null && python3 -c \"import cowsay\""
 ' _ "$SCLAUDE"
 
 # ── T19: shared image contains both CLIs ─────────────────────────────

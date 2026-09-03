@@ -5,7 +5,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCRIPT_NAME="sclaude"
 TOOL_NAME="Claude Code"
 TOOL_BIN="claude"
@@ -36,7 +35,7 @@ HOST_GID=$(id -g)
 TEMP_FILES=()
 cleanup_temp() {
     for f in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
-        rm -f "$f"
+        rm -rf "$f"
     done
 }
 trap cleanup_temp EXIT INT TERM HUP
@@ -128,7 +127,12 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 ARG USER_UID=1000
 ARG USER_GID=1000
+# ubuntu:24.04 ships a default "ubuntu" user with UID/GID 1000. On hosts where
+# the invoking user is UID 1000 (the common Linux desktop case), sudo resolves
+# the UID to that first passwd entry, so the "agent" sudoers rule never applies.
+# Remove it before creating agent.
 RUN set -eux; \
+    userdel -r ubuntu; \
     if getent group "${USER_GID}" >/dev/null; then \
         USER_GROUP="$(getent group "${USER_GID}" | cut -d: -f1)"; \
     else \
@@ -145,6 +149,10 @@ USER agent
 WORKDIR /workspace
 ENV HOME=/home/agent
 ENV TMPDIR=/tmp
+# Ubuntu 24.04 marks the system Python as externally managed (PEP 668), which
+# blocks even `pip install --user` into the dedicated pip volume. The sandbox
+# is disposable, so let pip install into the user site freely.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
 ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:${PATH}"
 DOCKERFILE_END
@@ -166,6 +174,7 @@ IMAGE_NAME="${IMAGE_REPO}:${VERSION_HASH}"
 
 build_image() {
     local no_cache="${1:-}"
+    local temp_context
     local temp_dockerfile
     local build_timestamp
     local build_args=()
@@ -177,8 +186,20 @@ build_image() {
         echo "[$SCRIPT_NAME] Building shared sandbox image (version: $VERSION_HASH)..." >&2
     fi
 
-    temp_dockerfile=$(mktemp)
-    TEMP_FILES+=("$temp_dockerfile")
+    # Docker builds go through buildx, and a docker-container/cloud builder keeps
+    # the result in the build cache unless --load exports it to the image store.
+    # Podman always loads locally and has no such flag.
+    if [ "$ENGINE_CMD" = "docker" ]; then
+        build_args+=("--load")
+    fi
+
+    # Build from an empty temp directory: the Dockerfile COPYs nothing, and using
+    # the wrapper's own directory as context would tar and send everything next to
+    # the installed script (e.g. all of /usr/local/bin, or a repo checkout with
+    # its .git) to the daemon on every build.
+    temp_context=$(mktemp -d)
+    TEMP_FILES+=("$temp_context")
+    temp_dockerfile="$temp_context/Dockerfile"
     get_dockerfile_content > "$temp_dockerfile"
 
     build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -194,9 +215,9 @@ EOF
         --build-arg USER_GID="$HOST_GID" \
         -t "$IMAGE_NAME" \
         -f "$temp_dockerfile" \
-        "$SCRIPT_DIR"
+        "$temp_context"
 
-    rm -f "$temp_dockerfile"
+    rm -rf "$temp_context"
 
     echo "[$SCRIPT_NAME] Shared sandbox image ready" >&2
 }
@@ -269,11 +290,13 @@ print_release_guidance() {
 }
 
 # Fetch the latest release tag (e.g. "v2.4.0") or print empty on failure.
+# $1 optionally caps the curl time budget in seconds (default 5).
 fetch_latest_release_tag() {
+    local max_time="${1:-5}"
     if ! command -v curl >/dev/null 2>&1; then
         return 0
     fi
-    curl -fsSL --max-time 5 "https://api.github.com/repos/$PROJECT_REPO/releases/latest" 2>/dev/null \
+    curl -fsSL --max-time "$max_time" "https://api.github.com/repos/$PROJECT_REPO/releases/latest" 2>/dev/null \
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true
 }
 
@@ -366,6 +389,16 @@ self_update_wrapper() {
     paired_path=""
     if [ -n "$paired_name" ] && [ -f "$script_dir/$paired_name" ]; then
         paired_path="$script_dir/$paired_name"
+    fi
+
+    # A wrapper that resolves into a git checkout is a source install (README
+    # suggests symlinking from the repo into /usr/local/bin). Overwriting it with
+    # a release asset would clobber the user's working tree, so skip the wrapper
+    # download and let the image rebuild proceed.
+    if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] Wrapper runs from a git checkout ($script_dir); skipping wrapper self-update." >&2
+        echo "[$SCRIPT_NAME] Update the checkout with: git -C \"$script_dir\" pull" >&2
+        return 0
     fi
 
     latest_tag=$(fetch_latest_release_tag)
@@ -563,7 +596,8 @@ check_release() {
         printf '%s\n' "$now" > "$cache_file" 2>/dev/null || true
     fi
 
-    latest_tag=$(curl -fsSL --max-time 2 "https://api.github.com/repos/$PROJECT_REPO/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
+    # Keep the passive per-run check on a tight 2s budget so startup never stalls.
+    latest_tag=$(fetch_latest_release_tag 2)
     if [ -z "$latest_tag" ]; then
         if [ "$explicit" = "true" ]; then
             echo "[$SCRIPT_NAME] Could not check latest release." >&2
@@ -723,6 +757,8 @@ run_tool() {
         tool_args=("${ARGS[@]+"${ARGS[@]}"}")
     fi
 
+    # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
+    # workspace bind mount is otherwise unreadable without relabeling host files.
     exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm \
         -v "$WORKSPACE_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
@@ -736,6 +772,7 @@ run_tool() {
         --cpus="$CPU_LIMIT" \
         --pids-limit="$PIDS_LIMIT" \
         --tmpfs /tmp:rw,nosuid,size=1g \
+        --security-opt label=disable \
         --cap-drop=ALL \
         --cap-add=CHOWN \
         --cap-add=DAC_OVERRIDE \

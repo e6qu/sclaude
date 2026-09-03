@@ -134,6 +134,14 @@ The runtime intentionally does not use `no-new-privileges`, because that would
 break `sudo apt`. The tradeoff is explicit: agent CLIs can become root inside the
 container for allowlisted package-management commands.
 
+The tool container also runs with `--security-opt label=disable`: on
+SELinux-enforcing hosts (Fedora/RHEL + podman) the workspace bind mount would
+otherwise be unreadable without relabeling the user's files. SELinux label
+confinement is not part of this sandbox's isolation model (it does not exist on
+macOS/Docker Desktop at all); isolation relies on namespaces, capability
+dropping, and resource limits. The flag is a no-op for Docker and non-SELinux
+hosts.
+
 **Protection still provided**:
 - Docker socket is not mounted
 - Host filesystem access is limited to the workspace bind mount
