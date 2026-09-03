@@ -119,7 +119,10 @@ RUN echo 'agent ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dp
   low-port binding
 
 **Prevents**:
-- ✅ `CAP_SYS_ADMIN` - Cannot mount filesystems or create namespaces
+- ✅ `CAP_SYS_ADMIN` - Not granted; privileged mounts and admin operations are
+  unavailable. Note: with container tooling on (the default), unprivileged user
+  namespaces plus the relaxed seccomp filter still allow the mounts nested
+  podman needs inside its own namespaces — see the Nested Containers section.
 - ✅ `CAP_SYS_PTRACE` - Cannot debug other processes
 - ✅ `CAP_NET_ADMIN` - Cannot modify network configuration
 - ✅ `CAP_SYS_MODULE` - Cannot load kernel modules

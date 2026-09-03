@@ -466,8 +466,10 @@ run_test "T27: nested containers (--docker mode)" bash -c '
         --pids-limit=512 \
         "$IMG" bash -c "
             set -e
-            docker run --rm docker.io/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
-            printf \"FROM docker.io/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
+            # public.ecr.aws mirror: Docker Hub anonymous pulls are rate-limited
+            # per IP, which flakes on shared CI runners.
+            docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
+            printf \"FROM public.ecr.aws/docker/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
             docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
             docker run --rm nested-t27 | grep -q built
         "

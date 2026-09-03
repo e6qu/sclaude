@@ -64,6 +64,7 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 61 | E2E tests picked their image with `images \| head -1`, but the listing is not newest-first under podman's compat API — with multiple `sagent-sandbox` images present, tests could silently run against a stale image | Tests derive the image tag from the wrapper's own `version` output and verify it exists with `image inspect` |
 | 62 | Runtime limits (`MEMORY_LIMIT`, `CPU_LIMIT`, `PIDS_LIMIT`) were baked into the image version hash even though they are container run flags, so tuning any of them forced a pointless full image rebuild | The hash now covers image content only (Dockerfile + UID/GID build args); limits are shown in `version` output instead |
 | 63 | A config file with a bash syntax error aborted the wrapper mid-source with an error that never named the file | Validate with `bash -n` before sourcing and fail with a message naming the config file; covered by T28 |
+| 64 | `reset` silently reported success while volumes survived: stale never-started/exited sandbox containers (e.g. `--rm` containers that failed to start) pin the volumes, and the `volume rm` failure was swallowed | `reset` first removes non-running sandbox-image containers, then removes volumes individually and fails loudly naming any volume still pinned by a running container |
 
 ## False Positives
 

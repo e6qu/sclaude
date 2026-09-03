@@ -114,6 +114,7 @@ scodex [args]   -->  Docker container  -->  codex [args]
                      - Shared image with both CLIs
                      - 4GB RAM / 2 CPUs / 100 PIDs (512 with container tooling)
                      - Limited capabilities for sudo apt package installs
+                     - Nested docker/podman via rootless podman (no host socket)
                      - Credentials from tool-specific Docker volumes
 ```
 

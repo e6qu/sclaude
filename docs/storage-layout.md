@@ -15,8 +15,8 @@ Docker Volume              Container Mount                   Purpose
 sclaude-config          →  /sclaude-config/                  Claude Code config & credentials
 scodex-config           →  /scodex-config/                   Codex auth and config
 sagent-rootfs           →  /home/agent/                      Shared home directory & preferences
-sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages (Linux)
-sagent-pip              →  /home/agent/.local/               Shared pip user packages (Linux)
+sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages
+sagent-pip              →  /home/agent/.local/               Shared pip user packages
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
 sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
