@@ -141,8 +141,12 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
       - name: Start colima VM
-        run: colima start --cpu 3 --memory 8 --disk 30
+        run: colima start --cpu 4 --memory 10 --disk 30
       - name: Run E2E tests
+        # Cold image builds take over 10 minutes on this runner; the default
+        # 600s per-test timeout kills T02/T10/T15 mid-build.
+        env:
+          TEST_TIMEOUT_SECONDS: "1800"
         run: bash test_e2e.sh
 
   test-devcontainers:
