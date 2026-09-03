@@ -19,6 +19,7 @@ sagent-npm              →  /home/agent/.npm-global/          Shared npm global
 sagent-pip              →  /home/agent/.local/               Shared pip user packages (Linux)
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
+sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
 $(pwd)                  →  $(pwd)                            Current workspace directory
 ```
 
@@ -128,5 +129,5 @@ docker volume inspect sclaude-config
 docker volume rm sagent-apt-cache
 
 # Remove all sclaude volumes
-docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists
+docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers
 ```

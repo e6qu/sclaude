@@ -54,12 +54,31 @@ sclaude "fix the bug"        # Direct prompt
 sclaude --resume             # Resume last session
 sclaude -p "query"           # Print mode (headless/CI, no TTY needed)
 sclaude --no-yolo            # Disable default yolo mode
+sclaude --no-docker          # Disable docker/podman inside the sandbox
 
 scodex                       # Interactive Codex mode
 scodex "fix the bug"         # Direct prompt
 scodex exec "query"          # Non-interactive Codex mode
 scodex --no-yolo             # Disable Docker-boundary yolo mode
 ```
+
+Container tooling inside the sandbox is **on by default**: the agent can run
+`docker`/`podman` commands via nested rootless podman with a docker CLI shim —
+build, run, and pull all work, and nested images persist in the
+`sagent-containers` volume. The host engine socket is never mounted and
+capabilities stay dropped; the mode does relax the seccomp filter and passes
+the fuse/tun devices. Disable it per run with `--no-docker`, or persistently
+with `SAGENT_DOCKER=0` (env or config file). See
+[Security Architecture](docs/security.md) for the exact tradeoff.
+
+The wrappers autodetect the real engine on both ends: a `docker` command that
+is podman's CLI shim, and a real docker CLI talking to a podman server through
+the docker-compat socket, are both recognized and get the right build/export
+behavior (`sclaude version` shows the detected CLI and server flavors).
+
+Browser login flows work from inside the sandbox: `xdg-open`/`$BROWSER` render
+each URL as a clickable terminal hyperlink, so Cmd/Ctrl+click in the TUI opens
+it in your host browser (claude and codex logins, `gh auth login`).
 
 Yolo mode is on by default since Docker is the outer sandbox. `sclaude` maps it
 to `--dangerously-skip-permissions`; `scodex` maps it to
@@ -113,16 +132,23 @@ Data survives across runs via Docker volumes:
 | `sagent-pip` | Shared pip user packages |
 | `sagent-apt-cache` | Shared apt package cache |
 | `sagent-apt-lists` | Shared apt package lists |
+| `sagent-containers` | Nested container images/state (`--docker` mode) |
 
 ## Configuration
 
-Edit the top of the `sclaude` script:
+Create `${XDG_CONFIG_HOME:-~/.config}/sagent/config` (plain bash, sourced by
+both wrappers; environment variables and flags take precedence):
 
 ```bash
-MEMORY_LIMIT="8g"    # Default: 4g
-CPU_LIMIT="4"        # Default: 2
-PIDS_LIMIT="200"     # Default: 100
+MEMORY_LIMIT="8g"          # Default: 4g
+CPU_LIMIT="4"              # Default: 2
+PIDS_LIMIT="200"           # Default: 100
+PIDS_LIMIT_NESTED="1024"   # Default: 512 (used when container tooling is on)
+SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
+SAGENT_CONTAINER_ENGINE=podman
 ```
+
+`SAGENT_CONFIG_FILE=/path/to/config` points both wrappers at a different file.
 
 Container engine selection:
 

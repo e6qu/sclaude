@@ -199,6 +199,32 @@ hosts.
 **Limitation**:
 - ⚠️ Can exfiltrate workspace data (inherent tradeoff for package management)
 
+### Nested Containers (`--docker` mode, on by default)
+
+Container tooling inside the sandbox is enabled by default via nested rootless
+podman (with a docker CLI shim). Disable it per run with `--no-docker` or
+persistently with `SAGENT_DOCKER=0` in the environment or the config file.
+Design choices, safest first:
+
+- **The host engine socket is never mounted** — nested containers run under a
+  podman instance inside the sandbox, storing images in the
+  `sagent-containers` volume. Nothing the agent does with `docker`/`podman`
+  can reach the host daemon.
+- **Capabilities stay dropped** (same set as normal runs). Single-uid rootless
+  mapping means the privileged `newuidmap` path is never used, so
+  `CAP_SYS_ADMIN` is NOT granted.
+- **What the mode relaxes**: the default seccomp profile is disabled
+  (`seccomp=unconfined` — nested mount/user-namespace syscalls are otherwise
+  blocked), `/dev/fuse` and `/dev/net/tun` are passed in, and the PID limit is
+  raised to 512. This widens kernel attack surface relative to a hardened run —
+  a kernel exploit has more syscalls to aim at. Set `SAGENT_DOCKER=0` (or pass
+  `--no-docker`) to run with the default seccomp profile and no extra devices
+  when container tooling is not needed.
+- Nested containers share the sandbox's PID namespace (they can see the
+  sandbox's own processes — all agent-owned) and use single-uid storage
+  (`ignore_chown_errors`), so images relying on multi-user file ownership
+  semantics may behave differently.
+
 ### Layer 7: Docker Socket NOT Mounted
 
 **Critical**:

@@ -42,6 +42,10 @@ Linux, against Docker or Podman.
 | T24: Wrapper parity | Shared functions identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
+| T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
+| T27: Nested containers | `--docker` mode: nested pull/run/build via rootless podman | -- |
+| T28: Config file | Config sourced at startup; env vars take precedence | -- |
+| T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

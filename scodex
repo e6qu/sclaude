@@ -22,15 +22,33 @@ IMAGE_REPO="sagent-sandbox"
 MEMORY_LIMIT="4g"
 CPU_LIMIT="2"
 PIDS_LIMIT="100"
+PIDS_LIMIT_NESTED="512"
 
 ROOTFS_VOLUME="sagent-rootfs"
 NPM_VOLUME="sagent-npm"
 PIP_VOLUME="sagent-pip"
 APT_CACHE_VOLUME="sagent-apt-cache"
 APT_LISTS_VOLUME="sagent-apt-lists"
+CONTAINERS_VOLUME="sagent-containers"
 
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
+
+# Optional config file: plain bash sourced at startup. May set the tunables
+# above (MEMORY_LIMIT, CPU_LIMIT, PIDS_LIMIT, PIDS_LIMIT_NESTED,
+# ENGINE_TIMEOUT_SECONDS) and defaults for SAGENT_DOCKER /
+# SAGENT_CONTAINER_ENGINE. Environment variables and command-line flags take
+# precedence over the file.
+SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
+if [ -f "$SAGENT_CONFIG_FILE" ]; then
+    _env_sagent_docker="${SAGENT_DOCKER:-}"
+    _env_sagent_engine="${SAGENT_CONTAINER_ENGINE:-}"
+    # shellcheck disable=SC1090
+    . "$SAGENT_CONFIG_FILE"
+    if [ -n "$_env_sagent_docker" ]; then SAGENT_DOCKER="$_env_sagent_docker"; fi
+    if [ -n "$_env_sagent_engine" ]; then SAGENT_CONTAINER_ENGINE="$_env_sagent_engine"; fi
+    unset _env_sagent_docker _env_sagent_engine
+fi
 
 TEMP_FILES=()
 cleanup_temp() {
@@ -104,6 +122,32 @@ select_engine() {
     exit 1
 }
 
+# The command name does not identify the engine: a `docker` command can be
+# podman's CLI shim (podman-docker), and a real docker CLI can talk to a podman
+# server through the docker-compat socket (DOCKER_HOST). Build/export semantics
+# depend on the actual CLI and server, so identify both once.
+detect_engine_flavor() {
+    local version_output client_section server_section
+
+    # `--version` is useless here: podman invoked as `docker` emulates docker's
+    # one-line version string. The plain `version` output is honest on both
+    # sides — "Podman Engine" appears in the Client section for the podman CLI
+    # (under any command name) and in the Server section when the socket is
+    # served by podman (via docker's compat components or podman's own output).
+    version_output=$("$ENGINE_CMD" version 2>/dev/null || true)
+    client_section=$(printf '%s\n' "$version_output" | sed -n '1,/^Server/p')
+    server_section=$(printf '%s\n' "$version_output" | sed -n '/^Server/,$p')
+
+    ENGINE_CLI_FLAVOR="docker"
+    ENGINE_SERVER_FLAVOR="docker"
+    case "$client_section" in
+        *[Pp]odman*) ENGINE_CLI_FLAVOR="podman" ;;
+    esac
+    case "$server_section" in
+        *[Pp]odman*) ENGINE_SERVER_FLAVOR="podman" ;;
+    esac
+}
+
 get_dockerfile_content() {
     cat <<'DOCKERFILE_END'
 FROM ubuntu:24.04
@@ -122,6 +166,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+
+# Nested container tooling (used by the wrappers' --docker mode): rootless
+# podman with the docker CLI shim, confined entirely to the sandbox.
+RUN apt-get update && apt-get install -y \
+    podman podman-docker slirp4netns fuse-overlayfs \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
@@ -143,9 +193,48 @@ RUN set -eux; \
     echo 'agent ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' > /etc/sudoers.d/agent; \
     chmod 0440 /etc/sudoers.d/agent
 
+# Nested podman configuration for --docker mode. Single-uid rootless mapping:
+# drop the subuid/subgid ranges useradd created so podman never invokes the
+# setuid newuidmap helper (which would need CAP_SYS_ADMIN under the sandbox's
+# capability drop); ignore_chown_errors makes multi-uid images extract cleanly
+# under the single mapping. pidns=host keeps nested containers in the sandbox's
+# pid namespace so the runtime never needs a fresh /proc mount (the outer
+# engine's masked /proc forbids one). default_sysctls=[] because the outer
+# /proc/sys is read-only. nodocker silences the docker-shim notice.
+RUN set -eux; \
+    sed -i '/^agent:/d' /etc/subuid /etc/subgid; \
+    touch /etc/containers/nodocker; \
+    printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\n' > /etc/containers/containers.conf; \
+    printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
+
+# Browser-open shim: the sandbox has no browser, but the user's terminal can
+# open links on the host (Cmd/Ctrl+click). Render every xdg-open/$BROWSER
+# request as an OSC 8 hyperlink plus plain URL on the controlling terminal so
+# login flows (claude, codex, gh auth) reach the host browser via a click.
+RUN set -eux; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent host-open: print browser-open requests as clickable links.' \
+        '# Probe in a subshell: without a controlling terminal /dev/tty exists' \
+        '# and is permission-writable but cannot be opened, and a failed exec' \
+        '# redirect would kill the script.' \
+        'if ( exec > /dev/tty ) 2>/dev/null; then' \
+        '    exec > /dev/tty' \
+        'else' \
+        '    exec >&2' \
+        'fi' \
+        'for url in "$@"; do' \
+        '    printf '"'"'\n[sagent] Open in your browser (Cmd/Ctrl+click):\n'"'"'' \
+        '    printf '"'"'\033]8;;%s\033\\%s\033]8;;\033\\\n\n'"'"' "$url" "$url"' \
+        'done' \
+        > /usr/local/bin/host-open; \
+    chmod 0755 /usr/local/bin/host-open; \
+    ln -s host-open /usr/local/bin/xdg-open
+
 RUN mkdir -p /workspace && chown agent /workspace
 
 USER agent
+ENV BROWSER=/usr/local/bin/host-open
 WORKDIR /workspace
 ENV HOME=/home/agent
 ENV TMPDIR=/tmp
@@ -186,11 +275,19 @@ build_image() {
         echo "[$SCRIPT_NAME] Building shared sandbox image (version: $VERSION_HASH)..." >&2
     fi
 
-    # Docker builds go through buildx, and a docker-container/cloud builder keeps
-    # the result in the build cache unless --load exports it to the image store.
-    # Podman always loads locally and has no such flag.
-    if [ "$ENGINE_CMD" = "docker" ]; then
-        build_args+=("--load")
+    # Export semantics depend on engine flavor. A real docker CLI on a docker
+    # server builds via buildx, and a docker-container/cloud builder keeps the
+    # result in the build cache unless --load exports it to the image store. A
+    # real docker CLI on a podman server cannot use buildx: select the classic
+    # builder endpoint podman implements (DOCKER_BUILDKIT=0), which takes no
+    # --load. A podman CLI always loads locally and has no such flag.
+    local -a build_env=()
+    if [ "$ENGINE_CLI_FLAVOR" = "docker" ]; then
+        if [ "$ENGINE_SERVER_FLAVOR" = "docker" ]; then
+            build_args+=("--load")
+        else
+            build_env=(env DOCKER_BUILDKIT=0)
+        fi
     fi
 
     # Build from an empty temp directory: the Dockerfile COPYs nothing, and using
@@ -210,7 +307,7 @@ RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' >
 USER agent
 EOF
 
-    "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
+    "${build_env[@]+"${build_env[@]}"}" "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
         --build-arg USER_UID="$HOST_UID" \
         --build-arg USER_GID="$HOST_GID" \
         -t "$IMAGE_NAME" \
@@ -235,6 +332,7 @@ show_version() {
 
     echo "Script: $SCRIPT_NAME"
     echo "Wrapper version: v$WRAPPER_VERSION"
+    echo "Engine: $ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR)"
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
     if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
@@ -265,7 +363,7 @@ cleanup_images() {
             "$ENGINE_CMD" rmi "$IMAGE_REPO:$tag" 2>&1 | grep -vE "^(Untagged|Deleted):" >&2 || true
         fi
     done
-    if [ "$ENGINE_CMD" = "docker" ]; then
+    if [ "$ENGINE_CLI_FLAVOR" = "docker" ] && [ "$ENGINE_SERVER_FLAVOR" = "docker" ]; then
         echo "[$SCRIPT_NAME] Note: --no-cache rebuilds accumulate buildx cache; run \`docker builder prune\` to reclaim it." >&2
     fi
     echo "[$SCRIPT_NAME] Cleanup complete" >&2
@@ -633,7 +731,7 @@ reset_volumes() {
     echo "[$SCRIPT_NAME] Removing Docker volumes..." >&2
     "$ENGINE_CMD" volume rm \
         sclaude-config scodex-config \
-        "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" \
+        "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME" \
         2>/dev/null || true
     echo "[$SCRIPT_NAME] Reset complete. Volumes will be recreated on next run." >&2
 }
@@ -642,6 +740,12 @@ parse_args() {
     WRAPPER_COMMAND=""
     YOLO=true
     FORCE_REBUILD=false
+    # Nested container tooling is on by default; SAGENT_DOCKER=0 (env or config
+    # file) or --no-docker turns it off.
+    DOCKER_TOOLING=true
+    if [ "${SAGENT_DOCKER:-}" = "0" ]; then
+        DOCKER_TOOLING=false
+    fi
     ARGS=()
     for arg in "$@"; do
         case "$arg" in
@@ -650,6 +754,12 @@ parse_args() {
                 ;;
             --no-yolo)
                 YOLO=false
+                ;;
+            --docker)
+                DOCKER_TOOLING=true
+                ;;
+            --no-docker)
+                DOCKER_TOOLING=false
                 ;;
             --force-rebuild)
                 FORCE_REBUILD=true
@@ -678,7 +788,7 @@ parse_args() {
 create_volumes() {
     local existing v
     existing=$("$ENGINE_CMD" volume ls --format '{{.Name}}' 2>/dev/null || true)
-    for v in "$CONFIG_VOLUME" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME"; do
+    for v in "$CONFIG_VOLUME" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
         if ! printf '%s\n' "$existing" | grep -qFx "$v"; then
             "$ENGINE_CMD" volume create "$v" >/dev/null 2>&1 || true
         fi
@@ -745,11 +855,12 @@ sync_state() {
         -v "$PIP_VOLUME":/vol-pip \
         -v "$APT_CACHE_VOLUME":/vol-apt-cache \
         -v "$APT_LISTS_VOLUME":/vol-apt-lists \
+        -v "$CONTAINERS_VOLUME":/vol-containers \
         "$IMAGE_NAME" \
         bash -c '
             TARGET_UID='"$HOST_UID"'
             TARGET_GID='"$HOST_GID"'
-            for d in /vol-config /vol-rootfs /vol-npm /vol-pip; do
+            for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-containers; do
                 if [ "$(stat -c %u "$d" 2>/dev/null)" != "$TARGET_UID" ]; then
                     chown -R "$TARGET_UID:$TARGET_GID" "$d"
                 fi
@@ -793,11 +904,23 @@ build_docker_tty_flags() {
 
 run_tool() {
     local tool_args=()
+    local nested_args=()
+    local pids_limit="$PIDS_LIMIT"
 
     if [ "$YOLO" = true ]; then
         tool_args=("$YOLO_FLAG" "${ARGS[@]+"${ARGS[@]}"}")
     else
         tool_args=("${ARGS[@]+"${ARGS[@]}"}")
+    fi
+
+    # --docker mode: nested rootless podman needs the fuse and tun devices and
+    # an unfiltered syscall table (mount and user-namespace syscalls that the
+    # default seccomp profile only allows with CAP_SYS_ADMIN). Capabilities stay
+    # dropped and the host engine socket is never exposed; nested containers
+    # live entirely inside the sandbox.
+    if [ "$DOCKER_TOOLING" = true ]; then
+        nested_args=(--device /dev/fuse --device /dev/net/tun --security-opt seccomp=unconfined)
+        pids_limit="$PIDS_LIMIT_NESTED"
     fi
 
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
@@ -808,12 +931,14 @@ run_tool() {
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \
         -v "$PIP_VOLUME:/home/agent/.local:rw" \
+        -v "$CONTAINERS_VOLUME:/home/agent/.local/share/containers:rw" \
         -v "$APT_CACHE_VOLUME:/var/cache/apt:rw" \
         -v "$APT_LISTS_VOLUME:/var/lib/apt/lists:rw" \
         -w "$WORKSPACE_PATH" \
         --memory="$MEMORY_LIMIT" \
         --cpus="$CPU_LIMIT" \
-        --pids-limit="$PIDS_LIMIT" \
+        --pids-limit="$pids_limit" \
+        "${nested_args[@]+"${nested_args[@]}"}" \
         --tmpfs /tmp:rw,nosuid,size=1g \
         --security-opt label=disable \
         --cap-drop=ALL \
@@ -849,6 +974,7 @@ if [ "$WRAPPER_COMMAND" = "check-update" ]; then
 fi
 
 select_engine
+detect_engine_flavor
 
 case "$WRAPPER_COMMAND" in
     update)

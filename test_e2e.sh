@@ -130,6 +130,9 @@ run_test "T03: piped/no-TTY mode" bash -c '
 # Verify both yolo (default) and --no-yolo work without crashing
 run_test "T04: --yolo flag" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
 
+# ── T04b: --docker / --no-docker flags parse ─────────────────────────
+run_test "T04b: --docker flags" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_DOCKER=0 "$2" version >/dev/null 2>&1' _ "$SCLAUDE" "$SCODEX"
+
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
     # macOS: check that Keychain creds (if present) are synced into the volume
@@ -166,7 +169,7 @@ fi
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -c '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
     IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
@@ -224,7 +227,7 @@ run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' 
 run_test "T09: reset (auto-confirm)" bash -c '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/dev/null
     # Volumes should be gone (or already absent)
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
             exit 1
@@ -519,6 +522,72 @@ run_test "T26: --force-rebuild only valid with update" bash -c '
     fi
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --force-rebuild 2>&1 \
         | grep -q "only valid with the .update. command"
+' _ "$SCLAUDE"
+
+# ── T27: nested containers (--docker mode) ───────────────────────────
+# Replicates the exact run configuration the wrappers use for --docker and
+# verifies the full nested workflow: pull+run, build, and run the built image.
+run_test "T27: nested containers (--docker mode)" bash -c '
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    if [ -z "$IMG" ]; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    "$ENGINE" volume create sagent-containers >/dev/null 2>&1 || true
+    "$ENGINE" run --rm --user root -v sagent-containers:/vol-containers "$IMG" \
+        chown -R "$(id -u):$(id -g)" /vol-containers
+    "$ENGINE" run --rm \
+        -v sagent-containers:/home/agent/.local/share/containers:rw \
+        --device /dev/fuse --device /dev/net/tun \
+        --security-opt seccomp=unconfined \
+        --security-opt label=disable \
+        --cap-drop=ALL \
+        --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
+        --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
+        --pids-limit=512 \
+        "$IMG" bash -c "
+            set -e
+            docker run --rm docker.io/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
+            printf \"FROM docker.io/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
+            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
+            docker run --rm nested-t27 | grep -q built
+        "
+' _ "$SCLAUDE"
+
+# ── T28: config file ─────────────────────────────────────────────────
+# The config file is sourced at startup and may set tunables. MEMORY_LIMIT is
+# part of the image version hash, so a config override observably changes the
+# "Image hash" line. Environment variables must take precedence over the file.
+run_test "T28: config file sourced with env precedence" bash -c '
+    TMP_CFG_DIR=$(mktemp -d)
+    trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
+    default_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Image hash: //p")
+    printf "MEMORY_LIMIT=\"9g\"\n" > "$TMP_CFG_DIR/config"
+    cfg_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version | sed -n "s/^Image hash: //p")
+    if [ -z "$default_hash" ] || [ "$default_hash" = "$cfg_hash" ]; then
+        echo "config file MEMORY_LIMIT did not change the version hash ($default_hash vs $cfg_hash)" >&2
+        exit 1
+    fi
+    # Env var must beat a config-file value for SAGENT_CONTAINER_ENGINE: the
+    # config points at a nonexistent engine; the env var must rescue the run.
+    printf "SAGENT_CONTAINER_ENGINE=\"no-such-engine\"\n" > "$TMP_CFG_DIR/config"
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" SAGENT_CONTAINER_ENGINE="$ENGINE" "$1" version >/dev/null
+' _ "$SCLAUDE"
+
+# ── T29: browser-open shim ───────────────────────────────────────────
+# The sandbox has no browser: xdg-open/$BROWSER render each URL as an OSC 8
+# terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
+# reach the host browser via Cmd/Ctrl+click in the terminal.
+run_test "T29: browser-open shim renders clickable URL" bash -c '
+    IMG=$("$ENGINE" images sagent-sandbox --format "{{.Repository}}:{{.Tag}}" | head -1)
+    if [ -z "$IMG" ]; then
+        echo "No sagent image found" >&2
+        exit 1
+    fi
+    out=$("$ENGINE" run --rm "$IMG" sh -c "printenv BROWSER && xdg-open https://example.com/sagent-test 2>&1")
+    printf "%s" "$out" | grep -q "host-open"
+    printf "%s" "$out" | grep -c "https://example.com/sagent-test" | grep -qx 2
+    printf "%s" "$out" | grep -q "]8;;"
 ' _ "$SCLAUDE"
 
 # ── Results ───────────────────────────────────────────────────────────
