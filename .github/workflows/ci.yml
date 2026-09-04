@@ -144,6 +144,20 @@ jobs:
         # vz (Virtualization.framework) instead of the default qemu — markedly
         # faster on the Intel runners.
         run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30
+      - name: Wait for the VM's docker daemon
+        # colima start can return while (or without) dockerd becoming
+        # reachable; assert readiness with a clear error instead of failing
+        # later with a generic "no engine responding".
+        run: |
+          for _ in $(seq 1 24); do
+            if docker info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "colima reports started but docker is not reachable" >&2
+          colima status
+          exit 1
       - name: Prime the image build cache
         # The cold build takes 10-20+ minutes depending on the runner instance
         # and would trip the per-test timeout inside the suite; built here, T02
