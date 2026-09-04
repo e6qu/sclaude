@@ -39,7 +39,7 @@ Linux, against Docker or Podman.
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
 | T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
-| T24: Wrapper parity | Shared functions identical between `sclaude` and `scodex` (drift guard) | -- |
+| T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
 | T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |

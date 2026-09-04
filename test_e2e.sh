@@ -144,7 +144,7 @@ run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' 
 
 # ── T09: reset command (non-interactive) ──────────────────────────────
 run_test "T09: reset (auto-confirm)" bash -c '
-    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/dev/null
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
