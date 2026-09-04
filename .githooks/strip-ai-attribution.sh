@@ -18,6 +18,7 @@ sed -i.bak \
   -e '/^[Cc]o-authored-by:.*[Cc]ursor/d' \
   -e '/[Gg]enerated with/d' \
   -e '/[Gg]enerated by/d' \
+  -e '/^[Cc]laude-[Ss]ession:/d' \
   -e '/^🤖/d' \
   "$msg_file"
 rm -f "${msg_file}.bak"
