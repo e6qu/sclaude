@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.3](https://github.com/e6qu/sclaude/compare/v2.6.2...v2.6.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* clamp nested podman log noise; prune stale CONTRIBUTING test list ([#26](https://github.com/e6qu/sclaude/issues/26)) ([902ac99](https://github.com/e6qu/sclaude/commit/902ac99882e1dd85f18815b35399fec4d576e401))
+
 ## [2.6.2](https://github.com/e6qu/sclaude/compare/v2.6.1...v2.6.2) (2026-09-04)
 
 
