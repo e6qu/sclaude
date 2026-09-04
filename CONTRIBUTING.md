@@ -73,18 +73,8 @@ Run the E2E test suite:
 bash test_e2e.sh
 ```
 
-All tests must pass. Tests cover:
-- Basic commands (version, build, cleanup, reset, update)
-- TTY/non-TTY detection
-- Credential sync (macOS Keychain / Linux file)
-- Volume permissions and persistence
-- Resource limits (PID containment)
-- Path handling (spaces, colons)
-- Portability (zsh invocation, shebang, printf)
-- Codex wrapper smoke coverage
-- In-container `sudo apt` package installation
-- Shared image contents, Codex auth sync, release-check caching, and native arg pass-through
-- Explicit Docker/Podman engine selection
+All tests must pass. The test matrix in
+[docs/e2e-testing.md](docs/e2e-testing.md) documents what each test covers.
 
 See [docs/e2e-testing.md](docs/e2e-testing.md) for the full test matrix,
 Podman runs, and testing Linux from a macOS host.
