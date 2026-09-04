@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.2](https://github.com/e6qu/sclaude/compare/v2.6.1...v2.6.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* /tmp workspaces shadowed by tmpfs; refuse / as workspace ([#24](https://github.com/e6qu/sclaude/issues/24)) ([375d81e](https://github.com/e6qu/sclaude/commit/375d81e99ddc2a0cd456c676aba49d7e51c514cd))
+
 ## [2.6.1](https://github.com/e6qu/sclaude/compare/v2.6.0...v2.6.1) (2026-09-04)
 
 
