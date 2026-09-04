@@ -206,10 +206,14 @@ RUN set -eux; \
 # under the single mapping. pidns=host keeps nested containers in the sandbox's
 # pid namespace so the runtime never needs a fresh /proc mount (the outer
 # engine's masked /proc forbids one). default_sysctls=[] because the outer
-# /proc/sys is read-only. nodocker silences the docker-shim notice.
+# /proc/sys is read-only. nodocker silences the docker-shim notice, and the
+# shim clamps podman's log level: the single-mapping rootless startup
+# warnings are benign by design here and only add noise to every nested run.
 RUN set -eux; \
     sed -i '/^agent:/d' /etc/subuid /etc/subgid; \
     touch /etc/containers/nodocker; \
+    printf '%s\n' '#!/bin/sh' 'exec /usr/bin/podman --log-level=error "$@"' > /usr/bin/docker; \
+    chmod 0755 /usr/bin/docker; \
     printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\n' > /etc/containers/containers.conf; \
     printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
 
