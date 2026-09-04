@@ -20,7 +20,7 @@
       ]
     }
   },
-  // shellcheck and zsh are needed for CI-equivalent linting
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y shellcheck zsh",
+  // shellcheck, zsh, and pre-commit are needed for CI-equivalent linting
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y shellcheck zsh pipx && pipx install pre-commit",
   "remoteUser": "vscode"
 }

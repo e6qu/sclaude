@@ -25,6 +25,9 @@ Linux, against Docker or Podman.
 | T10: Update command | `--no-cache` rebuild | -- |
 | T11: Resource limits (PID) | Fork bomb containment | -- |
 | T12: Path with spaces | Quoting correctness in mounts | #10 |
+| T09b: Reset pinned volumes | `reset` fails loudly naming volumes held by running containers | #64 |
+| T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs | #65 |
+| T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `echo -e` / printf portability | No literal `-e` in output | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
 | T15: Temp file cleanup on failure | No leaked temp files after failed build | #1 |
