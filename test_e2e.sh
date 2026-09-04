@@ -153,6 +153,21 @@ run_test "T09: reset (auto-confirm)" bash -c '
     done
 ' _ "$SCLAUDE"
 
+# ── T09b: reset fails loudly on volumes pinned by running containers ──
+# #64: reset must not report success while a running container keeps a
+# volume alive.
+run_test "T09b: reset reports pinned volumes" bash -c '
+    "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
+    "$ENGINE" run -d --name sagent-t09b-pinner -v sclaude-config:/c "$SUITE_IMG" sleep 120 >/dev/null
+    trap "\"$ENGINE\" rm -f sagent-t09b-pinner >/dev/null 2>&1" EXIT
+    if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/tmp/t09b-err; then
+        echo "reset should have failed while a running container pins sclaude-config" >&2
+        exit 1
+    fi
+    grep -q "still in use by a container, not removed: sclaude-config" /tmp/t09b-err
+    rm -f /tmp/t09b-err
+' _ "$SCLAUDE"
+
 # ── T10: update command ──────────────────────────────────────────────
 # Runs the update flow with wrapper self-update pinned off: whenever the
 # checked-out WRAPPER_VERSION is older than the latest published release (every
@@ -206,6 +221,30 @@ run_test "T12: path with spaces" bash -c '
     cd "$TEST_DIR"
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" version
     rm -rf "$TEST_DIR"
+' _ "$SCLAUDE"
+
+# ── T12b: workspace under /tmp is not shadowed by the tmpfs ──────────
+# Replicates run_tool's fixed behavior (#65): with a workspace under /tmp the
+# tmpfs is omitted, so the workspace files are visible inside the sandbox.
+run_test "T12b: /tmp workspace visible in sandbox" bash -c '
+    IMG="$SUITE_IMG"
+    WS=$(mktemp -d /tmp/sclaude-t12b.XXXXXX)
+    trap "rm -rf \"$WS\"" EXIT
+    echo t12b-marker > "$WS/probe.txt"
+    "$ENGINE" run --rm -v "$WS:$WS:rw" -w "$WS" "$IMG" cat probe.txt | grep -q t12b-marker
+    # The wrapper itself must run from a /tmp workspace (exercises run_tool).
+    (cd "$WS" && SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help >/dev/null 2>&1)
+' _ "$SCLAUDE"
+
+# ── T12c: / as workspace is refused ──────────────────────────────────
+# #66: a / workspace would bind the entire host filesystem into the sandbox.
+run_test "T12c: / workspace refused" bash -c '
+    if (cd / && SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help >/dev/null 2>/tmp/t12c-err); then
+        echo "running from / should have been refused" >&2
+        exit 1
+    fi
+    grep -q "refusing to run with / as the workspace" /tmp/t12c-err
+    rm -f /tmp/t12c-err
 ' _ "$SCLAUDE"
 
 # ── T13: echo -e portability ─────────────────────────────────────────

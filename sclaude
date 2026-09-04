@@ -871,6 +871,11 @@ sync_state() {
 
 validate_workspace() {
     WORKSPACE_PATH="$(pwd)"
+    if [ "$WORKSPACE_PATH" = "/" ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing to run with / as the workspace: the bind mount would expose the entire host filesystem to the sandbox." >&2
+        echo "[$SCRIPT_NAME] Run from a project directory instead." >&2
+        exit 1
+    fi
     if [[ "$WORKSPACE_PATH" == *:* ]]; then
         echo "[$SCRIPT_NAME] ERROR: workspace path contains a colon, which conflicts with Docker volume syntax:" >&2
         echo "  $WORKSPACE_PATH" >&2
@@ -891,7 +896,17 @@ build_docker_tty_flags() {
 run_tool() {
     local tool_args=()
     local nested_args=()
+    local tmpfs_args=(--tmpfs "/tmp:rw,nosuid,size=1g")
     local pids_limit="$PIDS_LIMIT"
+
+    case "$WORKSPACE_PATH" in
+        /tmp | /tmp/*)
+            # A tmpfs at /tmp would shadow the workspace bind mount beneath it
+            # (mount ordering is engine-dependent; podman mounts the tmpfs last,
+            # leaving the workspace empty inside the sandbox).
+            tmpfs_args=()
+            ;;
+    esac
 
     if [ "$YOLO" = true ]; then
         tool_args=("$YOLO_FLAG" "${ARGS[@]+"${ARGS[@]}"}")
@@ -925,7 +940,7 @@ run_tool() {
         --cpus="$CPU_LIMIT" \
         --pids-limit="$pids_limit" \
         "${nested_args[@]+"${nested_args[@]}"}" \
-        --tmpfs /tmp:rw,nosuid,size=1g \
+        "${tmpfs_args[@]+"${tmpfs_args[@]}"}" \
         --security-opt label=disable \
         --cap-drop=ALL \
         --cap-add=CHOWN \
