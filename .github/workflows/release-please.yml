@@ -35,7 +35,13 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created }}
     runs-on: ubuntu-latest
     steps:
+      # Check out the TAG, not github.sha: when merges land back-to-back, the
+      # run that creates the release can be the one triggered by an earlier
+      # commit, and assets built from that checkout predate the version-bump
+      # commit (shipped mis-stamped wrappers on v2.6.3).
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
       - name: Upload scripts and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
