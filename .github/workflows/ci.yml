@@ -144,6 +144,11 @@ jobs:
         # vz (Virtualization.framework) instead of the default qemu — markedly
         # faster on the Intel runners.
         run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30
+      - name: Prime the image build cache
+        # The cold build takes 10-20+ minutes depending on the runner instance
+        # and would trip the per-test timeout inside the suite; built here, T02
+        # revalidates the build path from cache in seconds.
+        run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
         # This job's unique coverage is the mac-host/VM topology; T10's update
         # logic is engine-independent and covered by every Linux job, and its

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cleanup helper for recovering local disk space and Podman/Docker state.
-# macOS-only: references ~/.Trash and the Apple Hypervisor Podman machine path.
+# macOS-only: references ~/.Trash and Podman machine artifact paths.
 set -euo pipefail
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -34,7 +34,7 @@ echo "build cache, networks, and volumes."
 echo ""
 echo "Current candidates:"
 du -sh "$HOME/.Trash" 2>/dev/null || true
-du -sh "$HOME"/.local/share/containers/podman/machine/applehv/sclaude-test-*.raw 2>/dev/null || true
+du -sh "$HOME"/.local/share/containers/podman/machine/*/sclaude-test-*.raw 2>/dev/null || true
 show_disk
 
 if confirm "Delete Trash contents?"; then
@@ -46,7 +46,7 @@ fi
 if confirm "Remove failed sclaude-test Podman machine artifacts if present?"; then
     pkill -f "podman machine init.*sclaude-test" 2>/dev/null || true
     podman machine rm -f sclaude-test 2>/dev/null || true
-    rm -f "$HOME"/.local/share/containers/podman/machine/applehv/sclaude-test-*.raw
+    rm -f "$HOME"/.local/share/containers/podman/machine/*/sclaude-test-*.raw
 fi
 
 if confirm "Restart existing podman-machine-default?"; then
