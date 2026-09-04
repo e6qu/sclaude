@@ -200,7 +200,7 @@ bash test_devcontainers.sh
 
 - [Security Architecture](docs/security.md) - Threat model, attack scenarios, hardening
 - [Storage Layout](docs/storage-layout.md) - Volume architecture and credential sync
-- [E2E Testing](docs/e2e-testing.md) - Cross-platform test plan and Lima VM setup
+- [E2E Testing](docs/e2e-testing.md) - Test matrix and cross-platform CI topologies
 - [Bug Tracker](BUGS.md) - Known issues and fix history
 - [Changelog](CHANGELOG.md) - Release history
 - [Contributing](CONTRIBUTING.md)
