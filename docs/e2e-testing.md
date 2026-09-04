@@ -49,6 +49,7 @@ Linux, against Docker or Podman.
 | T27: Nested containers | `--docker` mode: nested pull/run/build via rootless podman | -- |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
+| T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

@@ -554,4 +554,29 @@ run_test "T29: browser-open shim renders clickable URL" bash -c '
     printf "%s" "$out" | grep -q "]8;;"
 ' _ "$SCLAUDE"
 
+# ── T30: sandbox isolation assertions ────────────────────────────────
+# Adversarial checks of the security model's core claims (the original design
+# plan listed these but they were never implemented): no engine socket is
+# reachable, the other tool's secret volume is not mounted, and host files
+# beside the workspace do not leak into the sandbox.
+run_test "T30: sandbox isolation assertions" bash -c '
+    WS=$(mktemp -d /tmp/sagent-t30.XXXXXX)
+    SIBLING="$WS-sibling-secret"
+    echo leak-canary > "$SIBLING"
+    trap "rm -rf \"$WS\" \"$SIBLING\"" EXIT
+    "$ENGINE" run --rm \
+        -v "$WS:$WS:rw" \
+        -v sclaude-config:/sclaude-config:rw \
+        -w "$WS" \
+        --cap-drop=ALL \
+        --security-opt label=disable \
+        "$SUITE_IMG" bash -c "
+            set -e
+            [ ! -e /var/run/docker.sock ]
+            [ ! -e /run/docker.sock ]
+            [ ! -e /scodex-config ]
+            [ ! -e \"$SIBLING\" ]
+        "
+' _ "$SCLAUDE"
+
 print_results
