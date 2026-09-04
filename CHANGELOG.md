@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.4](https://github.com/e6qu/sclaude/compare/v2.6.3...v2.6.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* build release assets from the tag, not the triggering commit ([#30](https://github.com/e6qu/sclaude/issues/30)) ([dae7747](https://github.com/e6qu/sclaude/commit/dae7747a98ab63cb5180ba8c95cb3926e5cead0b))
+
 ## [2.6.3](https://github.com/e6qu/sclaude/compare/v2.6.2...v2.6.3) (2026-09-04)
 
 
