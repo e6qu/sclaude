@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.1](https://github.com/e6qu/sclaude/compare/v2.6.0...v2.6.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* reset leaves pinned volumes silently; boy-scout doc and test hardening ([#21](https://github.com/e6qu/sclaude/issues/21)) ([63cac3b](https://github.com/e6qu/sclaude/commit/63cac3bdc59cf7a45fc2ca5081099ad2c1665fb1))
+
 ## [2.6.0](https://github.com/e6qu/sclaude/compare/v2.5.3...v2.6.0) (2026-09-03)
 
 
