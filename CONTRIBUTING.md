@@ -51,11 +51,14 @@ Do not work around it.
 The project ships two physical bash scripts: `sclaude` for Claude Code and
 `scodex` for Codex CLI. They intentionally share the same Docker image design.
 
-The image hash covers the generated Dockerfile, the UID/GID build args and
-the optional CA bundle: any change to the Dockerfile heredoc yields a new hash
-and the image rebuilds on the next run. Changes elsewhere in the wrappers
-(runtime flags, commands, messages) keep the hash, so existing users are not
-forced to rebuild.
+The image hash covers the generated Dockerfile (including the toolchain
+versions interpolated into its `FROM`/`ARG` lines), the UID/GID build args
+and the optional CA bundle: any change to the Dockerfile heredoc or a version
+default yields a new hash and the image rebuilds on the next run. Changes
+elsewhere in the wrappers (runtime flags, commands, messages) keep the hash,
+so existing users are not forced to rebuild. When bumping a version default,
+also bump the volume stamps' expectations only if the stamp keys change; the
+values are taken from the settings automatically.
 
 ## Code Standards
 

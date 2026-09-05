@@ -14,20 +14,37 @@ Docker Volume              Container Mount                   Purpose
 ─────────────────────────  ────────────────────────────────  ────────────────────────────────
 sclaude-config          →  /sclaude-config/                  Claude Code config & credentials
 scodex-config           →  /scodex-config/                   Codex auth and config
-sagent-rootfs           →  /home/agent/                      Shared home directory & preferences
+sagent-rootfs           →  /home/agent/                      Shared home directory & preferences; Go, cargo, Maven/Gradle caches
 sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages
-sagent-pip              →  /home/agent/.local/               Shared pip user packages
+sagent-pip              →  /home/agent/.local/               Shared pip user packages, uv-managed Pythons, pip scripts
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
 sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
 $(pwd -P)               →  $(pwd)                            Current workspace directory (physical path mounted at the logical path)
 ```
 
+## Toolchain stamps
+
+The cache volumes (`sagent-npm`, `sagent-pip`, `sagent-apt-cache`,
+`sagent-apt-lists`, `sagent-containers`) each carry a `.sagent-stamp` file
+naming the toolchain they were filled for (`node=26`, `python=3.14`,
+`ubuntu=26.04`). The helper container that runs before every sandbox launch
+compares the stamp with the image's toolchain and, when they differ, clears
+the volume's contents and prints a warning: pip site-packages are per Python
+minor version, npm native addons are built against one Node ABI, and apt and
+podman state belong to one Ubuntu release. A volume without a stamp (created
+by an older wrapper) is treated the same way once. Nothing else needs to be
+run after a version change; `sclaude volumes` shows usage and
+`sclaude reset-caches` clears these volumes on demand.
+
 ## Environment Variables
 
 - `CLAUDE_CONFIG_DIR=/sclaude-config` - Tells Claude Code where to find credentials and configuration
+- `JAVA_HOME=/opt/java`, `RUSTUP_HOME=/opt/rust/rustup` - System-wide JDK and rustup toolchain; `CARGO_HOME` is unset so cargo's registry and `cargo install` land in `/home/agent/.cargo`
+- `PATH` puts `~/.npm-global/bin`, `~/.local/bin`, `~/.cargo/bin` and `~/go/bin` (all persistent) ahead of the system toolchains in `/usr/local/go/bin`, `/opt/rust/cargo/bin` and `/opt/java/bin`
 - `CODEX_HOME=/scodex-config` - Tells Codex where to find auth and runtime state
-- `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set in the image only when it was built with `SAGENT_CA_BUNDLE`; they point Node, OpenSSL/Codex, requests and pip at the extra trust anchors (see the README's corporate-network section)
+- `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` - Always set: the uv-built Python's OpenSSL expects `/etc/ssl/cert.pem`, which Ubuntu lacks; Codex reads it too
+- `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set only when the image was built with `SAGENT_CA_BUNDLE`; they point Node, requests and pip at the extra trust anchors (see the README's corporate-network section)
 
 ## Key Files and Directories
 
@@ -45,7 +62,10 @@ $(pwd -P)               →  $(pwd)                            Current workspace
 
 ### Package Management
 - `/home/agent/.npm-global/` - npm global packages
-- `/home/agent/.local/` - pip user packages
+- `/home/agent/.local/` - pip user packages, uv-managed Pythons (`uv python install` as the agent)
+- `/home/agent/go/` - Go module cache and `go install` binaries
+- `/home/agent/.cargo/` - cargo registry and `cargo install` binaries
+- `/home/agent/.m2/`, `/home/agent/.gradle/` - Maven and Gradle caches (projects' `mvnw`/`gradlew` wrappers download into them)
 - `/var/cache/apt/` - apt package cache
 - `/var/lib/apt/lists/` - apt package lists
 

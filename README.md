@@ -117,11 +117,32 @@ Browser login flows work from inside the sandbox: `xdg-open`/`$BROWSER` render
 each URL as a clickable terminal hyperlink, so Cmd/Ctrl+click in the TUI opens
 it in your host browser (claude and codex logins, `gh auth login`).
 
-The shared image is Ubuntu 24.04 with the Claude Code and Codex CLIs, the
-GitHub CLI (`gh`), Node.js 24, Python 3 with pip, git, build-essential, and
-rootless podman with a `docker` shim. `gh` authenticates either with
-`gh auth login` inside the sandbox (persisted in the `sagent-rootfs` volume)
-or with a `GH_TOKEN` set on the host, which is passed through.
+The shared image is Ubuntu 26.04 with the Claude Code and Codex CLIs, the
+GitHub CLI (`gh`), and full toolchains for Node.js 26, Python 3.14 (with pip
+and `uv`), Go 1.27, Rust stable (rustup with rustfmt and clippy), and Java 26
+(Eclipse Temurin), plus git, build-essential, and rootless podman with a
+`docker` shim. Every version is a setting (see [Configuration](#configuration))
+and the defaults follow the latest releases; `sclaude version` prints the
+toolchain in effect.
+
+On top of the languages, the image carries the everyday tooling at its latest
+release as of the build: TypeScript (`tsc`), `tsx`, `bun`, `yarn` and `pnpm`
+(through corepack, so a project's `packageManager` field picks the version),
+and the `create-next-app`, `create-vite` and `shadcn` scaffolding CLIs; for
+Java, Maven, Gradle, the Quarkus CLI and the Spring Boot CLI. Frameworks such
+as React, Next.js, htmx, shadcn components, Spring Boot and Quarkus are
+project dependencies that this tooling installs into the workspace; their
+package caches persist in the home volume. Expect the image to be about
+4.3 GB with everything on; `SAGENT_GO_VERSION=none` and friends trim it. `gh` authenticates either with `gh auth login` inside
+the sandbox (persisted in the `sagent-rootfs` volume) or with a `GH_TOKEN`
+set on the host, which is passed through.
+
+Upgrades never need anything from you: a changed version is a new image that
+builds on the next run, and cache volumes that were filled for the old
+toolchain (pip packages are per Python minor, npm globals per Node major, apt
+and nested-container state per Ubuntu release) are cleared automatically
+with a warning. Go, Rust and Java caches live in the home directory and are
+version-independent, so they survive.
 
 Yolo mode is on by default since Docker is the outer sandbox. `sclaude` maps it
 to `--dangerously-skip-permissions`; `scodex` maps it to
@@ -144,8 +165,9 @@ passed through.
 | `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
 | `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
-| `sclaude version` | Show version and build metadata |
-| `sclaude volumes` | Show Docker volume info |
+| `sclaude version` | Show version, toolchain and build metadata |
+| `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
+| `sclaude reset-caches` | Clear the cache volumes (npm, pip, apt, nested container images); keeps credentials, config and the home directory |
 | `sclaude reset` | Delete all persistent data |
 
 ## How It Works
@@ -172,12 +194,15 @@ Data survives across runs via Docker volumes:
 |--------|----------|
 | `sclaude-config` | Claude credentials, config |
 | `scodex-config` | Codex auth and config |
-| `sagent-rootfs` | Shared home directory, preferences |
-| `sagent-npm` | Shared npm global packages |
-| `sagent-pip` | Shared pip user packages |
-| `sagent-apt-cache` | Shared apt package cache |
-| `sagent-apt-lists` | Shared apt package lists |
-| `sagent-containers` | Nested container images/state (`--docker` mode) |
+| `sagent-rootfs` | Shared home directory: shell state, `gh` auth, Go module cache, cargo registry, Maven/Gradle caches |
+| `sagent-npm` | Shared npm global packages (cache; cleared on a Node major change) |
+| `sagent-pip` | Shared pip user packages and uv-managed Pythons (cache; cleared on a Python minor change) |
+| `sagent-apt-cache` | Shared apt package cache (cache; cleared on an Ubuntu change) |
+| `sagent-apt-lists` | Shared apt package lists (cache; cleared on an Ubuntu change) |
+| `sagent-containers` | Nested container images/state (cache; cleared on an Ubuntu change) |
+
+`sclaude volumes` shows what each one takes up; `sclaude reset-caches`
+clears the ones marked cache.
 
 ## Configuration
 
@@ -192,6 +217,14 @@ PIDS_LIMIT_NESTED="1024"   # Default: 512 (used when container tooling is on)
 SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
 SAGENT_CONTAINER_ENGINE=podman
 SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"  # Extra CA certs baked into the image
+
+# Toolchain versions (defaults are the latest releases; all part of the image hash)
+SAGENT_UBUNTU_VERSION="26.04"   # Ubuntu base image tag
+SAGENT_NODE_VERSION="26"        # Node.js major, official tarball (latest patch)
+SAGENT_PYTHON_VERSION="3.14"    # CPython minor via uv (latest patch)
+SAGENT_GO_VERSION="1.27"        # Go: major.minor (latest patch), exact version, or none
+SAGENT_RUST_VERSION="stable"    # Rust: stable, beta, nightly, exact version, or none
+SAGENT_JAVA_VERSION="26"        # Java: Temurin JDK major, or none
 ```
 
 `SAGENT_CONFIG_FILE=/path/to/config` points both wrappers at a different file.
