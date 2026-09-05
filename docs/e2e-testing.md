@@ -26,7 +26,7 @@ Linux, against Docker or Podman.
 | T11: Resource limits (PID) | Fork bomb containment | -- |
 | T12: Path with spaces | Quoting correctness in mounts; the spaced path is actually mounted and read | #10, #73 |
 | T09b: Reset pinned volumes | `reset` fails loudly naming volumes held by running containers | #64 |
-| T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs; physical path mounted at the logical path | #65, #71 |
+| T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs; physical path mounted at the logical path; the agent can read and write it | #65, #71, #75 |
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `echo -e` / printf portability | No literal `-e` in output | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
@@ -53,6 +53,7 @@ Linux, against Docker or Podman.
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
 | T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed | #68 |
 | T33: Rancher Desktop share check | Stub engine reporting the `rancher-desktop` context: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass | #74 |
+| T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused before any engine call; `version` still works | #75 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -77,7 +78,9 @@ Test bodies run under `bash -ec`, so every command in a test is an assertion
 
 Fixtures that get bind-mounted into containers are created under
 `SAGENT_TEST_TMPDIR` (default `/tmp`). Point it under your home directory for
-engines that share only `$HOME` with their VM, such as Rancher Desktop.
+engines that share only `$HOME` with their VM, such as Rancher Desktop. Tests
+that replicate `run_tool`'s mounts pass `$SAGENT_TEST_USERNS`, which the
+suite sets to the wrapper's keep-id mapping on rootless podman.
 
 Each test has a portable timeout so engine hangs fail cleanly instead of
 blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
@@ -110,8 +113,8 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | Job | Topology |
 |---|---|
 | test-linux | docker CLI on docker server (Ubuntu, AppArmor enforcing) |
-| test-linux-podman | rootless podman CLI on podman |
-| test-linux-docker-cli-podman | real docker CLI on podman's docker-compat socket |
+| test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
+| test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
 | test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs |
 | test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount) |

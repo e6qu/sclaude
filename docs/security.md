@@ -44,6 +44,10 @@ the directory stays stable. `/` is refused as a workspace.
 - Docker bind mounts create isolated filesystem namespace
 - Kernel enforces boundaries at mount point
 - No amount of `..` traversal can escape
+- On rootless podman the wrapper adds `--userns=keep-id:uid=<host>,gid=<host>`
+  so the sandbox user is your user on the host side (the container's root and
+  every other UID stay in your subordinate-UID range); the docker CLI cannot
+  request that mapping, so a rootless daemon behind it is refused
 
 #### Docker Volumes for Persistence
 ```bash

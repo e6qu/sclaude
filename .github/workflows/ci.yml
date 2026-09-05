@@ -82,7 +82,10 @@ jobs:
 
   # Real docker CLI talking to a podman server through the docker-compat
   # socket — the flavor combo where builds must use the classic builder
-  # endpoint (DOCKER_BUILDKIT=0) instead of buildx.
+  # endpoint (DOCKER_BUILDKIT=0) instead of buildx. The socket is rootful
+  # (the podman-docker server arrangement): on a rootless socket the docker
+  # CLI cannot request podman's keep-id mapping and the wrapper refuses (#75,
+  # covered by T34 with a stub).
   test-linux-docker-cli-podman:
     if: >-
       github.event_name == 'push' ||
@@ -93,14 +96,17 @@ jobs:
       - name: Install podman and expose its docker-compat socket
         run: |
           sudo apt-get update && sudo apt-get install -y podman
-          podman system service --time=0 "unix:///tmp/podman-compat.sock" &
+          sudo podman system service --time=0 "unix:///tmp/podman-compat.sock" &
           for _ in $(seq 1 20); do
             [ -S /tmp/podman-compat.sock ] && break
             sleep 0.5
           done
+          sudo chmod 666 /tmp/podman-compat.sock
           echo "DOCKER_HOST=unix:///tmp/podman-compat.sock" >> "$GITHUB_ENV"
-      - name: Verify flavor detection
-        run: docker version | grep -qi podman
+      - name: Verify flavor detection (podman server, rootful)
+        run: |
+          docker version | grep -qi podman
+          docker info --format '{{join .SecurityOptions ","}}' | grep -qv rootless
       - name: Run E2E tests (docker CLI on podman server)
         run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
 

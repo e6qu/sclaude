@@ -23,6 +23,13 @@ ENGINE="${SAGENT_CONTAINER_ENGINE:-docker}"
 # just $HOME), so such jobs point this somewhere under the home directory.
 SAGENT_TEST_TMPDIR="${SAGENT_TEST_TMPDIR:-/tmp}"
 export SAGENT_TEST_TMPDIR
+# Tests that replicate run_tool's bind mounts need the wrapper's rootless-podman
+# user mapping too (#75); empty on every other engine.
+SAGENT_TEST_USERNS=""
+if [ "$("$ENGINE" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
+    SAGENT_TEST_USERNS="--userns=keep-id:uid=$(id -u),gid=$(id -g)"
+fi
+export SAGENT_TEST_USERNS
 export SAGENT_CONTAINER_ENGINE="$ENGINE"
 export ENGINE
 
@@ -228,7 +235,7 @@ run_test "T12: path with spaces" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" version
     # The mount itself, quoted the way run_tool quotes it.
     echo t12-marker > "$TEST_DIR/probe.txt"
-    "$ENGINE" run --rm -v "$(pwd -P):$TEST_DIR:rw" -w "$TEST_DIR" "$SUITE_IMG" cat probe.txt | grep -q t12-marker
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$(pwd -P):$TEST_DIR:rw" -w "$TEST_DIR" "$SUITE_IMG" cat probe.txt | grep -q t12-marker
 ' _ "$SCLAUDE"
 
 # ── T12b: workspace under /tmp is not shadowed by the tmpfs ──────────
@@ -242,7 +249,10 @@ run_test "T12b: /tmp workspace visible in sandbox" bash -ec '
     trap "rm -rf \"$WS\"" EXIT
     WS_HOST=$(cd "$WS" && pwd -P)
     echo t12b-marker > "$WS/probe.txt"
-    "$ENGINE" run --rm -v "$WS_HOST:$WS:rw" -w "$WS" "$IMG" cat probe.txt | grep -q t12b-marker
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$WS_HOST:$WS:rw" -w "$WS" "$IMG" \
+        sh -c "cat probe.txt && touch written-by-agent"
+    grep -q t12b-marker "$WS/probe.txt"
+    [ -f "$WS/written-by-agent" ]
     # The wrapper itself must run from a /tmp workspace (exercises run_tool).
     (cd "$WS" && SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help >/dev/null 2>&1)
 ' _ "$SCLAUDE"
@@ -579,7 +589,7 @@ run_test "T30: sandbox isolation assertions" bash -ec '
     SIBLING="$WS-sibling-secret"
     echo leak-canary > "$SIBLING"
     trap "rm -rf \"$WS\" \"$SIBLING\"" EXIT
-    "$ENGINE" run --rm \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS \
         -v "$(cd "$WS" && pwd -P):$WS:rw" \
         -v sclaude-config:/sclaude-config:rw \
         -w "$WS" \
@@ -635,7 +645,7 @@ run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
         tail -40 "$tmp/build.log" >&2
         exit 1
     fi
-    "$ENGINE" run --rm -v "$(cd "$tmp" && pwd -P):/t31:ro" --security-opt label=disable "$IMG" bash -c "
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$(cd "$tmp" && pwd -P):/t31:ro" --security-opt label=disable "$IMG" bash -c "
         set -e
         [ \"\$SSL_CERT_FILE\" = /etc/ssl/certs/ca-certificates.crt ]
         [ \"\$NODE_EXTRA_CA_CERTS\" = /usr/local/share/sagent-ca-bundle.pem ]
@@ -756,6 +766,37 @@ STUB
     (cd "$tmp" && SAGENT_SKIP_SHARE_CHECK=1 "$1" --help) | grep -q "STUB-RUN.*--help"
     # A workspace under $HOME is fine.
     (cd "$home_ws" && "$1" --help) | grep -q "STUB-RUN.*--help"
+' _ "$SCLAUDE"
+
+# ── T34: docker CLI on a rootless daemon is refused ──────────────────
+# #75: the docker CLI cannot request podman's keep-id mapping, so on a
+# rootless daemon the workspace would be unusable; the wrapper must say so
+# before touching anything. A stub engine reports a rootless podman server.
+run_test "T34: docker CLI on rootless daemon refused" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t34.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) [ "\${2:-}" = "--format" ] && echo "name=seccomp,profile=default,name=rootless"; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer:\n Podman Engine:\n"; exit 0 ;;
+    *) echo "STUB-CALLED \$*"; exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    if "$1" --help >"$tmp/out" 2>"$tmp/err"; then
+        echo "docker CLI on a rootless daemon should have been refused" >&2
+        exit 1
+    fi
+    grep -q "rootless podman daemon" "$tmp/err"
+    grep -q "SAGENT_CONTAINER_ENGINE=podman" "$tmp/err"
+    if grep -q "STUB-CALLED" "$tmp/out"; then
+        echo "engine was invoked (image build, volumes or run) despite the refusal" >&2
+        exit 1
+    fi
+    # Management commands still work against such an engine.
+    "$1" version | grep -q "rootless: true"
 ' _ "$SCLAUDE"
 
 print_results

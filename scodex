@@ -185,6 +185,24 @@ detect_engine_flavor() {
     case "$server_section" in
         *[Pp]odman*) ENGINE_SERVER_FLAVOR="podman" ;;
     esac
+
+    # A rootless daemon maps the container's non-root UIDs to subordinate
+    # UIDs, so the sandbox user (the host UID inside the image) is a stranger
+    # to the workspace bind mount: unreadable when 0700, read-only otherwise
+    # (#75). Podman's --userns=keep-id maps the invoking user onto that UID;
+    # the docker CLI has no way to request it, so that combination is refused.
+    ENGINE_ROOTLESS=false
+    USERNS_ARGS=()
+    if [ "$ENGINE_CLI_FLAVOR" = "podman" ]; then
+        if [ "$("$ENGINE_CMD" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
+            ENGINE_ROOTLESS=true
+            USERNS_ARGS=("--userns=keep-id:uid=$HOST_UID,gid=$HOST_GID")
+        fi
+    else
+        case "$("$ENGINE_CMD" info --format '{{join .SecurityOptions ","}}' 2>/dev/null)" in
+            *name=rootless*) ENGINE_ROOTLESS=true ;;
+        esac
+    fi
 }
 
 get_dockerfile_content() {
@@ -448,7 +466,7 @@ show_version() {
 
     echo "Script: $SCRIPT_NAME"
     echo "Wrapper version: v$WRAPPER_VERSION"
-    echo "Engine: $ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR)"
+    echo "Engine: $ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR, rootless: $ENGINE_ROOTLESS)"
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
     echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
@@ -970,7 +988,7 @@ sync_codex_config_files() {
     # of CODEX_HOME is denied on SELinux-enforcing hosts (Fedora/RHEL + podman)
     # and breaks on paths containing colons.
     # shellcheck disable=SC2016
-    tar -C "$codex_home" -cf - "${files[@]}" | "$ENGINE_CMD" run --rm -i --user root \
+    tar -C "$codex_home" -cf - "${files[@]}" | "$ENGINE_CMD" run --rm -i --user root "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME":/vol-config \
         "$IMAGE_NAME" \
         bash -c '
@@ -990,7 +1008,7 @@ sync_state() {
     read_credentials
 
     # shellcheck disable=SC2016
-    printf '%s' "$CREDS" | "$ENGINE_CMD" run --rm -i --user root \
+    printf '%s' "$CREDS" | "$ENGINE_CMD" run --rm -i --user root "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME":/vol-config \
         -v "$ROOTFS_VOLUME":/vol-rootfs \
         -v "$NPM_VOLUME":/vol-npm \
@@ -1026,6 +1044,16 @@ sync_state() {
 }
 
 validate_workspace() {
+    if [ "$ENGINE_ROOTLESS" = true ] && [ "$ENGINE_CLI_FLAVOR" = "docker" ]; then
+        echo "[$SCRIPT_NAME] ERROR: $ENGINE_CMD talks to a rootless $ENGINE_SERVER_FLAVOR daemon, which maps the sandbox user to a subordinate UID: the workspace bind mount would be unreadable or read-only inside the sandbox." >&2
+        if [ "$ENGINE_SERVER_FLAVOR" = "podman" ]; then
+            echo "[$SCRIPT_NAME] Use the podman CLI directly (SAGENT_CONTAINER_ENGINE=podman): it maps your user in with --userns=keep-id. The docker CLI cannot request that mapping." >&2
+        else
+            echo "[$SCRIPT_NAME] Rootless Docker is not supported; use a rootful Docker daemon or rootless podman via the podman CLI." >&2
+        fi
+        exit 1
+    fi
+
     # Logical path (what the user sees, and what the tool's per-directory
     # session state is keyed on) becomes the mount target; the physical path
     # (symlinks resolved) is the mount source. Engines that run in a VM only
@@ -1110,7 +1138,7 @@ run_tool() {
 
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
     # workspace bind mount is otherwise unreadable without relabeling host files.
-    exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm \
+    exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
@@ -1196,10 +1224,10 @@ case "$WRAPPER_COMMAND" in
         ;;
 esac
 
+validate_workspace
 ensure_image
 check_release false
 create_volumes
 sync_state
-validate_workspace
 build_docker_tty_flags
 run_tool

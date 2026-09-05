@@ -6,7 +6,11 @@ Same CLI, isolated filesystem.
 ## Requirements
 
 - Docker or Podman: Docker Engine, Docker Desktop, Rancher Desktop (dockerd
-  engine), colima, or a podman machine
+  engine), colima, or a podman machine; rootless podman works through the
+  podman CLI (the wrapper maps your user in with `--userns=keep-id`). Rootless
+  Docker, and the docker CLI on a rootless podman socket, are refused because
+  the docker CLI cannot request that mapping and the workspace would be
+  unusable inside the sandbox
 - macOS or Linux
 - bash (zsh also works)
 
