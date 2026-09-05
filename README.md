@@ -21,9 +21,9 @@ not supported. Rancher Desktop shares only `/Users/$USER` (and
 home directory and `/tmp/colima`, so the wrappers refuse a workspace outside
 those paths (it would mount empty); run from under your home directory, or
 set `SAGENT_SKIP_SHARE_CHECK=1` if you added the path to the tool's shared
-mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested container
-tooling needs `/dev/fuse` and `/dev/net/tun` in the engine VM; if `docker run`
-rejects either device, run with `--no-docker` (or `SAGENT_DOCKER=0`).
+mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested
+container tooling works in Rancher Desktop's VM; CI runs the full suite
+against Rancher Desktop on macOS.
 
 **Corporate networks (TLS-inspecting proxies)**: if the first build fails with
 `curl: (60) SSL certificate problem: unable to get local issuer certificate`,
