@@ -201,11 +201,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Rancher Desktop
-        # --no-quarantine: a quarantined GUI app launched via `open` blocks on a
-        # Gatekeeper prompt nobody can click on a runner (the app process
-        # existed but never wrote settings or logs).
+        # Strip the quarantine attribute Homebrew puts on casks: a quarantined
+        # GUI app launched via `open` blocks on a Gatekeeper prompt nobody can
+        # click on a runner (the app process existed but never wrote settings
+        # or logs). Homebrew no longer accepts --no-quarantine.
         run: |
-          brew install --cask --no-quarantine rancher
+          brew install --cask rancher
+          xattr -l "/Applications/Rancher Desktop.app" || true
+          xattr -dr com.apple.quarantine "/Applications/Rancher Desktop.app" || true
           xattr -l "/Applications/Rancher Desktop.app" || true
       - name: Start Rancher Desktop (dockerd engine, no Kubernetes, in the background)
         run: |
