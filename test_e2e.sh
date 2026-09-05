@@ -900,25 +900,25 @@ run_test "T36: stale toolchain caches cleared automatically" bash -ec '
     IMG="$SUITE_IMG"
     "$ENGINE" volume rm sagent-pip >/dev/null 2>&1 || true
     "$ENGINE" volume create sagent-pip >/dev/null
-    "$ENGINE" run --rm --user root -v sagent-pip:/v "$IMG" bash -c "
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-pip:/v "$IMG" bash -c "
         mkdir -p /v/lib/python3.9/site-packages && echo old > /v/lib/python3.9/site-packages/old.py
         echo python=3.9 > /v/.sagent-stamp
     "
     out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
     echo "$out" | grep -q "Sandbox Python changed (python=3.9 -> python="
     py=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/.*python=\([^ ]*\).*/\1/p")
-    "$ENGINE" run --rm -v sagent-pip:/v "$IMG" bash -ec "
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -ec "
         [ ! -e /v/lib ]
         [ \"\$(cat /v/.sagent-stamp)\" = python=$py ]
     "
     # A second run with the same toolchain leaves the volume alone (and is quiet).
-    "$ENGINE" run --rm -v sagent-pip:/v "$IMG" bash -c "echo keep > /v/keep"
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -c "echo keep > /v/keep"
     out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
     if echo "$out" | grep -q "changed ("; then
         echo "unchanged toolchain must not clear caches" >&2
         exit 1
     fi
-    "$ENGINE" run --rm -v sagent-pip:/v "$IMG" test -f /v/keep
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" test -f /v/keep
 ' _ "$SCLAUDE"
 
 # ── T37: reset-caches keeps credentials, config and home ─────────────
