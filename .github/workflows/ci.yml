@@ -197,7 +197,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Rancher Desktop
-        run: brew install --cask rancher
+        # --no-quarantine: a quarantined GUI app launched via `open` blocks on a
+        # Gatekeeper prompt nobody can click on a runner (the app process
+        # existed but never wrote settings or logs).
+        run: |
+          brew install --cask --no-quarantine rancher
+          xattr -l "/Applications/Rancher Desktop.app" || true
       - name: Start Rancher Desktop (dockerd engine, no Kubernetes, in the background)
         run: |
           "$RDCTL" start \
@@ -221,9 +226,12 @@ jobs:
             sleep 10
           done
           echo "Rancher Desktop did not become ready" >&2
+          pgrep -fl "Rancher Desktop" || echo "no Rancher Desktop process"
           "$RDCTL" list-settings || true
-          ls -la "$HOME/.rd/bin" || true
+          ls -la "$HOME/.rd/bin" "$HOME/Library/Application Support/rancher-desktop" || true
           tail -n 100 "$HOME"/Library/Logs/rancher-desktop/*.log || true
+          # macOS unified log: Gatekeeper/launch services/crash reports for the app.
+          log show --last 20m --predicate 'process == "Rancher Desktop" OR eventMessage CONTAINS "Rancher Desktop"' --style compact 2>/dev/null | tail -n 80 || true
           exit 1
       - name: Verify the docker CLI is Rancher Desktop's
         run: |
