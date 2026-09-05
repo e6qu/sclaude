@@ -165,12 +165,13 @@ jobs:
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
         # This job's unique coverage is the mac-host/VM topology; T10's update
-        # logic is engine-independent and covered by every Linux job, and its
-        # forced no-cache rebuild takes 30+ minutes on this runner. The cold
-        # T02 build needs more than the default 600s per-test budget.
+        # logic and T31's CA-bundle build are engine-independent and covered by
+        # every Linux job, and each costs a full image build (30+ minutes for
+        # T10's no-cache rebuild on this runner). The cold T02 build needs
+        # more than the default 600s per-test budget.
         env:
           TEST_TIMEOUT_SECONDS: "1200"
-          SAGENT_TEST_SKIP: "T10"
+          SAGENT_TEST_SKIP: "T10 T31"
         run: bash test_e2e.sh
 
   test-devcontainers:

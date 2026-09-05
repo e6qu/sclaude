@@ -37,8 +37,8 @@ HOST_GID=$(id -g)
 # Optional config file: plain bash sourced at startup. May set the tunables
 # above (MEMORY_LIMIT, CPU_LIMIT, PIDS_LIMIT, PIDS_LIMIT_NESTED,
 # ENGINE_TIMEOUT_SECONDS) and defaults for SAGENT_DOCKER /
-# SAGENT_CONTAINER_ENGINE. Environment variables and command-line flags take
-# precedence over the file.
+# SAGENT_CONTAINER_ENGINE / SAGENT_CA_BUNDLE. Environment variables and
+# command-line flags take precedence over the file.
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
 if [ -f "$SAGENT_CONFIG_FILE" ]; then
     # Validate before sourcing: a syntax error mid-source would abort the
@@ -49,11 +49,34 @@ if [ -f "$SAGENT_CONFIG_FILE" ]; then
     fi
     _env_sagent_docker="${SAGENT_DOCKER:-}"
     _env_sagent_engine="${SAGENT_CONTAINER_ENGINE:-}"
+    _env_sagent_ca_bundle="${SAGENT_CA_BUNDLE:-}"
     # shellcheck disable=SC1090
     . "$SAGENT_CONFIG_FILE"
     if [ -n "$_env_sagent_docker" ]; then SAGENT_DOCKER="$_env_sagent_docker"; fi
     if [ -n "$_env_sagent_engine" ]; then SAGENT_CONTAINER_ENGINE="$_env_sagent_engine"; fi
-    unset _env_sagent_docker _env_sagent_engine
+    if [ -n "$_env_sagent_ca_bundle" ]; then SAGENT_CA_BUNDLE="$_env_sagent_ca_bundle"; fi
+    unset _env_sagent_docker _env_sagent_engine _env_sagent_ca_bundle
+fi
+
+# Extra trust anchors for the sandbox image. Corporate networks often run a
+# TLS-inspecting proxy whose CA the host trusts (macOS keychain, Linux system
+# store) but a fresh Ubuntu image does not: Docker Desktop and Rancher Desktop
+# trust the host's CAs for image pulls, yet every `RUN curl`/`npm install` in
+# the build and every HTTPS request from inside the sandbox fails with
+# "unable to get local issuer certificate". SAGENT_CA_BUNDLE names a PEM file
+# (one or more certificates) that gets baked into the image's trust store.
+CA_BUNDLE_PATH="${SAGENT_CA_BUNDLE:-}"
+CA_BUNDLE_CERT_COUNT=0
+if [ -n "$CA_BUNDLE_PATH" ]; then
+    if [ ! -f "$CA_BUNDLE_PATH" ] || [ ! -r "$CA_BUNDLE_PATH" ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_CA_BUNDLE is not a readable file: $CA_BUNDLE_PATH" >&2
+        exit 1
+    fi
+    CA_BUNDLE_CERT_COUNT=$(grep -c -- '-----BEGIN CERTIFICATE-----' "$CA_BUNDLE_PATH" || true)
+    if [ "$CA_BUNDLE_CERT_COUNT" -eq 0 ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_CA_BUNDLE contains no PEM certificates (no '-----BEGIN CERTIFICATE-----' block): $CA_BUNDLE_PATH" >&2
+        exit 1
+    fi
 fi
 
 TEMP_FILES=()
@@ -123,7 +146,17 @@ select_engine() {
         fi
     done
 
-    echo "[$SCRIPT_NAME] ERROR: neither docker nor podman is available and responding." >&2
+    # Name the likely cause from what is actually on PATH instead of a generic
+    # "no engine" message.
+    if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] ERROR: a container engine CLI is installed but no daemon answered within ${ENGINE_TIMEOUT_SECONDS}s (tried: docker, podman)." >&2
+        echo "[$SCRIPT_NAME] Start Docker Desktop, Rancher Desktop, colima, or the podman machine, then retry. SAGENT_ENGINE_TIMEOUT_SECONDS raises the probe timeout." >&2
+    elif command -v rdctl >/dev/null 2>&1 || command -v nerdctl >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] ERROR: Rancher Desktop is installed but no docker CLI is available." >&2
+        echo "[$SCRIPT_NAME] The wrappers need the dockerd (moby) engine: Rancher Desktop > Preferences > Container Engine > dockerd (moby), and ~/.rd/bin on PATH. The containerd engine (nerdctl) is not supported." >&2
+    else
+        echo "[$SCRIPT_NAME] ERROR: neither docker nor podman is available and responding." >&2
+    fi
     echo "[$SCRIPT_NAME] Set SAGENT_CONTAINER_ENGINE=docker or SAGENT_CONTAINER_ENGINE=podman to choose explicitly." >&2
     exit 1
 }
@@ -163,6 +196,29 @@ RUN apt-get update && apt-get install -y \
     curl git python3 python3-pip build-essential ca-certificates gnupg sudo \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
     && rm -rf /var/lib/apt/lists/*
+DOCKERFILE_END
+
+    # Trust anchors go in before the first HTTPS fetch. One file per
+    # certificate under /usr/local/share/ca-certificates (update-ca-certificates
+    # indexes files, not bundles) feeds curl, apt, git, Python's ssl module and
+    # podman via the system store. Tools that keep their own store get the
+    # merged bundle explicitly: Node/npm and the Claude CLI (NODE_EXTRA_CA_CERTS),
+    # the Codex CLI (SSL_CERT_FILE), requests and pip.
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        cat <<'DOCKERFILE_END'
+
+# Extra trust anchors from SAGENT_CA_BUNDLE (a TLS-inspecting proxy's CA).
+COPY sagent-ca/ /usr/local/share/ca-certificates/sagent/
+COPY sagent-ca-bundle.pem /usr/local/share/sagent-ca-bundle.pem
+RUN update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/sagent-ca-bundle.pem
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+DOCKERFILE_END
+    fi
+
+    cat <<'DOCKERFILE_END'
 
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -257,14 +313,18 @@ ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:${PATH}"
 DOCKERFILE_END
 }
 
-# The hash covers image content only: the Dockerfile and the UID/GID build
-# args. Runtime limits (memory/cpu/pids) are container run flags — including
-# them here forced a full rebuild whenever a limit was tuned.
+# The hash covers image content only: the Dockerfile, the UID/GID build args
+# and the CA bundle that gets COPYed in. Runtime limits (memory/cpu/pids) are
+# container run flags — including them here forced a full rebuild whenever a
+# limit was tuned.
 get_version_hash() {
     {
         get_dockerfile_content
         echo "USER_UID=$HOST_UID"
         echo "USER_GID=$HOST_GID"
+        if [ -n "$CA_BUNDLE_PATH" ]; then
+            echo "CA_BUNDLE_SHA256=$(portable_sha256 < "$CA_BUNDLE_PATH")"
+        fi
     } | portable_sha256 | cut -c1-8
 }
 
@@ -300,14 +360,18 @@ build_image() {
         fi
     fi
 
-    # Build from an empty temp directory: the Dockerfile COPYs nothing, and using
-    # the wrapper's own directory as context would tar and send everything next to
-    # the installed script (e.g. all of /usr/local/bin, or a repo checkout with
-    # its .git) to the daemon on every build.
+    # Build from a fresh temp directory holding only the Dockerfile and the
+    # optional CA bundle: using the wrapper's own directory as context would tar
+    # and send everything next to the installed script (e.g. all of
+    # /usr/local/bin, or a repo checkout with its .git) to the daemon on every
+    # build.
     temp_context=$(mktemp -d)
     TEMP_FILES+=("$temp_context")
     temp_dockerfile="$temp_context/Dockerfile"
     get_dockerfile_content > "$temp_dockerfile"
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        stage_ca_bundle "$temp_context"
+    fi
 
     build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     cat >> "$temp_dockerfile" <<EOF
@@ -317,16 +381,58 @@ RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' >
 USER agent
 EOF
 
-    "${build_env[@]+"${build_env[@]}"}" "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
+    if ! "${build_env[@]+"${build_env[@]}"}" "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
         --build-arg USER_UID="$HOST_UID" \
         --build-arg USER_GID="$HOST_GID" \
         -t "$IMAGE_NAME" \
         -f "$temp_dockerfile" \
-        "$temp_context"
+        "$temp_context"; then
+        print_build_failure_guidance
+        exit 1
+    fi
 
     rm -rf "$temp_context"
 
     echo "[$SCRIPT_NAME] Shared sandbox image ready" >&2
+}
+
+# Copy the CA bundle into the build context: the merged file for tools that
+# take a single bundle path, plus one .crt per certificate because Debian's
+# update-ca-certificates registers each file as one certificate (a multi-cert
+# file would only contribute its first certificate to the hashed store).
+stage_ca_bundle() {
+    local context="$1"
+    local split_dir="$context/sagent-ca"
+
+    mkdir -p "$split_dir"
+    cp "$CA_BUNDLE_PATH" "$context/sagent-ca-bundle.pem"
+    awk -v dir="$split_dir" '
+        /-----BEGIN CERTIFICATE-----/ { n++; f = sprintf("%s/sagent-%03d.crt", dir, n) }
+        f { print > f }
+        /-----END CERTIFICATE-----/ { close(f); f = "" }
+    ' "$CA_BUNDLE_PATH"
+    echo "[$SCRIPT_NAME] Baking $CA_BUNDLE_CERT_COUNT CA certificate(s) from $CA_BUNDLE_PATH into the image" >&2
+}
+
+print_build_failure_guidance() {
+    echo "[$SCRIPT_NAME] ERROR: sandbox image build failed (engine output above)." >&2
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        echo "[$SCRIPT_NAME] SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s)) was baked in; a TLS failure above means the intercepting proxy's CA is not among them." >&2
+        return 0
+    fi
+    cat >&2 <<EOF
+[$SCRIPT_NAME] A TLS error in a RUN step above (curl "(60) SSL certificate problem", npm
+[$SCRIPT_NAME] "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", apt "Certificate verification failed")
+[$SCRIPT_NAME] means this network has a TLS-inspecting proxy whose CA the host trusts but
+[$SCRIPT_NAME] the sandbox does not (Docker Desktop and Rancher Desktop only apply host CAs
+[$SCRIPT_NAME] to image pulls, not to build steps or containers). Export that CA as PEM and
+[$SCRIPT_NAME] point SAGENT_CA_BUNDLE at it, then rerun:
+  mkdir -p ~/.config/sagent
+  # macOS: every certificate in the System keychain (where MDM/proxy CAs land)
+  security find-certificate -a -p /Library/Keychains/System.keychain > ~/.config/sagent/ca-bundle.pem
+  # Linux: copy the proxy CA from /usr/local/share/ca-certificates or /etc/pki/ca-trust/source/anchors
+  echo 'SAGENT_CA_BUNDLE="\$HOME/.config/sagent/ca-bundle.pem"' >> ~/.config/sagent/config
+EOF
 }
 
 ensure_image() {
@@ -346,6 +452,11 @@ show_version() {
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
     echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        echo "CA bundle: $CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"
+    else
+        echo "CA bundle: none (SAGENT_CA_BUNDLE unset)"
+    fi
     if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
         echo "$TOOL_NAME CLI: $tool_version"
@@ -659,9 +770,14 @@ needs_image_rebuild() {
 # so a broken Claude install in `scodex update` is just as bad as a broken Codex
 # install in `sclaude update` — verify both regardless of which wrapper was invoked.
 verify_image_built() {
-    local claude_version codex_version
+    local claude_version codex_version gh_version
     if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] ERROR: build completed but $IMAGE_NAME was not tagged" >&2
+        exit 1
+    fi
+    if ! gh_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" gh --version 2>&1); then
+        echo "[$SCRIPT_NAME] ERROR: 'gh --version' failed inside the rebuilt image:" >&2
+        printf '%s\n' "$gh_version" | sed 's/^/  /' >&2
         exit 1
     fi
     if ! claude_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" claude --version 2>&1); then
@@ -676,6 +792,7 @@ verify_image_built() {
     fi
     echo "[$SCRIPT_NAME] Claude Code CLI is now: $claude_version" >&2
     echo "[$SCRIPT_NAME] Codex CLI is now:        $codex_version" >&2
+    echo "[$SCRIPT_NAME] GitHub CLI is now:       $(printf '%s\n' "$gh_version" | head -1)" >&2
 }
 
 check_release() {
@@ -909,15 +1026,22 @@ sync_state() {
 }
 
 validate_workspace() {
+    # Logical path (what the user sees, and what the tool's per-directory
+    # session state is keyed on) becomes the mount target; the physical path
+    # (symlinks resolved) is the mount source. Engines that run in a VM only
+    # resolve paths against their shared mounts: on macOS /tmp is a symlink to
+    # /private/tmp, and podman machine shares /private but not /tmp, so a
+    # workspace under /tmp (or any symlinked directory) mounted empty (#71).
     WORKSPACE_PATH="$(pwd)"
-    if [ "$WORKSPACE_PATH" = "/" ]; then
+    WORKSPACE_HOST_PATH="$(pwd -P)"
+    if [ "$WORKSPACE_PATH" = "/" ] || [ "$WORKSPACE_HOST_PATH" = "/" ]; then
         echo "[$SCRIPT_NAME] ERROR: refusing to run with / as the workspace: the bind mount would expose the entire host filesystem to the sandbox." >&2
         echo "[$SCRIPT_NAME] Run from a project directory instead." >&2
         exit 1
     fi
-    if [[ "$WORKSPACE_PATH" == *:* ]]; then
+    if [[ "$WORKSPACE_PATH" == *:* ]] || [[ "$WORKSPACE_HOST_PATH" == *:* ]]; then
         echo "[$SCRIPT_NAME] ERROR: workspace path contains a colon, which conflicts with Docker volume syntax:" >&2
-        echo "  $WORKSPACE_PATH" >&2
+        echo "  $WORKSPACE_PATH (resolves to $WORKSPACE_HOST_PATH)" >&2
         echo "[$SCRIPT_NAME] Please run from a directory without colons in its path." >&2
         exit 1
     fi
@@ -966,7 +1090,7 @@ run_tool() {
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
     # workspace bind mount is otherwise unreadable without relabeling host files.
     exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm \
-        -v "$WORKSPACE_PATH:$WORKSPACE_PATH:rw" \
+        -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \
@@ -999,8 +1123,7 @@ run_tool() {
         -e OPENAI_ORGANIZATION \
         -e OPENAI_PROJECT \
         -e CODEX_ACCESS_TOKEN \
-        -e CODEX_CA_CERTIFICATE \
-        -e SSL_CERT_FILE \
+        -e GH_TOKEN \
         -e "TERM=${TERM:-xterm-256color}" \
         "$IMAGE_NAME" \
         "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}"

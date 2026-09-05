@@ -26,7 +26,7 @@ Linux, against Docker or Podman.
 | T11: Resource limits (PID) | Fork bomb containment | -- |
 | T12: Path with spaces | Quoting correctness in mounts | #10 |
 | T09b: Reset pinned volumes | `reset` fails loudly naming volumes held by running containers | #64 |
-| T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs | #65 |
+| T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs; physical path mounted at the logical path | #65, #71 |
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `echo -e` / printf portability | No literal `-e` in output | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
@@ -37,7 +37,7 @@ Linux, against Docker or Podman.
 | T17c: sclaude --help | Inner Claude CLI loads config without errors | -- |
 | T18: sudo apt works in sandbox | Package installation support | #33, #36 |
 | T18b: pip install --user works | PEP 668 override lands packages in `sagent-pip` | #51 |
-| T19: Shared image has both CLIs | One image contains Claude and Codex CLIs | #40 |
+| T19: Shared image has both CLIs and gh | One image contains Claude, Codex and GitHub CLIs | #40 |
 | T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config` | #40 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
@@ -50,6 +50,8 @@ Linux, against Docker or Podman.
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
+| T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
+| T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed | #68 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -57,7 +59,8 @@ Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 **The suite is destructive to sandbox state on the selected engine**: T09
 deletes all `sclaude-`/`scodex-`/`sagent-` volumes (persisted credentials,
-packages, sessions) and T10 force-rebuilds the shared image. Credentials
+packages, sessions), T10 force-rebuilds the shared image, and T31 builds a
+second image with a throwaway CA bundle (removed afterwards). Credentials
 re-sync automatically on the next run, but shell history, preferences, and
 installed packages in the sandbox are lost.
 
@@ -67,6 +70,9 @@ From the repo root on macOS or Linux:
 bash test_e2e.sh                                # against Docker (default)
 SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh # against Podman
 ```
+
+Test bodies run under `bash -ec`, so every command in a test is an assertion
+(#72); guard commands that are allowed to fail with `|| true` or an `if`.
 
 Each test has a portable timeout so engine hangs fail cleanly instead of
 blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on

@@ -42,10 +42,10 @@ fi
 rm -f "$INFO_OUTPUT"
 
 # ── T01: version command ─────────────────────────────────────────────
-run_test "T01: version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version' _ "$SCLAUDE" "$SCODEX"
+run_test "T01: version command" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version' _ "$SCLAUDE" "$SCODEX"
 
 # ── T02: image build ─────────────────────────────────────────────────
-run_test "T02: image build" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
+run_test "T02: image build" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build' _ "$SCLAUDE"
 
 # Image under test, computed once right after the build: per-test derivation
 # through `version` proved flaky under daemon load (its engine probe has a
@@ -54,24 +54,24 @@ SUITE_IMG="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SE
 export SUITE_IMG
 
 # ── T03: piped input (no TTY) ────────────────────────────────────────
-run_test "T03: piped/no-TTY mode" bash -c '
+run_test "T03: piped/no-TTY mode" bash -ec '
     echo "exit" | SAGENT_SKIP_RELEASE_CHECK=1 "$1" version 2>&1
 ' _ "$SCLAUDE"
 
 # ── T04: --yolo / --no-yolo flags ─────────────────────────────────────
-run_test "T04: --yolo flag" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
+run_test "T04: --yolo flag" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --yolo 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$2" version --no-yolo 2>&1' _ "$SCLAUDE" "$SCODEX"
 
 # ── T04b: --docker / --no-docker flags parse ─────────────────────────
-run_test "T04b: --docker flags" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_DOCKER=0 "$2" version >/dev/null 2>&1' _ "$SCLAUDE" "$SCODEX"
+run_test "T04b: --docker flags" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_DOCKER=0 "$2" version >/dev/null 2>&1' _ "$SCLAUDE" "$SCODEX"
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
-    run_test "T05: credential sync (macOS)" bash -c '
+    run_test "T05: credential sync (macOS)" bash -ec '
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null 2>&1
         "$ENGINE" run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
     ' _ "$SCLAUDE"
 else
-    run_test "T05: credential sync (Linux)" bash -c '
+    run_test "T05: credential sync (Linux)" bash -ec '
         mkdir -p ~/.claude
         echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
         trap "rm -f ~/.claude/.credentials.json" EXIT
@@ -93,7 +93,7 @@ fi
 # ── T06: volume creation & permissions ────────────────────────────────
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
-run_test "T06: volume permissions" bash -c '
+run_test "T06: volume permissions" bash -ec '
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
@@ -130,7 +130,7 @@ run_test "T06: volume permissions" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T07: volume persistence ──────────────────────────────────────────
-run_test "T07: volume persistence" bash -c '
+run_test "T07: volume persistence" bash -ec '
     "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
         sh -c "echo sagent-test-marker > /home/agent/.test_persist"
     "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
@@ -140,10 +140,10 @@ run_test "T07: volume persistence" bash -c '
 '
 
 # ── T08: cleanup command ─────────────────────────────────────────────
-run_test "T08: cleanup" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' _ "$SCLAUDE"
+run_test "T08: cleanup" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1' _ "$SCLAUDE"
 
 # ── T09: reset command (non-interactive) ──────────────────────────────
-run_test "T09: reset (auto-confirm)" bash -c '
+run_test "T09: reset (auto-confirm)" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset
     for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
@@ -156,7 +156,7 @@ run_test "T09: reset (auto-confirm)" bash -c '
 # ── T09b: reset fails loudly on volumes pinned by running containers ──
 # #64: reset must not report success while a running container keeps a
 # volume alive.
-run_test "T09b: reset reports pinned volumes" bash -c '
+run_test "T09b: reset reports pinned volumes" bash -ec '
     "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
     "$ENGINE" run -d --name sagent-t09b-pinner -v sclaude-config:/c "$SUITE_IMG" sleep 120 >/dev/null
     trap "\"$ENGINE\" rm -f sagent-t09b-pinner >/dev/null 2>&1" EXIT
@@ -178,7 +178,7 @@ run_test "T09b: reset reports pinned volumes" bash -c '
 # skip path so this test always asserts the no-cache rebuild actually runs.
 # The self-update download path is verified against the real assets by the
 # release workflow after each release upload.
-run_test "T10: update (forced no-cache rebuild)" bash -c '
+run_test "T10: update (forced no-cache rebuild)" bash -ec '
     set -e
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
@@ -201,7 +201,7 @@ run_test "T10: update (forced no-cache rebuild)" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T11: PID resource limit ──────────────────────────────────────────
-run_test "T11: PID limit (fork bomb)" bash -c '
+run_test "T11: PID limit (fork bomb)" bash -ec '
     TIMEOUT_CMD=""
     if command -v timeout >/dev/null 2>&1; then
         TIMEOUT_CMD="timeout 15"
@@ -215,7 +215,7 @@ run_test "T11: PID limit (fork bomb)" bash -c '
 '
 
 # ── T12: path with spaces ────────────────────────────────────────────
-run_test "T12: path with spaces" bash -c '
+run_test "T12: path with spaces" bash -ec '
     TEST_DIR="/tmp/sclaude test dir"
     mkdir -p "$TEST_DIR"
     cd "$TEST_DIR"
@@ -224,21 +224,24 @@ run_test "T12: path with spaces" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T12b: workspace under /tmp is not shadowed by the tmpfs ──────────
-# Replicates run_tool's fixed behavior (#65): with a workspace under /tmp the
-# tmpfs is omitted, so the workspace files are visible inside the sandbox.
-run_test "T12b: /tmp workspace visible in sandbox" bash -c '
+# Replicates run_tool's fixed behavior (#65, #71): with a workspace under /tmp
+# the tmpfs is omitted, and the physical path is mounted at the logical path
+# (on macOS /tmp is a symlink into /private, which is what a VM-backed engine
+# actually shares), so the workspace files are visible inside the sandbox.
+run_test "T12b: /tmp workspace visible in sandbox" bash -ec '
     IMG="$SUITE_IMG"
     WS=$(mktemp -d /tmp/sclaude-t12b.XXXXXX)
     trap "rm -rf \"$WS\"" EXIT
+    WS_HOST=$(cd "$WS" && pwd -P)
     echo t12b-marker > "$WS/probe.txt"
-    "$ENGINE" run --rm -v "$WS:$WS:rw" -w "$WS" "$IMG" cat probe.txt | grep -q t12b-marker
+    "$ENGINE" run --rm -v "$WS_HOST:$WS:rw" -w "$WS" "$IMG" cat probe.txt | grep -q t12b-marker
     # The wrapper itself must run from a /tmp workspace (exercises run_tool).
     (cd "$WS" && SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help >/dev/null 2>&1)
 ' _ "$SCLAUDE"
 
 # ── T12c: / as workspace is refused ──────────────────────────────────
 # #66: a / workspace would bind the entire host filesystem into the sandbox.
-run_test "T12c: / workspace refused" bash -c '
+run_test "T12c: / workspace refused" bash -ec '
     if (cd / && SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help >/dev/null 2>/tmp/t12c-err); then
         echo "running from / should have been refused" >&2
         exit 1
@@ -248,7 +251,7 @@ run_test "T12c: / workspace refused" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T13: echo -e portability ─────────────────────────────────────────
-run_test "T13: no literal -e in output" bash -c '
+run_test "T13: no literal -e in output" bash -ec '
     OUTPUT=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" volumes 2>&1)
     if echo "$OUTPUT" | grep -q "^-e"; then
         echo "Found literal -e in output" >&2
@@ -258,13 +261,13 @@ run_test "T13: no literal -e in output" bash -c '
 
 # ── T14: zsh invocation ──────────────────────────────────────────────
 if command -v zsh >/dev/null 2>&1; then
-    run_test "T14: zsh invocation" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 zsh "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 zsh "$2" version' _ "$SCLAUDE" "$SCODEX"
+    run_test "T14: zsh invocation" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 zsh "$1" version && SAGENT_SKIP_RELEASE_CHECK=1 zsh "$2" version' _ "$SCLAUDE" "$SCODEX"
 else
     skip_test "T14: zsh invocation" "zsh not installed"
 fi
 
 # ── T15: temp file cleanup on build failure ───────────────────────────
-run_test "T15: no leaked temp files" bash -c '
+run_test "T15: no leaked temp files" bash -ec '
     MARKER="/tmp/.sclaude-t15-$$"
     touch "$MARKER"
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
@@ -278,7 +281,7 @@ run_test "T15: no leaked temp files" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T16: shebang portability ─────────────────────────────────────────
-run_test "T16: shebang uses env" bash -c '
+run_test "T16: shebang uses env" bash -ec '
     HEAD=$(head -1 "$1")
     HEAD2=$(head -1 "$2")
     if [ "$HEAD" = "#!/usr/bin/env bash" ] && [ "$HEAD2" = "#!/usr/bin/env bash" ]; then
@@ -290,7 +293,7 @@ run_test "T16: shebang uses env" bash -c '
 ' _ "$SCLAUDE" "$SCODEX"
 
 # ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
-run_test "T17: scodex version command" bash -c 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
+run_test "T17: scodex version command" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
 # T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
 # so cap their per-test timeout at 120s regardless of the global default — a
@@ -307,9 +310,9 @@ fi
 # regressions where the inner CLI errors out on configuration loading (e.g. cloud
 # requirements / managed policies) — T17's `--version` is too shallow to reach
 # that code path.
-run_test "T17b: scodex exec --help loads without config errors" bash -c '
-    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" exec --help 2>&1)
-    rc=$?
+run_test "T17b: scodex exec --help loads without config errors" bash -ec '
+    rc=0
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" exec --help 2>&1) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "scodex exec --help exited $rc:" >&2
         echo "$output" | tail -20 >&2
@@ -324,9 +327,9 @@ run_test "T17b: scodex exec --help loads without config errors" bash -c '
 
 # Same idea for sclaude — make sure `--help` reaches the Claude Code internals
 # without configuration errors. A shallow `--version` check would not.
-run_test "T17c: sclaude --help loads without config errors" bash -c '
-    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1)
-    rc=$?
+run_test "T17c: sclaude --help loads without config errors" bash -ec '
+    rc=0
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "sclaude --help exited $rc:" >&2
         echo "$output" | tail -20 >&2
@@ -344,7 +347,7 @@ TEST_TIMEOUT_SECONDS="$_t17_prev_timeout"
 unset _t17_prev_timeout _t17_cap
 
 # ── T18: package install support ─────────────────────────────────────
-run_test "T18: sudo apt works in sandbox" bash -c '
+run_test "T18: sudo apt works in sandbox" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -372,7 +375,7 @@ run_test "T18: sudo apt works in sandbox" bash -c '
 # Ubuntu 24.04 marks system Python externally managed; the image sets
 # PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
 # sagent-pip volume instead of erroring out.
-run_test "T18b: pip install --user works in sandbox" bash -c '
+run_test "T18b: pip install --user works in sandbox" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -386,8 +389,8 @@ run_test "T18b: pip install --user works in sandbox" bash -c '
         bash -c "pip3 install --user --quiet cowsay >/dev/null && python3 -c \"import cowsay\""
 ' _ "$SCLAUDE"
 
-# ── T19: shared image contains both CLIs ─────────────────────────────
-run_test "T19: shared image has both CLIs" bash -c '
+# ── T19: shared image contains both CLIs and gh ──────────────────────
+run_test "T19: shared image has both CLIs and gh" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -395,10 +398,11 @@ run_test "T19: shared image has both CLIs" bash -c '
     fi
     "$ENGINE" run --rm "$IMG" claude --version >/dev/null
     "$ENGINE" run --rm "$IMG" codex --version >/dev/null
+    "$ENGINE" run --rm "$IMG" gh --version | grep -q "^gh version"
 ' _ "$SCLAUDE"
 
 # ── T20: Codex config sync ───────────────────────────────────────────
-run_test "T20: scodex config sync" bash -c '
+run_test "T20: scodex config sync" bash -ec '
     TMP_CODEX_HOME=$(mktemp -d)
     trap "rm -rf \"$TMP_CODEX_HOME\"" EXIT
     printf "%s" "{\"test_codex_auth\":true}" > "$TMP_CODEX_HOME/auth.json"
@@ -410,7 +414,7 @@ run_test "T20: scodex config sync" bash -c '
 ' _ "$SCODEX"
 
 # ── T21: release check is non-fatal and cache-safe ───────────────────
-run_test "T21: release check non-fatal" bash -c '
+run_test "T21: release check non-fatal" bash -ec '
     TMP_CACHE=$(mktemp -d)
     trap "rm -rf \"$TMP_CACHE\"" EXIT
     XDG_CACHE_HOME="$TMP_CACHE" "$1" check-update >/dev/null 2>&1
@@ -418,12 +422,12 @@ run_test "T21: release check non-fatal" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T22: native args after command are not wrapper-dispatched ─────────
-run_test "T22: native args pass through" bash -c '
+run_test "T22: native args pass through" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help update 2>&1 | grep -q "Run Codex non-interactively"
 ' _ "$SCODEX"
 
 # ── T23: explicit engine selection works ─────────────────────────────
-run_test "T23: explicit engine selection" bash -c '
+run_test "T23: explicit engine selection" bash -ec '
     SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
     SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$2" version >/dev/null
 ' _ "$SCLAUDE" "$SCODEX"
@@ -433,7 +437,7 @@ run_test "T23: explicit engine selection" bash -c '
 # functions may differ. Any drift in a shared function is a bug. Functions are
 # auto-discovered from sclaude, so new shared functions are covered without
 # updating this test. Script-name mentions in comments are normalized.
-run_test "T24: wrapper shared functions identical" bash -c '
+run_test "T24: wrapper shared functions identical" bash -ec '
     tmpdir=$(mktemp -d)
     trap "rm -rf \"$tmpdir\"" EXIT
     divergent="read_credentials sync_state sync_codex_config_files run_tool"
@@ -463,7 +467,7 @@ run_test "T24: wrapper shared functions identical" bash -c '
 # ── T25: corrupted release-check cache is non-fatal ──────────────────
 # Non-numeric cache content used to kill the wrapper with an unbound-variable
 # arithmetic error under set -u before the CLI ever launched.
-run_test "T25: corrupted release cache non-fatal" bash -c '
+run_test "T25: corrupted release cache non-fatal" bash -ec '
     TMP_CACHE=$(mktemp -d)
     trap "rm -rf \"$TMP_CACHE\"" EXIT
     mkdir -p "$TMP_CACHE/sagent"
@@ -472,7 +476,7 @@ run_test "T25: corrupted release cache non-fatal" bash -c '
 ' _ "$SCLAUDE"
 
 # ── T26: --force-rebuild rejected outside update ─────────────────────
-run_test "T26: --force-rebuild only valid with update" bash -c '
+run_test "T26: --force-rebuild only valid with update" bash -ec '
     if SAGENT_SKIP_RELEASE_CHECK=1 "$1" --force-rebuild >/dev/null 2>&1; then
         echo "--force-rebuild without update should fail" >&2
         exit 1
@@ -484,7 +488,7 @@ run_test "T26: --force-rebuild only valid with update" bash -c '
 # ── T27: nested containers (--docker mode) ───────────────────────────
 # Replicates the exact run configuration the wrappers use for --docker and
 # verifies the full nested workflow: pull+run, build, and run the built image.
-run_test "T27: nested containers (--docker mode)" bash -c '
+run_test "T27: nested containers (--docker mode)" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -519,7 +523,7 @@ run_test "T27: nested containers (--docker mode)" bash -c '
 # override is observable in the version output's Limits line. Environment
 # variables must take precedence over the file, and a config file with a
 # syntax error must fail with a clear message naming the file.
-run_test "T28: config file sourced with env precedence" bash -c '
+run_test "T28: config file sourced with env precedence" bash -ec '
     TMP_CFG_DIR=$(mktemp -d)
     trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
     printf "MEMORY_LIMIT=\"9g\"\n" > "$TMP_CFG_DIR/config"
@@ -542,7 +546,7 @@ run_test "T28: config file sourced with env precedence" bash -c '
 # The sandbox has no browser: xdg-open/$BROWSER render each URL as an OSC 8
 # terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
 # reach the host browser via Cmd/Ctrl+click in the terminal.
-run_test "T29: browser-open shim renders clickable URL" bash -c '
+run_test "T29: browser-open shim renders clickable URL" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -550,7 +554,8 @@ run_test "T29: browser-open shim renders clickable URL" bash -c '
     fi
     out=$("$ENGINE" run --rm "$IMG" sh -c "printenv BROWSER && xdg-open https://example.com/sagent-test 2>&1")
     printf "%s" "$out" | grep -q "host-open"
-    printf "%s" "$out" | grep -c "https://example.com/sagent-test" | grep -qx 2
+    # hyperlink target plus plain-text copy, on one line
+    printf "%s" "$out" | grep -o "https://example.com/sagent-test" | grep -c . | grep -qx 2
     printf "%s" "$out" | grep -q "]8;;"
 ' _ "$SCLAUDE"
 
@@ -559,13 +564,13 @@ run_test "T29: browser-open shim renders clickable URL" bash -c '
 # plan listed these but they were never implemented): no engine socket is
 # reachable, the other tool's secret volume is not mounted, and host files
 # beside the workspace do not leak into the sandbox.
-run_test "T30: sandbox isolation assertions" bash -c '
+run_test "T30: sandbox isolation assertions" bash -ec '
     WS=$(mktemp -d /tmp/sagent-t30.XXXXXX)
     SIBLING="$WS-sibling-secret"
     echo leak-canary > "$SIBLING"
     trap "rm -rf \"$WS\" \"$SIBLING\"" EXIT
     "$ENGINE" run --rm \
-        -v "$WS:$WS:rw" \
+        -v "$(cd "$WS" && pwd -P):$WS:rw" \
         -v sclaude-config:/sclaude-config:rw \
         -w "$WS" \
         --cap-drop=ALL \
@@ -577,6 +582,131 @@ run_test "T30: sandbox isolation assertions" bash -c '
             [ ! -e /scodex-config ]
             [ ! -e \"$SIBLING\" ]
         "
+' _ "$SCLAUDE"
+
+# ── T31: SAGENT_CA_BUNDLE bakes trust anchors into the image ─────────
+# #68: behind a TLS-inspecting proxy every HTTPS fetch in the build and in the
+# sandbox fails. Builds a second image with a two-certificate bundle and proves
+# a server certificate issued by one of those CAs is trusted by curl (system
+# store), Python (SSL_CERT_FILE) and Node (NODE_EXTRA_CA_CERTS). Also asserts
+# the bundle validation and that the bundle content is part of the image hash.
+run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
+    set -e
+    tmp=$(mktemp -d /tmp/sagent-t31.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/missing.pem" "$1" version >/dev/null 2>"$tmp/err"; then
+        echo "a missing bundle file should have failed the run" >&2
+        exit 1
+    fi
+    grep -q "SAGENT_CA_BUNDLE is not a readable file" "$tmp/err"
+    echo "not a certificate" > "$tmp/junk.pem"
+    if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/junk.pem" "$1" version >/dev/null 2>"$tmp/err"; then
+        echo "a bundle without certificates should have failed the run" >&2
+        exit 1
+    fi
+    grep -q "contains no PEM certificates" "$tmp/err"
+
+    for n in 1 2; do
+        openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t31-ca$n" \
+            -keyout "$tmp/ca$n.key" -out "$tmp/ca$n.pem" >/dev/null 2>&1
+    done
+    cat "$tmp/ca1.pem" "$tmp/ca2.pem" > "$tmp/bundle.pem"
+    plain_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Image hash: //p")
+    ver=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/bundle.pem" "$1" version)
+    echo "$ver" | grep -q "^CA bundle: $tmp/bundle.pem (2 certificate(s))"
+    ca_hash=$(echo "$ver" | sed -n "s/^Image hash: //p")
+    if [ "$ca_hash" = "$plain_hash" ]; then
+        echo "image hash must change when a CA bundle is configured" >&2
+        exit 1
+    fi
+    IMG="sagent-sandbox:$ca_hash"
+    trap "rm -rf \"$tmp\"; \"$ENGINE\" rmi -f \"$IMG\" >/dev/null 2>&1 || true" EXIT
+    if ! SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/bundle.pem" "$1" --build >"$tmp/build.log" 2>&1; then
+        tail -40 "$tmp/build.log" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm -v "$(cd "$tmp" && pwd -P):/t31:ro" --security-opt label=disable "$IMG" bash -c "
+        set -e
+        [ \"\$SSL_CERT_FILE\" = /etc/ssl/certs/ca-certificates.crt ]
+        [ \"\$NODE_EXTRA_CA_CERTS\" = /usr/local/share/sagent-ca-bundle.pem ]
+        # both bundle members are in the system store
+        openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /t31/ca1.pem >/dev/null
+        openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /t31/ca2.pem >/dev/null
+        # a server certificate issued by CA 2 is trusted end to end
+        openssl req -newkey rsa:2048 -nodes -subj /CN=localhost \
+            -keyout /tmp/leaf.key -out /tmp/leaf.csr >/dev/null 2>&1
+        printf \"subjectAltName=DNS:localhost\n\" > /tmp/leaf.ext
+        openssl x509 -req -in /tmp/leaf.csr -CA /t31/ca2.pem -CAkey /t31/ca2.key \
+            -CAserial /tmp/ca.srl -CAcreateserial -days 1 -extfile /tmp/leaf.ext \
+            -out /tmp/leaf.pem >/dev/null 2>&1
+        openssl s_server -accept 8443 -cert /tmp/leaf.pem -key /tmp/leaf.key -www >/dev/null 2>&1 &
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --max-time 2 https://localhost:8443/ >/dev/null 2>&1; then break; fi
+            sleep 1
+        done
+        curl -fsS https://localhost:8443/ >/dev/null
+        python3 -c \"import urllib.request; urllib.request.urlopen(\\\"https://localhost:8443/\\\", timeout=5)\"
+        node -e \"require(\\\"https\\\").get(\\\"https://localhost:8443/\\\", r => process.exit(r.statusCode === 200 ? 0 : 1)).on(\\\"error\\\", e => { console.error(e); process.exit(1) })\"
+    "
+' _ "$SCLAUDE"
+
+# ── T32: generated Dockerfile and build-failure guidance ─────────────
+# A stub engine records the build context and fails the build, so this checks
+# (without a real build) that the CA block is emitted only when a bundle is
+# configured, that the bundle is split one-certificate-per-file in the
+# context, and that a failed build prints the proxy-CA guidance.
+run_test "T32: Dockerfile generation and build guidance" bash -ec '
+    set -e
+    tmp=$(mktemp -d /tmp/sagent-t32.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    build)
+        for last; do :; done
+        cp "\$last/Dockerfile" "$tmp/Dockerfile"
+        (cd "\$last" && find . -type f | sort) > "$tmp/context.txt"
+        exit 1 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+
+    if "$1" --build >"$tmp/out" 2>&1; then
+        echo "build should have failed with the stub engine" >&2
+        exit 1
+    fi
+    grep -q "sandbox image build failed" "$tmp/out"
+    grep -q "point SAGENT_CA_BUNDLE at it" "$tmp/out"
+    if grep -q "sagent-ca" "$tmp/Dockerfile"; then
+        echo "CA block emitted without SAGENT_CA_BUNDLE" >&2
+        exit 1
+    fi
+    grep -q "apt-get install -y gh" "$tmp/Dockerfile"
+    [ "$(cat "$tmp/context.txt")" = "./Dockerfile" ]
+
+    for n in 1 2 3; do
+        openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t32-ca$n" \
+            -keyout "$tmp/ca$n.key" -out "$tmp/ca$n.pem" >/dev/null 2>&1
+    done
+    cat "$tmp/ca1.pem" "$tmp/ca2.pem" "$tmp/ca3.pem" > "$tmp/bundle.pem"
+    if SAGENT_CA_BUNDLE="$tmp/bundle.pem" "$1" --build >"$tmp/out" 2>&1; then
+        echo "build should have failed with the stub engine" >&2
+        exit 1
+    fi
+    grep -q "Baking 3 CA certificate(s)" "$tmp/out"
+    grep -q "(3 certificate(s)) was baked in" "$tmp/out"
+    # the CA block precedes the first HTTPS fetch (the gh keyring download)
+    ca_line=$(grep -n "^COPY sagent-ca/" "$tmp/Dockerfile" | cut -d: -f1)
+    gh_line=$(grep -n "cli.github.com" "$tmp/Dockerfile" | head -1 | cut -d: -f1)
+    [ "$ca_line" -lt "$gh_line" ]
+    grep -q "^RUN update-ca-certificates" "$tmp/Dockerfile"
+    grep -q "^ENV NODE_EXTRA_CA_CERTS=/usr/local/share/sagent-ca-bundle.pem" "$tmp/Dockerfile"
+    printf "%s\n" ./Dockerfile ./sagent-ca-bundle.pem ./sagent-ca/sagent-001.crt ./sagent-ca/sagent-002.crt ./sagent-ca/sagent-003.crt \
+        | diff - "$tmp/context.txt"
 ' _ "$SCLAUDE"
 
 print_results

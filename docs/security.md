@@ -202,6 +202,29 @@ hosts.
 **Limitation**:
 - ⚠️ Can exfiltrate workspace data (inherent tradeoff for package management)
 
+#### Host secrets passed through on purpose
+
+Besides the synced auth files, a fixed list of host environment variables is
+forwarded into the sandbox when set: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+`CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` for `sclaude`; `OPENAI_API_KEY`,
+`CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
+`CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. Anything the agent can read
+inside the sandbox it can also send out, so unset `GH_TOKEN` on the host (or
+use a fine-grained token) when the agent should not act on GitHub as you.
+Host paths never exist inside the sandbox, which is why CA-file variables such
+as `SSL_CERT_FILE` are not forwarded; extra trust anchors go through
+`SAGENT_CA_BUNDLE` instead.
+
+#### Extra trust anchors (`SAGENT_CA_BUNDLE`)
+
+Certificates from `SAGENT_CA_BUNDLE` are added to the image's system trust
+store and exported to Node (`NODE_EXTRA_CA_CERTS`), OpenSSL/Codex
+(`SSL_CERT_FILE`), requests and pip. Whoever controls that CA can read every
+HTTPS exchange the sandbox makes, including API traffic and credentials in
+flight. That is already true of the host on such a network; the wrapper only
+extends the same trust to the sandbox, and only for the file you name.
+
 ### Nested Containers (`--docker` mode, on by default)
 
 Container tooling inside the sandbox is enabled by default via nested rootless
