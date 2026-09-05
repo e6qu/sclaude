@@ -133,7 +133,18 @@ Java, Maven, Gradle, the Quarkus CLI and the Spring Boot CLI. Frameworks such
 as React, Next.js, htmx, shadcn components, Spring Boot and Quarkus are
 project dependencies that this tooling installs into the workspace; their
 package caches persist in the home volume. Expect the image to be about
-4.3 GB with everything on; `SAGENT_GO_VERSION=none` and friends trim it. `gh` authenticates either with `gh auth login` inside
+4.3 GB with everything on. Trim it by leaving out toolchains
+(`SAGENT_GO_VERSION=none` and friends) or tools:
+
+```bash
+sclaude tools                      # what is included, and why not
+sclaude tools disable bun gradle   # writes SAGENT_TOOLS to the config file
+sclaude tools enable java          # names or the groups all, none, js, java
+sclaude config set SAGENT_NODE_VERSION 24   # any setting, validated, written to the config file
+sclaude config                     # effective settings and where each comes from
+```
+
+A changed selection or version is a new image that builds on the next run. `gh` authenticates either with `gh auth login` inside
 the sandbox (persisted in the `sagent-rootfs` volume) or with a `GH_TOKEN`
 set on the host, which is passed through.
 
@@ -165,7 +176,9 @@ passed through.
 | `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
 | `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
-| `sclaude version` | Show version, toolchain and build metadata |
+| `sclaude version` | Show version, toolchain, tools and build metadata |
+| `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
+| `sclaude config` | Show effective settings and their source; `config set KEY VALUE`, `config unset KEY`, `config get KEY`, `config path` edit the config file with validation |
 | `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
 | `sclaude reset-caches` | Clear the cache volumes (npm, pip, apt, nested container images); keeps credentials, config and the home directory |
 | `sclaude reset` | Delete all persistent data |
@@ -225,7 +238,16 @@ SAGENT_PYTHON_VERSION="3.14"    # CPython minor via uv (latest patch)
 SAGENT_GO_VERSION="1.27"        # Go: major.minor (latest patch), exact version, or none
 SAGENT_RUST_VERSION="stable"    # Rust: stable, beta, nightly, exact version, or none
 SAGENT_JAVA_VERSION="26"        # Java: Temurin JDK major, or none
+
+# Tooling to include (default all): names or groups, comma or space separated.
+# js:   typescript tsx bun corepack create-next-app create-vite shadcn
+# java: maven gradle quarkus spring (need a JDK; dropped from all/java when SAGENT_JAVA_VERSION=none)
+SAGENT_TOOLS="all"              # e.g. "js" or "typescript,bun,maven" or "none"
 ```
+
+`sclaude config set` and `sclaude tools enable|disable` write these lines for
+you; `sclaude config` shows the effective value of every setting and whether
+it came from the environment, the file, or the default.
 
 `SAGENT_CONFIG_FILE=/path/to/config` points both wrappers at a different file.
 

@@ -48,7 +48,11 @@ HOST_GID=$(id -g)
 # above (MEMORY_LIMIT, CPU_LIMIT, PIDS_LIMIT, PIDS_LIMIT_NESTED,
 # ENGINE_TIMEOUT_SECONDS) and defaults for the SAGENT_* settings below.
 # Environment variables and command-line flags take precedence over the file.
-SAGENT_SETTINGS="SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION"
+# Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
+# variables, so `for x in $list` would see one item.
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+# Tunables the config file may also set (not SAGENT_-prefixed, no env override).
+SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
 if [ -f "$SAGENT_CONFIG_FILE" ]; then
     # Validate before sourcing: a syntax error mid-source would abort the
@@ -58,17 +62,27 @@ if [ -f "$SAGENT_CONFIG_FILE" ]; then
         exit 1
     fi
     # Remember which settings the environment set so they win over the file.
-    for _name in $SAGENT_SETTINGS; do
+    for _name in "${SAGENT_SETTINGS[@]}"; do
         eval "_env_${_name}=\${${_name}:-}"
     done
     # shellcheck disable=SC1090
     . "$SAGENT_CONFIG_FILE"
-    for _name in $SAGENT_SETTINGS; do
+    for _name in "${SAGENT_SETTINGS[@]}"; do
         eval "_value=\${_env_${_name}}"
         if [ -n "$_value" ]; then
             eval "${_name}=\$_value"
+            eval "SAGENT_SOURCE_${_name}=env"
+        else
+            eval "_value=\${${_name}:-}"
+            if [ -n "$_value" ]; then eval "SAGENT_SOURCE_${_name}=config"; fi
         fi
         unset "_env_${_name}"
+    done
+    unset _name _value
+else
+    for _name in "${SAGENT_SETTINGS[@]}"; do
+        eval "_value=\${${_name}:-}"
+        if [ -n "$_value" ]; then eval "SAGENT_SOURCE_${_name}=env"; fi
     done
     unset _name _value
 fi
@@ -94,6 +108,69 @@ validate_version_setting SAGENT_PYTHON_VERSION "$PYTHON_VERSION" '^3\.[0-9]+$' '
 validate_version_setting SAGENT_GO_VERSION "$GO_VERSION" '^(none|1\.[0-9]+(\.[0-9]+)?)$' '1.27, 1.27.1, or none'
 validate_version_setting SAGENT_RUST_VERSION "$RUST_VERSION" '^(none|stable|beta|nightly|[0-9]+\.[0-9]+(\.[0-9]+)?)$' 'stable, beta, nightly, 1.98.0, or none'
 validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' 'a major version like 26, or none'
+
+# Optional tooling baked into the image, all at their latest release as of
+# the build. SAGENT_TOOLS selects by name or group (comma/space separated):
+# "all" (default), "none", "js", "java", or explicit names. Java tools need a
+# JDK: with SAGENT_JAVA_VERSION=none they drop out of "all"/"java" silently
+# but naming one explicitly is an error. Registry rows: name|group|description.
+SAGENT_TOOL_REGISTRY='typescript|js|TypeScript compiler (tsc)
+tsx|js|run TypeScript files directly
+bun|js|Bun runtime and package manager
+corepack|js|yarn and pnpm at the version a project declares
+create-next-app|js|Next.js project scaffolding
+create-vite|js|Vite project scaffolding (React, Vue, Svelte, ...)
+shadcn|js|shadcn/ui component CLI
+maven|java|Apache Maven
+gradle|java|Gradle
+quarkus|java|Quarkus CLI
+spring|java|Spring Boot CLI'
+SAGENT_TOOLS="${SAGENT_TOOLS:-all}"
+
+tool_group() { printf '%s\n' "$SAGENT_TOOL_REGISTRY" | awk -F'|' -v n="$1" '$1 == n {print $2}'; }
+tool_known() { [ -n "$(tool_group "$1")" ]; }
+
+# Resolve $1 (a SAGENT_TOOLS value) into TOOLS_SELECTED: registry order,
+# deduplicated, Java tools only with a JDK. Exits with a message on unknown
+# names or on a Java tool named explicitly without a JDK.
+resolve_tools() {
+    local spec="$1" item name group wanted="" explicit_java=""
+    while read -r item; do
+        [ -n "$item" ] || continue
+        case "$item" in
+            all) wanted="$wanted js java" ;;
+            none) ;;
+            js | java) wanted="$wanted $item" ;;
+            *)
+                if ! tool_known "$item"; then
+                    echo "[$SCRIPT_NAME] ERROR: SAGENT_TOOLS names an unknown tool: $item" >&2
+                    echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                    exit 1
+                fi
+                wanted="$wanted $item"
+                if [ "$(tool_group "$item")" = java ]; then explicit_java="$explicit_java $item"; fi
+                ;;
+        esac
+    done <<< "$(printf '%s' "$spec" | tr ', ' '\n')"
+    if [ -n "$explicit_java" ] && [ "$JAVA_VERSION" = none ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_TOOLS names Java tools (${explicit_java# }) but SAGENT_JAVA_VERSION=none; they need a JDK." >&2
+        exit 1
+    fi
+    TOOLS_SELECTED=""
+    while IFS='|' read -r name group _; do
+        case " $wanted " in
+            *" $name "* | *" $group "*)
+                if [ "$group" = java ] && [ "$JAVA_VERSION" = none ]; then continue; fi
+                TOOLS_SELECTED="$TOOLS_SELECTED $name"
+                ;;
+        esac
+    done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+    TOOLS_SELECTED="${TOOLS_SELECTED# }"
+}
+resolve_tools "$SAGENT_TOOLS"
+tool_selected() { case " $TOOLS_SELECTED " in *" $1 "*) return 0 ;; esac; return 1; }
 
 # Extra trust anchors for the sandbox image. Corporate networks often run a
 # TLS-inspecting proxy whose CA the host trusts (macOS keychain, Linux system
@@ -368,34 +445,58 @@ RUN set -eux; \
     /opt/java/bin/java -version
 ENV JAVA_HOME=/opt/java
 
-# Java build tools and framework CLIs, latest stable at build time: Maven and
-# the Spring Boot CLI resolve the highest plain X.Y.Z from Maven Central's
-# metadata (its "release" pointer can be an RC or milestone), Gradle from
-# gradle.org's current-version endpoint, the Quarkus CLI from its Maven
-# Central release (the runnable uber jar behind a small launcher).
-RUN set -eux; \
+DOCKERFILE_END
+    fi
+
+    # Java build tools and framework CLIs, latest stable at build time: Maven
+    # and the Spring Boot CLI resolve the highest plain X.Y.Z from Maven
+    # Central's metadata (its "release" pointer can be an RC or milestone),
+    # Gradle from gradle.org's current-version endpoint, the Quarkus CLI from
+    # its Maven Central release (the runnable uber jar behind a launcher).
+    if tool_selected maven || tool_selected gradle || tool_selected quarkus || tool_selected spring; then
+        local -a java_checks=()
+        printf '\n# Java build tools and framework CLIs, latest stable at build time.\nRUN set -eux; \\\n'
+        if tool_selected maven; then
+            cat <<'DOCKERFILE_END'
     mvn_v="$(curl -fsSL https://repo1.maven.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml \
         | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
     mkdir -p /opt/maven; \
     curl -fsSL "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/${mvn_v}/apache-maven-${mvn_v}-bin.tar.gz" \
         | tar -xz -C /opt/maven --strip-components=1; \
+DOCKERFILE_END
+            java_checks+=("/opt/maven/bin/mvn -v")
+        fi
+        if tool_selected gradle; then
+            cat <<'DOCKERFILE_END'
     gradle_url="$(curl -fsSL https://services.gradle.org/versions/current | grep -oE '"downloadUrl" *: *"[^"]+"' | grep -oE 'https://[^"]+')"; \
     curl -fsSL "$gradle_url" -o /tmp/gradle.zip; \
     unzip -q /tmp/gradle.zip -d /opt; \
     mv /opt/gradle-* /opt/gradle; \
     rm -f /tmp/gradle.zip; \
+DOCKERFILE_END
+            java_checks+=("/opt/gradle/bin/gradle --version")
+        fi
+        if tool_selected quarkus; then
+            cat <<'DOCKERFILE_END'
     quarkus_v="$(curl -fsSL https://repo1.maven.org/maven2/io/quarkus/quarkus-cli/maven-metadata.xml | sed -n 's:.*<release>\(.*\)</release>.*:\1:p')"; \
     mkdir -p /opt/quarkus; \
     curl -fsSL "https://repo1.maven.org/maven2/io/quarkus/quarkus-cli/${quarkus_v}/quarkus-cli-${quarkus_v}-runner.jar" -o /opt/quarkus/quarkus-cli.jar; \
     printf '%s\n' '#!/bin/sh' 'exec "${JAVA_HOME:-/opt/java}/bin/java" -jar /opt/quarkus/quarkus-cli.jar "$@"' > /usr/local/bin/quarkus; \
     chmod 0755 /usr/local/bin/quarkus; \
+DOCKERFILE_END
+            java_checks+=("/usr/local/bin/quarkus --version")
+        fi
+        if tool_selected spring; then
+            cat <<'DOCKERFILE_END'
     spring_v="$(curl -fsSL https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-cli/maven-metadata.xml \
         | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
     mkdir -p /opt/spring; \
     curl -fsSL "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-cli/${spring_v}/spring-boot-cli-${spring_v}-bin.tar.gz" \
         | tar -xz -C /opt/spring --strip-components=1; \
-    /opt/maven/bin/mvn -v; /opt/gradle/bin/gradle --version; /usr/local/bin/quarkus --version; /opt/spring/bin/spring --version
 DOCKERFILE_END
+            java_checks+=("/opt/spring/bin/spring --version")
+        fi
+        printf '    %s\n' "$(IFS=';'; printf '%s' "${java_checks[*]}" | sed 's/;/; /g')"
     fi
 
     cat <<'DOCKERFILE_END'
@@ -406,18 +507,26 @@ DOCKERFILE_END
 RUN apt-get update && apt-get install -y \
     podman podman-docker passt slirp4netns fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
+DOCKERFILE_END
 
-# Agent CLIs plus JavaScript/TypeScript tooling at their latest releases:
-# TypeScript, tsx, bun, and the create-next-app / create-vite / shadcn
-# scaffolding CLIs (React, Next.js, htmx and shadcn components are project
-# dependencies these pull in). yarn and pnpm come through corepack, which
-# serves whatever version a project's packageManager field declares (Node no
-# longer bundles corepack).
-RUN npm install -g @anthropic-ai/claude-code @openai/codex \
-        typescript tsx bun corepack create-next-app create-vite shadcn \
-    && corepack enable --install-directory /usr/local/bin \
-    && tsc --version && bun --version && yarn --version >/dev/null 2>&1 || true
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    # Agent CLIs plus the selected JavaScript/TypeScript tooling, each at its
+    # latest release. React, Next.js, htmx and shadcn components are project
+    # dependencies these scaffolders pull in. yarn and pnpm come through
+    # corepack, which serves whatever version a project's packageManager field
+    # declares (Node no longer bundles corepack).
+    local -a npm_tools=()
+    local tool
+    for tool in typescript tsx bun corepack create-next-app create-vite shadcn; do
+        if tool_selected "$tool"; then npm_tools+=("$tool"); fi
+    done
+    printf '\n# Agent CLIs and JavaScript/TypeScript tooling.\nRUN npm install -g @anthropic-ai/claude-code @openai/codex'
+    if [ "${#npm_tools[@]}" -gt 0 ]; then printf ' %s' "${npm_tools[@]}"; fi
+    printf '\n'
+    if tool_selected corepack; then
+        printf 'RUN corepack enable --install-directory /usr/local/bin\nENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n'
+    fi
+
+    cat <<'DOCKERFILE_END'
 
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -637,6 +746,7 @@ show_version() {
     echo "Image hash: $VERSION_HASH"
     echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
     echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
+    echo "Tools: ${TOOLS_SELECTED:-none}"
     if [ -n "$CA_BUNDLE_PATH" ]; then
         echo "CA bundle: $CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"
     else
@@ -791,6 +901,186 @@ reset_caches() {
     remove_stale_sandbox_containers
     remove_volumes "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
     echo "[$SCRIPT_NAME] Caches cleared. They are recreated on the next run." >&2
+}
+
+# ---- `tools` and `config` commands: inspect and edit the text config ----
+
+setting_source() {
+    local src
+    eval "src=\${SAGENT_SOURCE_$1:-default}"
+    printf '%s' "$src"
+}
+
+# Write KEY="VALUE" into the config file (replacing an existing KEY= line),
+# validating the result parses before it replaces the original.
+config_write() {
+    local key="$1" value="$2" tmp escaped
+    mkdir -p "$(dirname "$SAGENT_CONFIG_FILE")"
+    tmp=$(mktemp)
+    TEMP_FILES+=("$tmp")
+    if [ -f "$SAGENT_CONFIG_FILE" ]; then
+        grep -vE "^${key}=" "$SAGENT_CONFIG_FILE" > "$tmp" || true
+    fi
+    if [ -n "$value" ]; then
+        escaped=$(printf '%s' "$value" | sed 's/[\\"]/\\&/g')
+        printf '%s="%s"\n' "$key" "$escaped" >> "$tmp"
+    fi
+    if ! bash -n "$tmp" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] ERROR: refusing to write a config file that does not parse" >&2
+        exit 1
+    fi
+    mv "$tmp" "$SAGENT_CONFIG_FILE"
+}
+
+config_key_known() {
+    case " ${SAGENT_SETTINGS[*]} ${SAGENT_TUNABLES[*]} " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# Validate a value for a key the same way startup does; exits on failure.
+config_validate() {
+    local key="$1" value="$2"
+    case "$key" in
+        SAGENT_UBUNTU_VERSION) validate_version_setting "$key" "$value" '^[0-9]{2}\.[0-9]{2}$' 'a release like 26.04' ;;
+        SAGENT_NODE_VERSION) validate_version_setting "$key" "$value" '^[0-9]+$' 'a major version like 26' ;;
+        SAGENT_PYTHON_VERSION) validate_version_setting "$key" "$value" '^3\.[0-9]+$' 'a minor version like 3.14' ;;
+        SAGENT_GO_VERSION) validate_version_setting "$key" "$value" '^(none|1\.[0-9]+(\.[0-9]+)?)$' '1.27, 1.27.1, or none' ;;
+        SAGENT_RUST_VERSION) validate_version_setting "$key" "$value" '^(none|stable|beta|nightly|[0-9]+\.[0-9]+(\.[0-9]+)?)$' 'stable, beta, nightly, 1.98.0, or none' ;;
+        SAGENT_JAVA_VERSION) validate_version_setting "$key" "$value" '^(none|[0-9]+)$' 'a major version like 26, or none' ;;
+        SAGENT_TOOLS) resolve_tools "$value" ;;
+        SAGENT_DOCKER) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
+        SAGENT_CA_BUNDLE) ;;
+        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
+        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
+        PIDS_LIMIT | PIDS_LIMIT_NESTED) validate_version_setting "$key" "$value" '^[0-9]+$' 'a number like 200' ;;
+    esac
+}
+
+config_command() {
+    local sub="${1:-}" key value
+    case "$sub" in
+        "" | list)
+            echo "Config file: $SAGENT_CONFIG_FILE$([ -f "$SAGENT_CONFIG_FILE" ] || echo ' (not created yet)')"
+            echo "Effective settings (source: env > config > default):"
+            for key in "${SAGENT_SETTINGS[@]}"; do
+                eval "value=\${$key:-}"
+                printf '  %-26s %-40s %s\n' "$key" "${value:-(unset)}" "$(setting_source "$key")"
+            done
+            for key in "${SAGENT_TUNABLES[@]}"; do
+                eval "value=\${$key}"
+                printf '  %-26s %-40s %s\n' "$key" "$value" "$(grep -qE "^${key}=" "$SAGENT_CONFIG_FILE" 2>/dev/null && echo config || echo default)"
+            done
+            echo "Usage: $SCRIPT_NAME config set KEY VALUE | unset KEY | get KEY | path"
+            ;;
+        path) echo "$SAGENT_CONFIG_FILE" ;;
+        get)
+            key="${2:-}"
+            if ! config_key_known "$key"; then echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2; exit 1; fi
+            eval "value=\${$key:-}"
+            printf '%s\n' "$value"
+            ;;
+        set)
+            key="${2:-}"; value="${3-}"
+            if [ -z "$key" ] || [ $# -lt 3 ]; then echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME config set KEY VALUE" >&2; exit 1; fi
+            if ! config_key_known "$key"; then
+                echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2
+                echo "[$SCRIPT_NAME] Settings: ${SAGENT_SETTINGS[*]} ${SAGENT_TUNABLES[*]}" >&2
+                exit 1
+            fi
+            config_validate "$key" "$value"
+            config_write "$key" "$value"
+            echo "[$SCRIPT_NAME] $key=\"$value\" written to $SAGENT_CONFIG_FILE" >&2
+            if [ "$(setting_source "$key")" = env ]; then
+                echo "[$SCRIPT_NAME] Note: $key is also set in this environment, which takes precedence over the file." >&2
+            fi
+            ;;
+        unset)
+            key="${2:-}"
+            if ! config_key_known "$key"; then echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2; exit 1; fi
+            config_write "$key" ""
+            echo "[$SCRIPT_NAME] $key removed from $SAGENT_CONFIG_FILE" >&2
+            ;;
+        *)
+            echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME config [list | set KEY VALUE | unset KEY | get KEY | path]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+tools_command() {
+    local sub="${1:-}" name group desc status current new item
+    case "$sub" in
+        "" | list)
+            echo "Tools in the sandbox image (SAGENT_TOOLS=\"$SAGENT_TOOLS\", $(setting_source SAGENT_TOOLS)):"
+            printf '  %-18s %-6s %-22s %s\n' NAME GROUP STATUS DESCRIPTION
+            while IFS='|' read -r name group desc; do
+                if tool_selected "$name"; then
+                    status="included"
+                elif [ "$group" = java ] && [ "$JAVA_VERSION" = none ]; then
+                    status="excluded (Java=none)"
+                else
+                    status="excluded"
+                fi
+                printf '  %-18s %-6s %-22s %s\n' "$name" "$group" "$status" "$desc"
+            done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+            echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
+            echo "Change with: $SCRIPT_NAME tools enable|disable NAME... (names or groups all, none, js, java); versions with: $SCRIPT_NAME config set SAGENT_<LANG>_VERSION <version>"
+            ;;
+        enable | disable)
+            shift
+            if [ $# -eq 0 ]; then echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME tools $sub NAME..." >&2; exit 1; fi
+            # Start from the explicit resolved list, then add or remove.
+            current=" $TOOLS_SELECTED "
+            for item in "$@"; do
+                case "$item" in
+                    all | js | java | none) ;;
+                    *)
+                        if ! tool_known "$item"; then
+                            echo "[$SCRIPT_NAME] ERROR: unknown tool: $item" >&2
+                            echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                            exit 1
+                        fi
+                        ;;
+                esac
+            done
+            new=""
+            while IFS='|' read -r name group _; do
+                case "$sub" in
+                    enable)
+                        if [ -z "${current##* "$name" *}" ]; then new="$new,$name"; continue; fi
+                        for item in "$@"; do
+                            case "$item" in all | "$group" | "$name") new="$new,$name"; break ;; esac
+                        done
+                        ;;
+                    disable)
+                        [ -n "${current##* "$name" *}" ] && continue
+                        for item in "$@"; do
+                            case "$item" in all | none | "$group" | "$name") continue 2 ;; esac
+                        done
+                        new="$new,$name"
+                        ;;
+                esac
+            done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+            new="${new#,}"
+            [ -n "$new" ] || new="none"
+            resolve_tools "$new"
+            config_write SAGENT_TOOLS "$new"
+            echo "[$SCRIPT_NAME] SAGENT_TOOLS=\"$new\" written to $SAGENT_CONFIG_FILE" >&2
+            echo "[$SCRIPT_NAME] Included now: ${TOOLS_SELECTED:-none}. The image rebuilds with this selection on the next run." >&2
+            if [ "$(setting_source SAGENT_TOOLS)" = env ]; then
+                echo "[$SCRIPT_NAME] Note: SAGENT_TOOLS is also set in this environment, which takes precedence over the file." >&2
+            fi
+            ;;
+        *)
+            echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME tools [list | enable NAME... | disable NAME...]" >&2
+            exit 1
+            ;;
+    esac
 }
 
 print_release_guidance() {
@@ -1176,7 +1466,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -1461,10 +1751,20 @@ run_tool() {
 
 parse_args "$@"
 
-if [ "$WRAPPER_COMMAND" = "check-update" ]; then
-    check_release true
-    exit 0
-fi
+case "$WRAPPER_COMMAND" in
+    check-update)
+        check_release true
+        exit 0
+        ;;
+    tools)
+        tools_command "${ARGS[@]+"${ARGS[@]}"}"
+        exit 0
+        ;;
+    config)
+        config_command "${ARGS[@]+"${ARGS[@]}"}"
+        exit 0
+        ;;
+esac
 
 select_engine
 detect_engine_flavor

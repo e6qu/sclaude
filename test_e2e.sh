@@ -294,16 +294,15 @@ fi
 
 # ── T15: temp file cleanup on build failure ───────────────────────────
 run_test "T15: no leaked temp files" bash -ec '
-    # mktemp honors TMPDIR (macOS sets it under /var/folders), so look there.
-    TMP_ROOT="${TMPDIR:-/tmp}"
-    MARKER="$TMP_ROOT/.sclaude-t15-$$"
-    touch "$MARKER"
-    SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
-    # Any tmp.* files newer than our marker were created during the build
-    LEAKED=$(find "$TMP_ROOT" -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
-    rm -f "$MARKER"
+    # A private TMPDIR for the wrapper (mktemp honors it), so nothing else on
+    # the machine can write into the directory under test.
+    PRIVATE_TMP=$(mktemp -d)
+    trap "rm -rf \"$PRIVATE_TMP\"" EXIT
+    TMPDIR="$PRIVATE_TMP" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
+    LEAKED=$(find "$PRIVATE_TMP" -mindepth 1 | wc -l)
     if [ "$LEAKED" -gt 0 ]; then
-        echo "Temp files leaked: $LEAKED new file(s)" >&2
+        echo "Temp files leaked:" >&2
+        find "$PRIVATE_TMP" -mindepth 1 >&2
         exit 1
     fi
 ' _ "$SCLAUDE"
@@ -436,6 +435,7 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
     rust=$(echo "$tc" | sed "s/.*rust=\([^ ]*\).*/\1/")
     java=$(echo "$tc" | sed "s/.*java=\([^ ]*\).*/\1/")
     ubuntu=$(echo "$tc" | sed "s/.*ubuntu=\([^ ]*\).*/\1/")
+    tools=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Tools: //p")
     "$ENGINE" run --rm "$IMG" bash -ec "
         grep -q \"VERSION_ID=\\\"$ubuntu\\\"\" /etc/os-release
         node --version | grep -q \"^v$node\\.\"
@@ -445,12 +445,27 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
         [ \"$go\" = none ] || go version | grep -q \"go$go\"
         [ \"$rust\" = none ] || { cargo --version >/dev/null && rustfmt --version >/dev/null && cargo clippy --version >/dev/null; }
         [ \"$java\" = none ] || { java -version 2>&1 | grep -q \"version \\\"$java\\.\"; [ -n \"\$JAVA_HOME\" ]; }
-        [ \"$java\" = none ] || { mvn -v | grep -q \"^Apache Maven\"; gradle --version | grep -q \"^Gradle\"; quarkus --version >/dev/null; spring --version | grep -q \"^Spring CLI\"; }
         podman --version >/dev/null && command -v pasta >/dev/null
-        # JavaScript/TypeScript tooling
-        tsc --version | grep -q \"^Version\"; tsx --version >/dev/null; bun --version >/dev/null
-        corepack --version >/dev/null; command -v yarn >/dev/null; command -v pnpm >/dev/null
-        create-next-app --version >/dev/null; create-vite --version >/dev/null 2>&1 || command -v create-vite >/dev/null; shadcn --version >/dev/null
+        # Every selected tool is present; every unselected one is absent.
+        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring; do
+            case \" $tools \" in *\" \$tool \"*) want=1 ;; *) want=0 ;; esac
+            case \$tool in
+                typescript) cmd=tsc ;; corepack) cmd=yarn ;; maven) cmd=mvn ;; *) cmd=\$tool ;;
+            esac
+            if [ \$want = 1 ]; then
+                case \$tool in
+                    typescript) tsc --version | grep -q \"^Version\" ;;
+                    corepack) corepack --version >/dev/null && command -v yarn >/dev/null && command -v pnpm >/dev/null ;;
+                    maven) mvn -v | grep -q \"^Apache Maven\" ;;
+                    gradle) gradle --version | grep -q \"^Gradle\" ;;
+                    spring) spring --version | grep -q \"^Spring CLI\" ;;
+                    create-vite) command -v create-vite >/dev/null ;;
+                    *) \$tool --version >/dev/null ;;
+                esac
+            elif command -v \$cmd >/dev/null; then
+                echo \"\$tool is not selected but \$cmd is in the image\" >&2; exit 1
+            fi
+        done
     "
 ' _ "$SCLAUDE"
 
@@ -761,6 +776,21 @@ STUB
         exit 1
     fi
     grep -q "^ARG GO_VERSION=none\$" "$tmp/Dockerfile"
+    # SAGENT_TOOLS=none: only the agent CLIs are installed.
+    SAGENT_TOOLS=none "$1" --build >/dev/null 2>&1 || true
+    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    if grep -qE "corepack enable|apache-maven|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
+        echo "tooling emitted despite SAGENT_TOOLS=none" >&2
+        exit 1
+    fi
+    # A subset: named tools and nothing else.
+    SAGENT_TOOLS="bun,maven" "$1" --build >/dev/null 2>&1 || true
+    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex bun\$" "$tmp/Dockerfile"
+    grep -q "apache-maven" "$tmp/Dockerfile"
+    if grep -qE "corepack enable|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
+        echo "unselected tooling emitted" >&2
+        exit 1
+    fi
 
     for n in 1 2 3; do
         openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t32-ca$n" \
@@ -936,6 +966,45 @@ run_test "T37: reset-caches clears only cache volumes" bash -ec '
     for vol in sclaude-config scodex-config sagent-rootfs; do
         "$ENGINE" volume inspect "$vol" >/dev/null
     done
+' _ "$SCLAUDE"
+
+# ── T38: tools and config commands edit the text config ──────────────
+run_test "T38: tools/config commands" bash -ec '
+    cfg=$(mktemp -d /tmp/sagent-t38.XXXXXX)
+    trap "rm -rf \"$cfg\"" EXIT
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$cfg/config"
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+    "$1" tools | grep -qE "^  bun +js +included"
+    "$1" tools disable bun gradle 2>/dev/null
+    grep -qx "SAGENT_TOOLS=\"typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring\"" "$cfg/config"
+    "$1" tools | grep -qE "^  bun +js +excluded"
+    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn maven quarkus spring$"
+    [ "$("$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
+    "$1" tools enable java 2>/dev/null
+    "$1" version | grep -q "^Tools: .* maven gradle quarkus spring$"
+    "$1" tools disable all 2>/dev/null
+    "$1" version | grep -q "^Tools: none$"
+    if "$1" tools enable no-such-tool >/dev/null 2>&1; then echo "unknown tool accepted" >&2; exit 1; fi
+    # config: set, get, list, unset, validation, unknown keys
+    "$1" config set SAGENT_NODE_VERSION 24 2>/dev/null
+    "$1" config set MEMORY_LIMIT 8g 2>/dev/null
+    [ "$("$1" config get SAGENT_NODE_VERSION)" = 24 ]
+    "$1" config list | grep -qE "^  SAGENT_NODE_VERSION +24 +config$"
+    "$1" config list | grep -qE "^  MEMORY_LIMIT +8g +config$"
+    "$1" version | grep -q "^Toolchain: .*node=24 "
+    "$1" version | grep -q "^Limits: memory=8g "
+    if "$1" config set SAGENT_NODE_VERSION v24 >/dev/null 2>&1; then echo "invalid value accepted" >&2; exit 1; fi
+    if "$1" config set NOT_A_SETTING 1 >/dev/null 2>&1; then echo "unknown key accepted" >&2; exit 1; fi
+    "$1" config unset MEMORY_LIMIT 2>/dev/null
+    if grep -q MEMORY_LIMIT "$cfg/config"; then echo "unset left the key" >&2; exit 1; fi
+    "$1" version | grep -q "^Limits: memory=4g "
+    [ "$("$1" config path)" = "$cfg/config" ]
+    # Environment wins over the file and the command says so.
+    SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
+    # Java tools drop out without a JDK; naming one explicitly is an error.
+    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn$"
+    if SAGENT_TOOLS=maven SAGENT_JAVA_VERSION=none "$1" version >/dev/null 2>&1; then echo "java tool without JDK accepted" >&2; exit 1; fi
+    bash -n "$cfg/config"
 ' _ "$SCLAUDE"
 
 print_results
