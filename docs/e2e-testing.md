@@ -18,19 +18,19 @@ Linux, against Docker or Podman.
 | T03: Piped input (no TTY) | Non-TTY detection, `-it` flag handling | #6 |
 | T04: `--yolo` flag conversion | Flag rewriting | -- |
 | T05: Credential sync | macOS Keychain / Linux file-based creds | #12, #14, #16 |
-| T06: Volume creation & permissions | Shared user volumes writable by agent user | #3 |
+| T06: Volume creation & permissions | Shared user volumes writable by agent user | #22 |
 | T07: Volume persistence | Data survives across container runs | -- |
 | T08: Cleanup command | Old image removal | -- |
-| T09: Reset command | Volume deletion (non-interactive) | #11 |
+| T09: Reset command | Volume deletion (non-interactive) | #64 |
 | T10: Update command | `--no-cache` rebuild | -- |
 | T11: Resource limits (PID) | Fork bomb containment | -- |
-| T12: Path with spaces | Quoting correctness in mounts | #10 |
+| T12: Path with spaces | Quoting correctness in mounts; the spaced path is actually mounted and read | #10, #73 |
 | T09b: Reset pinned volumes | `reset` fails loudly naming volumes held by running containers | #64 |
 | T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs; physical path mounted at the logical path | #65, #71 |
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `echo -e` / printf portability | No literal `-e` in output | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
-| T15: Temp file cleanup on failure | No leaked temp files after failed build | #1 |
+| T15: Temp file cleanup on failure | No leaked temp files after failed build (searches `$TMPDIR`) | #1, #73 |
 | T16: Shebang portability | Script runs via `env bash` | #18 |
 | T17: scodex version command | Codex wrapper smoke test | #40 |
 | T17b: scodex exec --help | Inner Codex CLI loads config without errors | -- |
@@ -52,6 +52,7 @@ Linux, against Docker or Podman.
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
 | T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed | #68 |
+| T33: Rancher Desktop share check | Stub engine reporting the `rancher-desktop` context: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass | #74 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

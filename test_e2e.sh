@@ -221,11 +221,14 @@ run_test "T11: PID limit (fork bomb)" bash -ec '
 
 # ── T12: path with spaces ────────────────────────────────────────────
 run_test "T12: path with spaces" bash -ec '
-    TEST_DIR="/tmp/sclaude test dir"
+    TEST_DIR="$SAGENT_TEST_TMPDIR/sclaude test dir"
     mkdir -p "$TEST_DIR"
+    trap "rm -rf \"$TEST_DIR\"" EXIT
     cd "$TEST_DIR"
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" version
-    rm -rf "$TEST_DIR"
+    # The mount itself, quoted the way run_tool quotes it.
+    echo t12-marker > "$TEST_DIR/probe.txt"
+    "$ENGINE" run --rm -v "$(pwd -P):$TEST_DIR:rw" -w "$TEST_DIR" "$SUITE_IMG" cat probe.txt | grep -q t12-marker
 ' _ "$SCLAUDE"
 
 # ── T12b: workspace under /tmp is not shadowed by the tmpfs ──────────
@@ -273,11 +276,13 @@ fi
 
 # ── T15: temp file cleanup on build failure ───────────────────────────
 run_test "T15: no leaked temp files" bash -ec '
-    MARKER="/tmp/.sclaude-t15-$$"
+    # mktemp honors TMPDIR (macOS sets it under /var/folders), so look there.
+    TMP_ROOT="${TMPDIR:-/tmp}"
+    MARKER="$TMP_ROOT/.sclaude-t15-$$"
     touch "$MARKER"
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
     # Any tmp.* files newer than our marker were created during the build
-    LEAKED=$(find /tmp -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
+    LEAKED=$(find "$TMP_ROOT" -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
     rm -f "$MARKER"
     if [ "$LEAKED" -gt 0 ]; then
         echo "Temp files leaked: $LEAKED new file(s)" >&2
@@ -712,6 +717,45 @@ STUB
     grep -q "^ENV NODE_EXTRA_CA_CERTS=/usr/local/share/sagent-ca-bundle.pem" "$tmp/Dockerfile"
     printf "%s\n" ./Dockerfile ./sagent-ca-bundle.pem ./sagent-ca/sagent-001.crt ./sagent-ca/sagent-002.crt ./sagent-ca/sagent-003.crt \
         | diff - "$tmp/context.txt"
+' _ "$SCLAUDE"
+
+# ── T33: Rancher Desktop unshared workspace is refused ───────────────
+# #74: Rancher Desktop shares only $HOME (and /tmp/rancher-desktop) with its
+# VM, so any other workspace mounts empty. A stub engine reporting the
+# rancher-desktop docker context stands in for it.
+run_test "T33: Rancher Desktop unshared workspace refused" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t33.XXXXXX)
+    home_ws="$HOME/.sagent-t33-ws"
+    mkdir -p "$home_ws"
+    trap "rm -rf \"$tmp\" \"$home_ws\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo rancher-desktop; exit 0 ;;
+    image) exit 0 ;;
+    volume) exit 0 ;;
+    run) echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    # /tmp is outside the shared set: refused before any container starts.
+    if (cd "$tmp" && "$1" --help >"$tmp/out" 2>"$tmp/err"); then
+        echo "a workspace outside \$HOME should have been refused" >&2
+        exit 1
+    fi
+    grep -q "Rancher Desktop shares only" "$tmp/err"
+    if grep -q "STUB-RUN.*--help" "$tmp/out"; then
+        echo "the tool container was started despite the refusal" >&2
+        exit 1
+    fi
+    # The documented override lets it through.
+    (cd "$tmp" && SAGENT_SKIP_SHARE_CHECK=1 "$1" --help) | grep -q "STUB-RUN.*--help"
+    # A workspace under $HOME is fine.
+    (cd "$home_ws" && "$1" --help) | grep -q "STUB-RUN.*--help"
 ' _ "$SCLAUDE"
 
 print_results
