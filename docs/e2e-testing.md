@@ -74,6 +74,10 @@ SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh # against Podman
 Test bodies run under `bash -ec`, so every command in a test is an assertion
 (#72); guard commands that are allowed to fail with `|| true` or an `if`.
 
+Fixtures that get bind-mounted into containers are created under
+`SAGENT_TEST_TMPDIR` (default `/tmp`). Point it under your home directory for
+engines that share only `$HOME` with their VM, such as Rancher Desktop.
+
 Each test has a portable timeout so engine hangs fail cleanly instead of
 blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
 a slow builder.
@@ -109,6 +113,7 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-docker-cli-podman | real docker CLI on podman's docker-compat socket |
 | test-linux-podman-shim | podman fronted as the `docker` command |
 | test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs |
+| test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount) |
 | test-devcontainers | UID-1000 docker-in-docker dev container |
 
 T27 inside each job adds one more nesting level (nested podman in the

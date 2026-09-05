@@ -18,6 +18,11 @@ fi
 
 OS="$(uname -s)"
 ENGINE="${SAGENT_CONTAINER_ENGINE:-docker}"
+# Where tests create directories that get bind-mounted into containers. VM-backed
+# engines only resolve paths under their shared mounts (Rancher Desktop shares
+# just $HOME), so such jobs point this somewhere under the home directory.
+SAGENT_TEST_TMPDIR="${SAGENT_TEST_TMPDIR:-/tmp}"
+export SAGENT_TEST_TMPDIR
 export SAGENT_CONTAINER_ENGINE="$ENGINE"
 export ENGINE
 
@@ -565,7 +570,7 @@ run_test "T29: browser-open shim renders clickable URL" bash -ec '
 # reachable, the other tool's secret volume is not mounted, and host files
 # beside the workspace do not leak into the sandbox.
 run_test "T30: sandbox isolation assertions" bash -ec '
-    WS=$(mktemp -d /tmp/sagent-t30.XXXXXX)
+    WS=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t30.XXXXXX")
     SIBLING="$WS-sibling-secret"
     echo leak-canary > "$SIBLING"
     trap "rm -rf \"$WS\" \"$SIBLING\"" EXIT
@@ -592,7 +597,7 @@ run_test "T30: sandbox isolation assertions" bash -ec '
 # the bundle validation and that the bundle content is part of the image hash.
 run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
     set -e
-    tmp=$(mktemp -d /tmp/sagent-t31.XXXXXX)
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t31.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
     if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/missing.pem" "$1" version >/dev/null 2>"$tmp/err"; then
         echo "a missing bundle file should have failed the run" >&2
