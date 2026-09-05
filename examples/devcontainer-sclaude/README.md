@@ -29,9 +29,9 @@ The first run builds the sclaude sandbox image (takes a few minutes).
 ## Why sclaude over plain Claude Code?
 
 sclaude wraps Claude Code in a Docker sandbox with:
-- Filesystem isolation (only workspace accessible)
+- Filesystem isolation (only the workspace is accessible)
 - Resource limits (CPU, memory, PIDs)
-- All Linux capabilities dropped
-- No privilege escalation
+- Capabilities dropped to the set needed for `sudo apt` package installs
+- No host engine socket; nested containers run under the sandbox's own rootless podman
 
 See the [security docs](https://github.com/e6qu/sclaude/blob/main/docs/security.md) for details.

@@ -108,7 +108,7 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-podman | rootless podman CLI on podman |
 | test-linux-docker-cli-podman | real docker CLI on podman's docker-compat socket |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization) |
+| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs |
 | test-devcontainers | UID-1000 docker-in-docker dev container |
 
 T27 inside each job adds one more nesting level (nested podman in the

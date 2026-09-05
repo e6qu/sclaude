@@ -20,13 +20,14 @@ sagent-pip              →  /home/agent/.local/               Shared pip user p
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
 sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
-$(pwd)                  →  $(pwd)                            Current workspace directory
+$(pwd -P)               →  $(pwd)                            Current workspace directory (physical path mounted at the logical path)
 ```
 
 ## Environment Variables
 
 - `CLAUDE_CONFIG_DIR=/sclaude-config` - Tells Claude Code where to find credentials and configuration
 - `CODEX_HOME=/scodex-config` - Tells Codex where to find auth and runtime state
+- `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set in the image only when it was built with `SAGENT_CA_BUNDLE`; they point Node, OpenSSL/Codex, requests and pip at the extra trust anchors (see the README's corporate-network section)
 
 ## Key Files and Directories
 
@@ -87,7 +88,7 @@ and `config.toml` can contain private provider or endpoint details.
 ### Problem 4: Session Sharing
 - Want `--resume` to work across container runs
 - Sessions stored per-directory path
-- **Solution**: Mount workspace at same absolute path in container
+- **Solution**: Mount the workspace at the same absolute (logical) path in the container
 
 ## Security
 

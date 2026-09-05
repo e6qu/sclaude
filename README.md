@@ -135,6 +135,7 @@ passed through.
 |---------|-------------|
 | `sclaude update` / `scodex update` | Self-update both wrapper scripts to the latest release, then rebuild the shared image with the latest Claude and Codex CLIs (use `SAGENT_SKIP_SELF_UPDATE=1` to skip the wrapper download) |
 | `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
+| `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version and build metadata |
 | `sclaude volumes` | Show Docker volume info |

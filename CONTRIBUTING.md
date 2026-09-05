@@ -51,7 +51,11 @@ Do not work around it.
 The project ships two physical bash scripts: `sclaude` for Claude Code and
 `scodex` for Codex CLI. They intentionally share the same Docker image design.
 
-After any change, the version hash updates automatically and the image rebuilds on next run.
+The image hash covers the generated Dockerfile, the UID/GID build args and
+the optional CA bundle: any change to the Dockerfile heredoc yields a new hash
+and the image rebuilds on the next run. Changes elsewhere in the wrappers
+(runtime flags, commands, messages) keep the hash, so existing users are not
+forced to rebuild.
 
 ## Code Standards
 
@@ -117,7 +121,7 @@ When a PR with conventional commits merges to `main`, release-please automatical
 2. Add a test case to `test_e2e.sh` that fails
 3. Fix the bug in `sclaude`
 4. Verify all tests pass: `bash test_e2e.sh`
-5. Verify shellcheck: `shellcheck sclaude scodex test_e2e.sh test_devcontainers.sh`
+5. Verify linting: `pre-commit run --all-files` (shellcheck, actionlint, zsh/bash syntax)
 6. Commit with `fix: <description>`
 7. Update `BUGS.md` if applicable
 

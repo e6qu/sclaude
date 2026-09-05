@@ -27,10 +27,13 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 
 #### Workspace Mount
 ```bash
--v "$WORKSPACE_PATH:$WORKSPACE_PATH:rw"
+-v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw"   # $(pwd -P) mounted at $(pwd)
 ```
 
-**Protection**: Uses absolute path, mounted at same location in container
+**Protection**: Uses the absolute path, mounted at the same location in the
+container; the physical path (symlinks resolved) is the source so VM-backed
+engines can find it, the logical path is the target so session state keyed on
+the directory stays stable. `/` is refused as a workspace.
 
 **Prevents**:
 - ✅ `../../../etc/passwd` - Cannot traverse outside mount
@@ -50,7 +53,8 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 -v sagent-npm:/home/agent/.npm-global:rw \
 -v sagent-pip:/home/agent/.local:rw \
 -v sagent-apt-cache:/var/cache/apt:rw \
--v sagent-apt-lists:/var/lib/apt/lists:rw
+-v sagent-apt-lists:/var/lib/apt/lists:rw \
+-v sagent-containers:/home/agent/.local/share/containers:rw
 ```
 
 **Protection**:
@@ -268,8 +272,9 @@ Design choices, safest first:
 
 **Our Approach**:
 - ✅ Socket NOT mounted
-- ✅ Cannot interact with Docker daemon
-- ✅ Cannot create/modify containers
+- ✅ Cannot interact with the host engine daemon
+- ✅ Cannot create/modify host containers (nested containers run under the
+  sandbox's own rootless podman, see the Nested Containers section)
 
 ### Layer 8: Ephemeral Container
 
