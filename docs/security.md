@@ -27,10 +27,13 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 
 #### Workspace Mount
 ```bash
--v "$WORKSPACE_PATH:$WORKSPACE_PATH:rw"
+-v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw"   # $(pwd -P) mounted at $(pwd)
 ```
 
-**Protection**: Uses absolute path, mounted at same location in container
+**Protection**: Uses the absolute path, mounted at the same location in the
+container; the physical path (symlinks resolved) is the source so VM-backed
+engines can find it, the logical path is the target so session state keyed on
+the directory stays stable. `/` is refused as a workspace.
 
 **Prevents**:
 - ✅ `../../../etc/passwd` - Cannot traverse outside mount
@@ -41,6 +44,10 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 - Docker bind mounts create isolated filesystem namespace
 - Kernel enforces boundaries at mount point
 - No amount of `..` traversal can escape
+- On rootless podman the wrapper adds `--userns=keep-id:uid=<host>,gid=<host>`
+  so the sandbox user is your user on the host side (the container's root and
+  every other UID stay in your subordinate-UID range); the docker CLI cannot
+  request that mapping, so a rootless daemon behind it is refused
 
 #### Docker Volumes for Persistence
 ```bash
@@ -50,7 +57,8 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 -v sagent-npm:/home/agent/.npm-global:rw \
 -v sagent-pip:/home/agent/.local:rw \
 -v sagent-apt-cache:/var/cache/apt:rw \
--v sagent-apt-lists:/var/lib/apt/lists:rw
+-v sagent-apt-lists:/var/lib/apt/lists:rw \
+-v sagent-containers:/home/agent/.local/share/containers:rw
 ```
 
 **Protection**:
@@ -202,6 +210,29 @@ hosts.
 **Limitation**:
 - ⚠️ Can exfiltrate workspace data (inherent tradeoff for package management)
 
+#### Host secrets passed through on purpose
+
+Besides the synced auth files, a fixed list of host environment variables is
+forwarded into the sandbox when set: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+`CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` for `sclaude`; `OPENAI_API_KEY`,
+`CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
+`CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. Anything the agent can read
+inside the sandbox it can also send out, so unset `GH_TOKEN` on the host (or
+use a fine-grained token) when the agent should not act on GitHub as you.
+Host paths never exist inside the sandbox, which is why CA-file variables such
+as `SSL_CERT_FILE` are not forwarded; extra trust anchors go through
+`SAGENT_CA_BUNDLE` instead.
+
+#### Extra trust anchors (`SAGENT_CA_BUNDLE`)
+
+Certificates from `SAGENT_CA_BUNDLE` are added to the image's system trust
+store and exported to Node (`NODE_EXTRA_CA_CERTS`), OpenSSL/Codex
+(`SSL_CERT_FILE`), requests and pip. Whoever controls that CA can read every
+HTTPS exchange the sandbox makes, including API traffic and credentials in
+flight. That is already true of the host on such a network; the wrapper only
+extends the same trust to the sandbox, and only for the file you name.
+
 ### Nested Containers (`--docker` mode, on by default)
 
 Container tooling inside the sandbox is enabled by default via nested rootless
@@ -245,8 +276,9 @@ Design choices, safest first:
 
 **Our Approach**:
 - ✅ Socket NOT mounted
-- ✅ Cannot interact with Docker daemon
-- ✅ Cannot create/modify containers
+- ✅ Cannot interact with the host engine daemon
+- ✅ Cannot create/modify host containers (nested containers run under the
+  sandbox's own rootless podman, see the Nested Containers section)
 
 ### Layer 8: Ephemeral Container
 

@@ -82,7 +82,10 @@ jobs:
 
   # Real docker CLI talking to a podman server through the docker-compat
   # socket — the flavor combo where builds must use the classic builder
-  # endpoint (DOCKER_BUILDKIT=0) instead of buildx.
+  # endpoint (DOCKER_BUILDKIT=0) instead of buildx. The socket is rootful
+  # (the podman-docker server arrangement): on a rootless socket the docker
+  # CLI cannot request podman's keep-id mapping and the wrapper refuses (#75,
+  # covered by T34 with a stub).
   test-linux-docker-cli-podman:
     if: >-
       github.event_name == 'push' ||
@@ -93,14 +96,17 @@ jobs:
       - name: Install podman and expose its docker-compat socket
         run: |
           sudo apt-get update && sudo apt-get install -y podman
-          podman system service --time=0 "unix:///tmp/podman-compat.sock" &
+          sudo podman system service --time=0 "unix:///tmp/podman-compat.sock" &
           for _ in $(seq 1 20); do
             [ -S /tmp/podman-compat.sock ] && break
             sleep 0.5
           done
+          sudo chmod 666 /tmp/podman-compat.sock
           echo "DOCKER_HOST=unix:///tmp/podman-compat.sock" >> "$GITHUB_ENV"
-      - name: Verify flavor detection
-        run: docker version | grep -qi podman
+      - name: Verify flavor detection (podman server, rootful)
+        run: |
+          docker version | grep -qi podman
+          docker info --format '{{join .SecurityOptions ","}}' | grep -qv rootless
       - name: Run E2E tests (docker CLI on podman server)
         run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
 
@@ -165,13 +171,89 @@ jobs:
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
         # This job's unique coverage is the mac-host/VM topology; T10's update
-        # logic is engine-independent and covered by every Linux job, and its
-        # forced no-cache rebuild takes 30+ minutes on this runner. The cold
-        # T02 build needs more than the default 600s per-test budget.
+        # logic and T31's CA-bundle build are engine-independent and covered by
+        # every Linux job, and each costs a full image build (30+ minutes for
+        # T10's no-cache rebuild on this runner). The cold T02 build needs
+        # more than the default 600s per-test budget. colima shares only $HOME
+        # and /tmp/colima with its VM, so bind-mounted fixtures live under the
+        # home directory and T12b (a /tmp workspace) is skipped.
         env:
           TEST_TIMEOUT_SECONDS: "1200"
-          SAGENT_TEST_SKIP: "T10"
-        run: bash test_e2e.sh
+          SAGENT_TEST_SKIP: "T10 T31 T12b"
+        run: |
+          mkdir -p "$HOME/sagent-test"
+          SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
+
+  # Rancher Desktop with its dockerd (moby) engine on a macOS host: the
+  # docker CLI from ~/.rd/bin talking to dockerd in Rancher Desktop's Lima VM.
+  # This is the setup behind #68 and the README's Rancher Desktop notes.
+  # Rancher Desktop is driven headlessly with rdctl; it shares only $HOME with
+  # the VM, so the suite's bind-mounted fixtures live under the home directory
+  # and T12b (a /tmp workspace) is skipped along with the two full-build tests.
+  test-macos-rancher:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rancher Desktop
+        # Strip the quarantine attribute Homebrew puts on casks: a quarantined
+        # GUI app launched via `open` blocks on a Gatekeeper prompt nobody can
+        # click on a runner (the app process existed but never wrote settings
+        # or logs). Homebrew no longer accepts --no-quarantine.
+        run: |
+          brew install --cask rancher
+          xattr -l "/Applications/Rancher Desktop.app" || true
+          xattr -dr com.apple.quarantine "/Applications/Rancher Desktop.app" || true
+          xattr -l "/Applications/Rancher Desktop.app" || true
+      - name: Start Rancher Desktop (dockerd engine, no Kubernetes, in the background)
+        run: |
+          "$RDCTL" start \
+            --application.start-in-background \
+            --application.admin-access=false \
+            --application.updater.enabled=false \
+            --application.path-management-strategy=manual \
+            --container-engine.name=moby \
+            --kubernetes.enabled=false \
+            --virtual-machine.type=vz \
+            --virtual-machine.memory-in-gb=10 \
+            --virtual-machine.number-cpus=4 \
+            --no-modal-dialogs
+          echo "$HOME/.rd/bin" >> "$GITHUB_PATH"
+      - name: Wait for Rancher Desktop's docker daemon
+        run: |
+          for _ in $(seq 1 90); do
+            if [ -x "$HOME/.rd/bin/docker" ] && "$HOME/.rd/bin/docker" info >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Rancher Desktop did not become ready" >&2
+          pgrep -fl "Rancher Desktop" || echo "no Rancher Desktop process"
+          "$RDCTL" list-settings || true
+          ls -la "$HOME/.rd/bin" "$HOME/Library/Application Support/rancher-desktop" || true
+          tail -n 100 "$HOME"/Library/Logs/rancher-desktop/*.log || true
+          # macOS unified log: Gatekeeper/launch services/crash reports for the app.
+          log show --last 20m --predicate 'process == "Rancher Desktop" OR eventMessage CONTAINS "Rancher Desktop"' --style compact 2>/dev/null | tail -n 80 || true
+          exit 1
+      - name: Verify the docker CLI is Rancher Desktop's
+        run: |
+          command -v docker | grep -q "/.rd/bin/docker"
+          docker context show
+          docker version
+      - name: Prime the image build cache
+        run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
+      - name: Run E2E tests
+        env:
+          TEST_TIMEOUT_SECONDS: "1200"
+          SAGENT_TEST_SKIP: "T10 T31 T12b"
+        run: |
+          mkdir -p "$HOME/sagent-test"
+          SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
 
   test-devcontainers:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).

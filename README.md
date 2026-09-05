@@ -5,9 +5,46 @@ Same CLI, isolated filesystem.
 
 ## Requirements
 
-- Docker or Podman
+- Docker or Podman: Docker Engine, Docker Desktop, Rancher Desktop (dockerd
+  engine), colima, or a podman machine; rootless podman works through the
+  podman CLI (the wrapper maps your user in with `--userns=keep-id`). Rootless
+  Docker, and the docker CLI on a rootless podman socket, are refused because
+  the docker CLI cannot request that mapping and the workspace would be
+  unusable inside the sandbox
 - macOS or Linux
 - bash (zsh also works)
+
+**Rancher Desktop**: select *Preferences > Container Engine > dockerd (moby)*
+and let it put `~/.rd/bin` on your PATH. The containerd engine (`nerdctl`) is
+not supported. Rancher Desktop shares only `/Users/$USER` (and
+`/tmp/rancher-desktop`) with its VM, and colima likewise shares only your
+home directory and `/tmp/colima`, so the wrappers refuse a workspace outside
+those paths (it would mount empty); run from under your home directory, or
+set `SAGENT_SKIP_SHARE_CHECK=1` if you added the path to the tool's shared
+mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested
+container tooling works in Rancher Desktop's VM; CI runs the full suite
+against Rancher Desktop on macOS.
+
+**Corporate networks (TLS-inspecting proxies)**: if the first build fails with
+`curl: (60) SSL certificate problem: unable to get local issuer certificate`,
+your proxy re-signs HTTPS traffic with a CA your machine trusts but a fresh
+Ubuntu image does not. Docker Desktop and Rancher Desktop apply the host's
+CAs to image pulls only, never to build steps or running containers. Export
+that CA to a PEM file and point `SAGENT_CA_BUNDLE` at it; the wrappers bake
+it into the image for curl, apt, git, Python, pip, Node/npm, the Claude and
+Codex CLIs, `gh`, and nested podman:
+
+```bash
+mkdir -p ~/.config/sagent
+# macOS: every certificate in the System keychain (where MDM/proxy CAs land)
+security find-certificate -a -p /Library/Keychains/System.keychain > ~/.config/sagent/ca-bundle.pem
+# Linux: copy the proxy CA from /usr/local/share/ca-certificates or /etc/pki/ca-trust/source/anchors
+echo 'SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"' >> ~/.config/sagent/config
+sclaude --build
+```
+
+The bundle's content is part of the image hash, so changing it triggers a
+rebuild; `sclaude version` shows which bundle is in effect.
 
 ## Install
 
@@ -80,6 +117,12 @@ Browser login flows work from inside the sandbox: `xdg-open`/`$BROWSER` render
 each URL as a clickable terminal hyperlink, so Cmd/Ctrl+click in the TUI opens
 it in your host browser (claude and codex logins, `gh auth login`).
 
+The shared image is Ubuntu 24.04 with the Claude Code and Codex CLIs, the
+GitHub CLI (`gh`), Node.js 24, Python 3 with pip, git, build-essential, and
+rootless podman with a `docker` shim. `gh` authenticates either with
+`gh auth login` inside the sandbox (persisted in the `sagent-rootfs` volume)
+or with a `GH_TOKEN` set on the host, which is passed through.
+
 Yolo mode is on by default since Docker is the outer sandbox. `sclaude` maps it
 to `--dangerously-skip-permissions`; `scodex` maps it to
 `--dangerously-bypass-approvals-and-sandbox`. Pass `--no-yolo` to disable.
@@ -99,6 +142,7 @@ passed through.
 |---------|-------------|
 | `sclaude update` / `scodex update` | Self-update both wrapper scripts to the latest release, then rebuild the shared image with the latest Claude and Codex CLIs (use `SAGENT_SKIP_SELF_UPDATE=1` to skip the wrapper download) |
 | `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
+| `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version and build metadata |
 | `sclaude volumes` | Show Docker volume info |
@@ -147,6 +191,7 @@ PIDS_LIMIT="200"           # Default: 100
 PIDS_LIMIT_NESTED="1024"   # Default: 512 (used when container tooling is on)
 SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
 SAGENT_CONTAINER_ENGINE=podman
+SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"  # Extra CA certs baked into the image
 ```
 
 `SAGENT_CONFIG_FILE=/path/to/config` points both wrappers at a different file.
