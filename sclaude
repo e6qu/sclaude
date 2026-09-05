@@ -1039,22 +1039,30 @@ validate_workspace() {
         exit 1
     fi
 
-    # Rancher Desktop shares only the home directory and /tmp/rancher-desktop
-    # with its VM; any other host path bind-mounts as an empty directory. The
-    # docker context it installs identifies it, so refuse instead of handing
-    # the agent an empty workspace (#74). Extra shares added through Rancher
-    # Desktop's lima override.yaml are not visible here; SAGENT_SKIP_SHARE_CHECK=1
-    # skips the check for those setups.
-    local home_host
-    if [ "$ENGINE_CLI_FLAVOR" = "docker" ] && [ "${SAGENT_SKIP_SHARE_CHECK:-}" != "1" ] \
-        && [ "$("$ENGINE_CMD" context show 2>/dev/null)" = "rancher-desktop" ]; then
+    # VM-backed engines share only a few host directories with their VM; any
+    # other host path bind-mounts as an empty directory. Rancher Desktop and
+    # colima are identifiable by the docker context they install and document
+    # their default shares (the home directory plus one /tmp subdirectory), so
+    # refuse instead of handing the agent an empty workspace (#74). Extra
+    # shares configured in the tool (Rancher Desktop's lima override.yaml,
+    # colima's mounts) are not visible here; SAGENT_SKIP_SHARE_CHECK=1 skips
+    # the check for those setups.
+    local context="" tool="" extra_share="" home_host
+    if [ "$ENGINE_CLI_FLAVOR" = "docker" ] && [ "${SAGENT_SKIP_SHARE_CHECK:-}" != "1" ]; then
+        context="$("$ENGINE_CMD" context show 2>/dev/null || true)"
+        case "$context" in
+            rancher-desktop) tool="Rancher Desktop"; extra_share="/tmp/rancher-desktop" ;;
+            colima | colima-*) tool="colima"; extra_share="/tmp/colima" ;;
+        esac
+    fi
+    if [ -n "$tool" ]; then
         home_host="$(cd "$HOME" && pwd -P)"
         case "$WORKSPACE_HOST_PATH" in
-            "$home_host" | "$home_host"/* | /tmp/rancher-desktop | /tmp/rancher-desktop/*) ;;
+            "$home_host" | "$home_host"/* | "$extra_share" | "$extra_share"/*) ;;
             *)
-                echo "[$SCRIPT_NAME] ERROR: Rancher Desktop shares only $home_host and /tmp/rancher-desktop with its VM; the workspace would mount empty:" >&2
+                echo "[$SCRIPT_NAME] ERROR: $tool shares only $home_host and $extra_share with its VM; the workspace would mount empty:" >&2
                 echo "  $WORKSPACE_HOST_PATH" >&2
-                echo "[$SCRIPT_NAME] Run from a directory under $home_host, or set SAGENT_SKIP_SHARE_CHECK=1 if you shared this path in Rancher Desktop's lima override.yaml." >&2
+                echo "[$SCRIPT_NAME] Run from a directory under $home_host, or set SAGENT_SKIP_SHARE_CHECK=1 if you added this path to $tool's shared mounts." >&2
                 exit 1
                 ;;
         esac

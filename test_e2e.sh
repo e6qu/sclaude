@@ -729,11 +729,11 @@ STUB
         | diff - "$tmp/context.txt"
 ' _ "$SCLAUDE"
 
-# ── T33: Rancher Desktop unshared workspace is refused ───────────────
-# #74: Rancher Desktop shares only $HOME (and /tmp/rancher-desktop) with its
-# VM, so any other workspace mounts empty. A stub engine reporting the
-# rancher-desktop docker context stands in for it.
-run_test "T33: Rancher Desktop unshared workspace refused" bash -ec '
+# ── T33: unshared workspace on VM-backed engines is refused ──────────
+# #74: Rancher Desktop and colima share only $HOME (plus one /tmp subdir)
+# with their VM, so any other workspace mounts empty. A stub engine reporting
+# their docker contexts stands in for them.
+run_test "T33: unshared workspace refused (Rancher Desktop, colima)" bash -ec '
     tmp=$(mktemp -d /tmp/sagent-t33.XXXXXX)
     home_ws="$HOME/.sagent-t33-ws"
     mkdir -p "$home_ws"
@@ -743,7 +743,7 @@ run_test "T33: Rancher Desktop unshared workspace refused" bash -ec '
 case "\$1" in
     info) exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
-    context) echo rancher-desktop; exit 0 ;;
+    context) cat "$tmp/context"; exit 0 ;;
     image) exit 0 ;;
     volume) exit 0 ;;
     run) echo "STUB-RUN \$*"; exit 0 ;;
@@ -752,20 +752,27 @@ esac
 STUB
     chmod +x "$tmp/fake-engine"
     export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
-    # /tmp is outside the shared set: refused before any container starts.
-    if (cd "$tmp" && "$1" --help >"$tmp/out" 2>"$tmp/err"); then
-        echo "a workspace outside \$HOME should have been refused" >&2
-        exit 1
-    fi
-    grep -q "Rancher Desktop shares only" "$tmp/err"
-    if grep -q "STUB-RUN.*--help" "$tmp/out"; then
-        echo "the tool container was started despite the refusal" >&2
-        exit 1
-    fi
-    # The documented override lets it through.
-    (cd "$tmp" && SAGENT_SKIP_SHARE_CHECK=1 "$1" --help) | grep -q "STUB-RUN.*--help"
-    # A workspace under $HOME is fine.
-    (cd "$home_ws" && "$1" --help) | grep -q "STUB-RUN.*--help"
+    for ctx in rancher-desktop colima colima-work; do
+        echo "$ctx" > "$tmp/context"
+        # /tmp is outside the shared set: refused before any container starts.
+        if (cd "$tmp" && "$1" --help >"$tmp/out" 2>"$tmp/err"); then
+            echo "$ctx: a workspace outside \$HOME should have been refused" >&2
+            exit 1
+        fi
+        grep -q "shares only" "$tmp/err"
+        grep -q "SAGENT_SKIP_SHARE_CHECK=1" "$tmp/err"
+        if grep -q "STUB-RUN.*--help" "$tmp/out"; then
+            echo "$ctx: the tool container was started despite the refusal" >&2
+            exit 1
+        fi
+        # The documented override lets it through.
+        (cd "$tmp" && SAGENT_SKIP_SHARE_CHECK=1 "$1" --help) | grep -q "STUB-RUN.*--help"
+        # A workspace under $HOME is fine.
+        (cd "$home_ws" && "$1" --help) | grep -q "STUB-RUN.*--help"
+    done
+    # Other contexts (Docker Desktop shares /tmp) are not checked.
+    echo desktop-linux > "$tmp/context"
+    (cd "$tmp" && "$1" --help) | grep -q "STUB-RUN.*--help"
 ' _ "$SCLAUDE"
 
 # ── T34: docker CLI on a rootless daemon is refused ──────────────────

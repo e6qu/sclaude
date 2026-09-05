@@ -174,11 +174,15 @@ jobs:
         # logic and T31's CA-bundle build are engine-independent and covered by
         # every Linux job, and each costs a full image build (30+ minutes for
         # T10's no-cache rebuild on this runner). The cold T02 build needs
-        # more than the default 600s per-test budget.
+        # more than the default 600s per-test budget. colima shares only $HOME
+        # and /tmp/colima with its VM, so bind-mounted fixtures live under the
+        # home directory and T12b (a /tmp workspace) is skipped.
         env:
           TEST_TIMEOUT_SECONDS: "1200"
-          SAGENT_TEST_SKIP: "T10 T31"
-        run: bash test_e2e.sh
+          SAGENT_TEST_SKIP: "T10 T31 T12b"
+        run: |
+          mkdir -p "$HOME/sagent-test"
+          SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
 
   # Rancher Desktop with its dockerd (moby) engine on a macOS host: the
   # docker CLI from ~/.rd/bin talking to dockerd in Rancher Desktop's Lima VM.

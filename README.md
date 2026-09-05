@@ -17,10 +17,11 @@ Same CLI, isolated filesystem.
 **Rancher Desktop**: select *Preferences > Container Engine > dockerd (moby)*
 and let it put `~/.rd/bin` on your PATH. The containerd engine (`nerdctl`) is
 not supported. Rancher Desktop shares only `/Users/$USER` (and
-`/tmp/rancher-desktop`) with its VM, so the wrappers refuse a workspace
-outside those paths (it would mount empty); run from under your home
-directory, or set `SAGENT_SKIP_SHARE_CHECK=1` if you added the path to Rancher
-Desktop's lima `override.yaml`. Nested container
+`/tmp/rancher-desktop`) with its VM, and colima likewise shares only your
+home directory and `/tmp/colima`, so the wrappers refuse a workspace outside
+those paths (it would mount empty); run from under your home directory, or
+set `SAGENT_SKIP_SHARE_CHECK=1` if you added the path to the tool's shared
+mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested container
 tooling needs `/dev/fuse` and `/dev/net/tun` in the engine VM; if `docker run`
 rejects either device, run with `--no-docker` (or `SAGENT_DOCKER=0`).
 
