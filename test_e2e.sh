@@ -748,7 +748,9 @@ case "\$1" in
 esac
 STUB
     chmod +x "$tmp/fake-engine"
-    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    # Defaults only: a user's (or a CI job's) config file must not shape the
+    # Dockerfile this test inspects.
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/no-config"
 
     if "$1" --build >"$tmp/out" 2>&1; then
         echo "build should have failed with the stub engine" >&2
@@ -894,7 +896,8 @@ STUB
 # Versions are validated up front and are part of the image hash, so a
 # different toolchain is a different image.
 run_test "T35: toolchain version settings validated and hashed" bash -ec '
-    export SAGENT_SKIP_RELEASE_CHECK=1
+    # Defaults only (no user or CI config file) until the config subtest below.
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE=/nonexistent/sagent-config
     base=$("$1" version | sed -n "s/^Image hash: //p")
     for bad in "SAGENT_UBUNTU_VERSION=noble" "SAGENT_NODE_VERSION=v26" "SAGENT_PYTHON_VERSION=3" "SAGENT_GO_VERSION=go1.27" "SAGENT_RUST_VERSION=latest" "SAGENT_JAVA_VERSION=26.0"; do
         if env "$bad" "$1" version >/dev/null 2>/tmp/t35-err; then
