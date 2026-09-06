@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/e6qu/sclaude/compare/v2.7.0...v2.8.0) (2026-09-06)
+
+
+### Features
+
+* `status` snapshot and `doctor` diagnostics commands ([#36](https://github.com/e6qu/sclaude/issues/36)) ([c848ca7](https://github.com/e6qu/sclaude/commit/c848ca749c0ef40b377048fd560f60cdae0eff59))
+
 ## [2.7.0](https://github.com/e6qu/sclaude/compare/v2.6.4...v2.7.0) (2026-09-05)
 
 
