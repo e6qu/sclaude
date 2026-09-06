@@ -748,8 +748,8 @@ case "\$1" in
 esac
 STUB
     chmod +x "$tmp/fake-engine"
-    # Defaults only: a user's (or a CI job's) config file must not shape the
-    # Dockerfile this test inspects.
+    # Defaults only: no user or CI config file may shape the Dockerfile this
+    # test inspects.
     export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/no-config"
 
     if "$1" --build >"$tmp/out" 2>&1; then
