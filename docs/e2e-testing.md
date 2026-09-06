@@ -28,7 +28,7 @@ Linux, against Docker or Podman.
 | T09b: Reset pinned volumes | `reset` fails loudly naming volumes held by running containers | #64 |
 | T12b: /tmp workspace | Workspace under /tmp not shadowed by the sandbox tmpfs; physical path mounted at the logical path; the agent can read and write it | #65, #71, #75 |
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
-| T13: `echo -e` / printf portability | No literal `-e` in output | #15 |
+| T13: `volumes` report | No literal `-e` in output; the disk usage report lists the image, every volume with a size, and the caches total | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
 | T15: Temp file cleanup on failure | No leaked temp files after failed build (searches `$TMPDIR`) | #1, #73 |
 | T16: Shebang portability | Script runs via `env bash` | #18 |
@@ -37,7 +37,7 @@ Linux, against Docker or Podman.
 | T17c: sclaude --help | Inner Claude CLI loads config without errors | -- |
 | T18: sudo apt works in sandbox | Package installation support | #33, #36 |
 | T18b: pip install --user works | PEP 668 override lands packages in `sagent-pip` | #51 |
-| T19: Shared image has both CLIs and gh | One image contains Claude, Codex and GitHub CLIs | #40 |
+| T19: Image contents | Claude, Codex and GitHub CLIs plus the configured Node, Python/pip/uv, Go, Rust (rustfmt, clippy), Java and podman/pasta at the versions the wrapper reports; every selected tool (TypeScript, tsx, bun, corepack with yarn/pnpm, create-next-app, create-vite, shadcn, Maven, Gradle, Quarkus CLI, Spring Boot CLI) present and every unselected one absent | #40 |
 | T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config` | #40 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
@@ -51,18 +51,23 @@ Linux, against Docker or Podman.
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
-| T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed | #68 |
+| T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed; FROM/ARG carry the toolchain versions, `none` omits a toolchain, `SAGENT_TOOLS` selects exactly the named tools | #68 |
 | T33: VM share check | Stub engine reporting the `rancher-desktop` and `colima` contexts: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass; other contexts are not checked | #74 |
 | T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused before any engine call; `version` still works | #75 |
+| T35: Toolchain settings | Invalid versions rejected up front; each setting changes the image hash; config file applies and the environment wins | -- |
+| T36: Toolchain stamps | A pip volume stamped for another Python is cleared with a warning on the next run; an unchanged toolchain leaves it alone | #76 |
+| T37: `reset-caches` | Cache volumes removed; credentials, config and home volumes kept | -- |
+| T38: `tools` / `config` commands | Enable/disable rewrite `SAGENT_TOOLS` and change the hash; `config set/get/list/unset/path` with validation and unknown-key rejection; environment precedence reported; Java tools without a JDK | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 ## Running the Tests
 
 **The suite is destructive to sandbox state on the selected engine**: T09
-deletes all `sclaude-`/`scodex-`/`sagent-` volumes (persisted credentials,
-packages, sessions), T10 force-rebuilds the shared image, and T31 builds a
-second image with a throwaway CA bundle (removed afterwards). Credentials
+and T37 delete `sclaude-`/`scodex-`/`sagent-` volumes (persisted credentials,
+packages, sessions), T36 replaces the pip volume, T10 force-rebuilds the
+shared image, and T31 builds a second image with a throwaway CA bundle
+(removed afterwards). Credentials
 re-sync automatically on the next run, but shell history, preferences, and
 installed packages in the sandbox are lost.
 
@@ -116,8 +121,8 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
-| test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount) |
+| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`); builds a trimmed image (`SAGENT_TOOLS=none`, no Rust) via the config file so the cold build fits the job limit, which also exercises the "none" paths |
+| test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount); same trimmed image as test-macos |
 | test-devcontainers | UID-1000 docker-in-docker dev container |
 
 T27 inside each job adds one more nesting level (nested podman in the

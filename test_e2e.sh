@@ -269,12 +269,20 @@ run_test "T12c: / workspace refused" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T13: echo -e portability ─────────────────────────────────────────
-run_test "T13: no literal -e in output" bash -ec '
+run_test "T13: volumes report (no literal -e)" bash -ec '
     OUTPUT=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" volumes 2>&1)
     if echo "$OUTPUT" | grep -q "^-e"; then
         echo "Found literal -e in output" >&2
         exit 1
     fi
+    # The disk usage report lists the current image, every volume with a
+    # size or state, and the caches total.
+    echo "$OUTPUT" | grep -q "^  ${SUITE_IMG#*:} .* current"
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+        echo "$OUTPUT" | grep -qE "^  $vol +([0-9.]+[kMGT]?B|n/a|\(not created\))"
+    done
+    echo "$OUTPUT" | grep -q "^Volumes total: .*; caches: "
+    echo "$OUTPUT" | grep -q "reset-caches"
 ' _ "$SCLAUDE"
 
 # ── T14: zsh invocation ──────────────────────────────────────────────
@@ -286,16 +294,15 @@ fi
 
 # ── T15: temp file cleanup on build failure ───────────────────────────
 run_test "T15: no leaked temp files" bash -ec '
-    # mktemp honors TMPDIR (macOS sets it under /var/folders), so look there.
-    TMP_ROOT="${TMPDIR:-/tmp}"
-    MARKER="$TMP_ROOT/.sclaude-t15-$$"
-    touch "$MARKER"
-    SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
-    # Any tmp.* files newer than our marker were created during the build
-    LEAKED=$(find "$TMP_ROOT" -maxdepth 1 -name "tmp.*" -newer "$MARKER" 2>/dev/null | wc -l)
-    rm -f "$MARKER"
+    # A private TMPDIR for the wrapper (mktemp honors it), so nothing else on
+    # the machine can write into the directory under test.
+    PRIVATE_TMP=$(mktemp -d)
+    trap "rm -rf \"$PRIVATE_TMP\"" EXIT
+    TMPDIR="$PRIVATE_TMP" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
+    LEAKED=$(find "$PRIVATE_TMP" -mindepth 1 | wc -l)
     if [ "$LEAKED" -gt 0 ]; then
-        echo "Temp files leaked: $LEAKED new file(s)" >&2
+        echo "Temp files leaked:" >&2
+        find "$PRIVATE_TMP" -mindepth 1 >&2
         exit 1
     fi
 ' _ "$SCLAUDE"
@@ -410,7 +417,7 @@ run_test "T18b: pip install --user works in sandbox" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T19: shared image contains both CLIs and gh ──────────────────────
-run_test "T19: shared image has both CLIs and gh" bash -ec '
+run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
         echo "No sagent image found" >&2
@@ -419,6 +426,47 @@ run_test "T19: shared image has both CLIs and gh" bash -ec '
     "$ENGINE" run --rm "$IMG" claude --version >/dev/null
     "$ENGINE" run --rm "$IMG" codex --version >/dev/null
     "$ENGINE" run --rm "$IMG" gh --version | grep -q "^gh version"
+    # Toolchain versions come from the wrapper so the test never hard-codes
+    # the defaults.
+    tc=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Toolchain: //p")
+    node=$(echo "$tc" | sed "s/.*node=\([^ ]*\).*/\1/")
+    python=$(echo "$tc" | sed "s/.*python=\([^ ]*\).*/\1/")
+    go=$(echo "$tc" | sed "s/.*go=\([^ ]*\).*/\1/")
+    rust=$(echo "$tc" | sed "s/.*rust=\([^ ]*\).*/\1/")
+    java=$(echo "$tc" | sed "s/.*java=\([^ ]*\).*/\1/")
+    ubuntu=$(echo "$tc" | sed "s/.*ubuntu=\([^ ]*\).*/\1/")
+    tools=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Tools: //p")
+    "$ENGINE" run --rm "$IMG" bash -ec "
+        grep -q \"VERSION_ID=\\\"$ubuntu\\\"\" /etc/os-release
+        node --version | grep -q \"^v$node\\.\"
+        python3 --version | grep -q \"^Python $python\\.\"
+        pip3 --version | grep -q \"(python $python)\"
+        uv --version >/dev/null
+        [ \"$go\" = none ] || go version | grep -q \"go$go\"
+        [ \"$rust\" = none ] || { cargo --version >/dev/null && rustfmt --version >/dev/null && cargo clippy --version >/dev/null; }
+        [ \"$java\" = none ] || { java -version 2>&1 | grep -q \"version \\\"$java\\.\"; [ -n \"\$JAVA_HOME\" ]; }
+        podman --version >/dev/null && command -v pasta >/dev/null
+        # Every selected tool is present; every unselected one is absent.
+        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring; do
+            case \" $tools \" in *\" \$tool \"*) want=1 ;; *) want=0 ;; esac
+            case \$tool in
+                typescript) cmd=tsc ;; corepack) cmd=yarn ;; maven) cmd=mvn ;; *) cmd=\$tool ;;
+            esac
+            if [ \$want = 1 ]; then
+                case \$tool in
+                    typescript) tsc --version | grep -q \"^Version\" ;;
+                    corepack) corepack --version >/dev/null && command -v yarn >/dev/null && command -v pnpm >/dev/null ;;
+                    maven) mvn -v | grep -q \"^Apache Maven\" ;;
+                    gradle) gradle --version | grep -q \"^Gradle\" ;;
+                    spring) spring --version | grep -q \"^Spring CLI\" ;;
+                    create-vite) command -v create-vite >/dev/null ;;
+                    *) \$tool --version >/dev/null ;;
+                esac
+            elif command -v \$cmd >/dev/null; then
+                echo \"\$tool is not selected but \$cmd is in the image\" >&2; exit 1
+            fi
+        done
+    "
 ' _ "$SCLAUDE"
 
 # ── T20: Codex config sync ───────────────────────────────────────────
@@ -626,10 +674,17 @@ run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
     fi
     grep -q "contains no PEM certificates" "$tmp/err"
 
-    for n in 1 2; do
-        openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t31-ca$n" \
-            -keyout "$tmp/ca$n.key" -out "$tmp/ca$n.pem" >/dev/null 2>&1
-    done
+    # CAs carry the extensions strict verifiers (Python 3.13+) insist on;
+    # generated with the sandbox image'"'"'s openssl so the host'"'"'s flavor
+    # (LibreSSL on macOS) does not matter.
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$(cd "$tmp" && pwd -P):/t31:rw" --security-opt label=disable "$SUITE_IMG" bash -ec "
+        cd /t31
+        for n in 1 2; do
+            openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=sagent-t31-ca\$n \
+                -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
+                -keyout ca\$n.key -out ca\$n.pem >/dev/null 2>&1
+        done
+    "
     cat "$tmp/ca1.pem" "$tmp/ca2.pem" > "$tmp/bundle.pem"
     plain_hash=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Image hash: //p")
     ver=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/bundle.pem" "$1" version)
@@ -693,7 +748,9 @@ case "\$1" in
 esac
 STUB
     chmod +x "$tmp/fake-engine"
-    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    # Defaults only: no user or CI config file may shape the Dockerfile this
+    # test inspects.
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/no-config"
 
     if "$1" --build >"$tmp/out" 2>&1; then
         echo "build should have failed with the stub engine" >&2
@@ -707,6 +764,35 @@ STUB
     fi
     grep -q "apt-get install -y gh" "$tmp/Dockerfile"
     [ "$(cat "$tmp/context.txt")" = "./Dockerfile" ]
+    # Toolchain versions reach the Dockerfile as FROM/ARG values.
+    tc=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/^Toolchain: //p")
+    grep -q "^FROM ubuntu:$(echo "$tc" | sed "s/.*ubuntu=\([^ ]*\).*/\1/")\$" "$tmp/Dockerfile"
+    grep -q "^ARG NODE_VERSION=$(echo "$tc" | sed "s/.*node=\([^ ]*\).*/\1/")\$" "$tmp/Dockerfile"
+    grep -q "go.dev/dl" "$tmp/Dockerfile"
+    grep -q "sh.rustup.rs" "$tmp/Dockerfile"
+    grep -q "api.adoptium.net" "$tmp/Dockerfile"
+    # "none" leaves a toolchain out of the image entirely.
+    SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none "$1" --build >/dev/null 2>&1 || true
+    if grep -qE "go.dev/dl|sh.rustup.rs|api.adoptium.net|JAVA_HOME|RUSTUP_HOME" "$tmp/Dockerfile"; then
+        echo "toolchain blocks emitted despite =none" >&2
+        exit 1
+    fi
+    grep -q "^ARG GO_VERSION=none\$" "$tmp/Dockerfile"
+    # SAGENT_TOOLS=none: only the agent CLIs are installed.
+    SAGENT_TOOLS=none "$1" --build >/dev/null 2>&1 || true
+    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    if grep -qE "corepack enable|apache-maven|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
+        echo "tooling emitted despite SAGENT_TOOLS=none" >&2
+        exit 1
+    fi
+    # A subset: named tools and nothing else.
+    SAGENT_TOOLS="bun,maven" "$1" --build >/dev/null 2>&1 || true
+    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex bun\$" "$tmp/Dockerfile"
+    grep -q "apache-maven" "$tmp/Dockerfile"
+    if grep -qE "corepack enable|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
+        echo "unselected tooling emitted" >&2
+        exit 1
+    fi
 
     for n in 1 2 3; do
         openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t32-ca$n" \
@@ -804,6 +890,124 @@ STUB
     fi
     # Management commands still work against such an engine.
     "$1" version | grep -q "rootless: true"
+' _ "$SCLAUDE"
+
+# ── T35: toolchain version settings ──────────────────────────────────
+# Versions are validated up front and are part of the image hash, so a
+# different toolchain is a different image.
+run_test "T35: toolchain version settings validated and hashed" bash -ec '
+    # Defaults only (no user or CI config file) until the config subtest below.
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE=/nonexistent/sagent-config
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+    for bad in "SAGENT_UBUNTU_VERSION=noble" "SAGENT_NODE_VERSION=v26" "SAGENT_PYTHON_VERSION=3" "SAGENT_GO_VERSION=go1.27" "SAGENT_RUST_VERSION=latest" "SAGENT_JAVA_VERSION=26.0"; do
+        if env "$bad" "$1" version >/dev/null 2>/tmp/t35-err; then
+            echo "$bad should have been rejected" >&2
+            exit 1
+        fi
+        grep -q "is not valid; expected" /tmp/t35-err
+    done
+    rm -f /tmp/t35-err
+    for good in "SAGENT_UBUNTU_VERSION=24.04" "SAGENT_NODE_VERSION=24" "SAGENT_PYTHON_VERSION=3.13" "SAGENT_GO_VERSION=none" "SAGENT_RUST_VERSION=1.98.0" "SAGENT_JAVA_VERSION=none"; do
+        h=$(env "$good" "$1" version | sed -n "s/^Image hash: //p")
+        if [ "$h" = "$base" ]; then
+            echo "$good must change the image hash" >&2
+            exit 1
+        fi
+        # SAGENT_UBUNTU_VERSION=24.04 shows up as "ubuntu=24.04"
+        key=$(echo "${good%%=*}" | sed "s/^SAGENT_//; s/_VERSION//" | tr "[:upper:]" "[:lower:]")
+        env "$good" "$1" version | grep -q "^Toolchain: .*$key=${good#*=}"
+    done
+    # Config file values apply, environment wins over them.
+    cfg=$(mktemp -d /tmp/sagent-t35.XXXXXX)
+    trap "rm -rf \"$cfg\"" EXIT
+    printf "SAGENT_NODE_VERSION=\"22\"\n" > "$cfg/config"
+    SAGENT_CONFIG_FILE="$cfg/config" "$1" version | grep -q "^Toolchain: .*node=22 "
+    SAGENT_CONFIG_FILE="$cfg/config" SAGENT_NODE_VERSION=24 "$1" version | grep -q "^Toolchain: .*node=24 "
+' _ "$SCLAUDE"
+
+# ── T36: cache volumes are cleared when their toolchain changes ───────
+# The pip volume carries a stamp of the Python it was filled for; contents
+# for another version are cleared automatically on the next run, with a
+# warning, so upgrades never need a manual reset.
+run_test "T36: stale toolchain caches cleared automatically" bash -ec '
+    IMG="$SUITE_IMG"
+    "$ENGINE" volume rm sagent-pip >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-pip >/dev/null
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-pip:/v "$IMG" bash -c "
+        mkdir -p /v/lib/python3.9/site-packages && echo old > /v/lib/python3.9/site-packages/old.py
+        echo python=3.9 > /v/.sagent-stamp
+    "
+    out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
+    echo "$out" | grep -q "Sandbox Python changed (python=3.9 -> python="
+    py=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/.*python=\([^ ]*\).*/\1/p")
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -ec "
+        [ ! -e /v/lib ]
+        [ \"\$(cat /v/.sagent-stamp)\" = python=$py ]
+    "
+    # A second run with the same toolchain leaves the volume alone (and is quiet).
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -c "echo keep > /v/keep"
+    out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
+    if echo "$out" | grep -q "changed ("; then
+        echo "unchanged toolchain must not clear caches" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" test -f /v/keep
+' _ "$SCLAUDE"
+
+# ── T37: reset-caches keeps credentials, config and home ─────────────
+run_test "T37: reset-caches clears only cache volumes" bash -ec '
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+        "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
+    done
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset-caches
+    for vol in sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+        if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
+            echo "cache volume $vol survived reset-caches" >&2
+            exit 1
+        fi
+    done
+    for vol in sclaude-config scodex-config sagent-rootfs; do
+        "$ENGINE" volume inspect "$vol" >/dev/null
+    done
+' _ "$SCLAUDE"
+
+# ── T38: tools and config commands edit the text config ──────────────
+run_test "T38: tools/config commands" bash -ec '
+    cfg=$(mktemp -d /tmp/sagent-t38.XXXXXX)
+    trap "rm -rf \"$cfg\"" EXIT
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$cfg/config"
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+    "$1" tools | grep -qE "^  bun +js +included"
+    "$1" tools disable bun gradle 2>/dev/null
+    grep -qx "SAGENT_TOOLS=\"typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring\"" "$cfg/config"
+    "$1" tools | grep -qE "^  bun +js +excluded"
+    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn maven quarkus spring$"
+    [ "$("$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
+    "$1" tools enable java 2>/dev/null
+    "$1" version | grep -q "^Tools: .* maven gradle quarkus spring$"
+    "$1" tools disable all 2>/dev/null
+    "$1" version | grep -q "^Tools: none$"
+    if "$1" tools enable no-such-tool >/dev/null 2>&1; then echo "unknown tool accepted" >&2; exit 1; fi
+    # config: set, get, list, unset, validation, unknown keys
+    "$1" config set SAGENT_NODE_VERSION 24 2>/dev/null
+    "$1" config set MEMORY_LIMIT 8g 2>/dev/null
+    [ "$("$1" config get SAGENT_NODE_VERSION)" = 24 ]
+    "$1" config list | grep -qE "^  SAGENT_NODE_VERSION +24 +config$"
+    "$1" config list | grep -qE "^  MEMORY_LIMIT +8g +config$"
+    "$1" version | grep -q "^Toolchain: .*node=24 "
+    "$1" version | grep -q "^Limits: memory=8g "
+    if "$1" config set SAGENT_NODE_VERSION v24 >/dev/null 2>&1; then echo "invalid value accepted" >&2; exit 1; fi
+    if "$1" config set NOT_A_SETTING 1 >/dev/null 2>&1; then echo "unknown key accepted" >&2; exit 1; fi
+    "$1" config unset MEMORY_LIMIT 2>/dev/null
+    if grep -q MEMORY_LIMIT "$cfg/config"; then echo "unset left the key" >&2; exit 1; fi
+    "$1" version | grep -q "^Limits: memory=4g "
+    [ "$("$1" config path)" = "$cfg/config" ]
+    # Environment wins over the file and the command says so.
+    SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
+    # Java tools drop out without a JDK; naming one explicitly is an error.
+    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn$"
+    if SAGENT_TOOLS=maven SAGENT_JAVA_VERSION=none "$1" version >/dev/null 2>&1; then echo "java tool without JDK accepted" >&2; exit 1; fi
+    bash -n "$cfg/config"
 ' _ "$SCLAUDE"
 
 print_results

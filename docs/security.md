@@ -72,6 +72,15 @@ the directory stays stable. `/` is refused as a workspace.
 - ✅ No conflicts with host files
 - ✅ Clean separation of concerns
 
+#### Toolchains in the image
+
+Node, Python (via uv), Go, Rust and Java are installed system-wide and
+read-only for the agent, except `RUSTUP_HOME` (`/opt/rust/rustup`), which is
+world-writable because the rustup proxies write there; the agent can alter
+the Rust toolchain inside its own sandbox, which is no more than `sudo apt`
+already allows. User-level installs (`pip --user`, `npm -g`, `cargo install`,
+`go install`, `uv python install`) go to the persistent home volumes.
+
 ### Layer 2: User Privileges
 
 #### Non-Root User

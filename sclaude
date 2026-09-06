@@ -24,6 +24,16 @@ CPU_LIMIT="2"
 PIDS_LIMIT="100"
 PIDS_LIMIT_NESTED="512"
 
+# Toolchain versions baked into the image (all part of the image hash).
+# Defaults track the latest releases at the time of this wrapper's release.
+# Go/Rust/Java accept "none" to leave that toolchain out of the image.
+UBUNTU_VERSION="26.04"
+NODE_VERSION="26"
+PYTHON_VERSION="3.14"
+GO_VERSION="1.27"
+RUST_VERSION="stable"
+JAVA_VERSION="26"
+
 ROOTFS_VOLUME="sagent-rootfs"
 NPM_VOLUME="sagent-npm"
 PIP_VOLUME="sagent-pip"
@@ -36,9 +46,13 @@ HOST_GID=$(id -g)
 
 # Optional config file: plain bash sourced at startup. May set the tunables
 # above (MEMORY_LIMIT, CPU_LIMIT, PIDS_LIMIT, PIDS_LIMIT_NESTED,
-# ENGINE_TIMEOUT_SECONDS) and defaults for SAGENT_DOCKER /
-# SAGENT_CONTAINER_ENGINE / SAGENT_CA_BUNDLE. Environment variables and
-# command-line flags take precedence over the file.
+# ENGINE_TIMEOUT_SECONDS) and defaults for the SAGENT_* settings below.
+# Environment variables and command-line flags take precedence over the file.
+# Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
+# variables, so `for x in $list` would see one item.
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+# Tunables the config file may also set (not SAGENT_-prefixed, no env override).
+SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
 if [ -f "$SAGENT_CONFIG_FILE" ]; then
     # Validate before sourcing: a syntax error mid-source would abort the
@@ -47,16 +61,116 @@ if [ -f "$SAGENT_CONFIG_FILE" ]; then
         echo "[$SCRIPT_NAME] ERROR: config file has a syntax error: $SAGENT_CONFIG_FILE" >&2
         exit 1
     fi
-    _env_sagent_docker="${SAGENT_DOCKER:-}"
-    _env_sagent_engine="${SAGENT_CONTAINER_ENGINE:-}"
-    _env_sagent_ca_bundle="${SAGENT_CA_BUNDLE:-}"
+    # Remember which settings the environment set so they win over the file.
+    for _name in "${SAGENT_SETTINGS[@]}"; do
+        eval "_env_${_name}=\${${_name}:-}"
+    done
     # shellcheck disable=SC1090
     . "$SAGENT_CONFIG_FILE"
-    if [ -n "$_env_sagent_docker" ]; then SAGENT_DOCKER="$_env_sagent_docker"; fi
-    if [ -n "$_env_sagent_engine" ]; then SAGENT_CONTAINER_ENGINE="$_env_sagent_engine"; fi
-    if [ -n "$_env_sagent_ca_bundle" ]; then SAGENT_CA_BUNDLE="$_env_sagent_ca_bundle"; fi
-    unset _env_sagent_docker _env_sagent_engine _env_sagent_ca_bundle
+    for _name in "${SAGENT_SETTINGS[@]}"; do
+        eval "_value=\${_env_${_name}}"
+        if [ -n "$_value" ]; then
+            eval "${_name}=\$_value"
+            eval "SAGENT_SOURCE_${_name}=env"
+        else
+            eval "_value=\${${_name}:-}"
+            if [ -n "$_value" ]; then eval "SAGENT_SOURCE_${_name}=config"; fi
+        fi
+        unset "_env_${_name}"
+    done
+    unset _name _value
+else
+    for _name in "${SAGENT_SETTINGS[@]}"; do
+        eval "_value=\${${_name}:-}"
+        if [ -n "$_value" ]; then eval "SAGENT_SOURCE_${_name}=env"; fi
+    done
+    unset _name _value
 fi
+
+# Toolchain version settings, validated so a typo fails here instead of deep
+# inside a 20-minute image build.
+UBUNTU_VERSION="${SAGENT_UBUNTU_VERSION:-$UBUNTU_VERSION}"
+NODE_VERSION="${SAGENT_NODE_VERSION:-$NODE_VERSION}"
+PYTHON_VERSION="${SAGENT_PYTHON_VERSION:-$PYTHON_VERSION}"
+GO_VERSION="${SAGENT_GO_VERSION:-$GO_VERSION}"
+RUST_VERSION="${SAGENT_RUST_VERSION:-$RUST_VERSION}"
+JAVA_VERSION="${SAGENT_JAVA_VERSION:-$JAVA_VERSION}"
+validate_version_setting() {
+    local name="$1" value="$2" pattern="$3" hint="$4"
+    if ! printf '%s' "$value" | grep -qE "$pattern"; then
+        echo "[$SCRIPT_NAME] ERROR: $name=\"$value\" is not valid; expected $hint" >&2
+        exit 1
+    fi
+}
+validate_version_setting SAGENT_UBUNTU_VERSION "$UBUNTU_VERSION" '^[0-9]{2}\.[0-9]{2}$' 'a release like 26.04'
+validate_version_setting SAGENT_NODE_VERSION "$NODE_VERSION" '^[0-9]+$' 'a major version like 26'
+validate_version_setting SAGENT_PYTHON_VERSION "$PYTHON_VERSION" '^3\.[0-9]+$' 'a minor version like 3.14'
+validate_version_setting SAGENT_GO_VERSION "$GO_VERSION" '^(none|1\.[0-9]+(\.[0-9]+)?)$' '1.27, 1.27.1, or none'
+validate_version_setting SAGENT_RUST_VERSION "$RUST_VERSION" '^(none|stable|beta|nightly|[0-9]+\.[0-9]+(\.[0-9]+)?)$' 'stable, beta, nightly, 1.98.0, or none'
+validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' 'a major version like 26, or none'
+
+# Optional tooling baked into the image, all at their latest release as of
+# the build. SAGENT_TOOLS selects by name or group (comma/space separated):
+# "all" (default), "none", "js", "java", or explicit names. Java tools need a
+# JDK: with SAGENT_JAVA_VERSION=none they drop out of "all"/"java" silently
+# but naming one explicitly is an error. Registry rows: name|group|description.
+SAGENT_TOOL_REGISTRY='typescript|js|TypeScript compiler (tsc)
+tsx|js|run TypeScript files directly
+bun|js|Bun runtime and package manager
+corepack|js|yarn and pnpm at the version a project declares
+create-next-app|js|Next.js project scaffolding
+create-vite|js|Vite project scaffolding (React, Vue, Svelte, ...)
+shadcn|js|shadcn/ui component CLI
+maven|java|Apache Maven
+gradle|java|Gradle
+quarkus|java|Quarkus CLI
+spring|java|Spring Boot CLI'
+SAGENT_TOOLS="${SAGENT_TOOLS:-all}"
+
+tool_group() { printf '%s\n' "$SAGENT_TOOL_REGISTRY" | awk -F'|' -v n="$1" '$1 == n {print $2}'; }
+tool_known() { [ -n "$(tool_group "$1")" ]; }
+
+# Resolve $1 (a SAGENT_TOOLS value) into TOOLS_SELECTED: registry order,
+# deduplicated, Java tools only with a JDK. Exits with a message on unknown
+# names or on a Java tool named explicitly without a JDK.
+resolve_tools() {
+    local spec="$1" item name group wanted="" explicit_java=""
+    while read -r item; do
+        [ -n "$item" ] || continue
+        case "$item" in
+            all) wanted="$wanted js java" ;;
+            none) ;;
+            js | java) wanted="$wanted $item" ;;
+            *)
+                if ! tool_known "$item"; then
+                    echo "[$SCRIPT_NAME] ERROR: SAGENT_TOOLS names an unknown tool: $item" >&2
+                    echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                    exit 1
+                fi
+                wanted="$wanted $item"
+                if [ "$(tool_group "$item")" = java ]; then explicit_java="$explicit_java $item"; fi
+                ;;
+        esac
+    done <<< "$(printf '%s' "$spec" | tr ', ' '\n')"
+    if [ -n "$explicit_java" ] && [ "$JAVA_VERSION" = none ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_TOOLS names Java tools (${explicit_java# }) but SAGENT_JAVA_VERSION=none; they need a JDK." >&2
+        exit 1
+    fi
+    TOOLS_SELECTED=""
+    while IFS='|' read -r name group _; do
+        case " $wanted " in
+            *" $name "* | *" $group "*)
+                if [ "$group" = java ] && [ "$JAVA_VERSION" = none ]; then continue; fi
+                TOOLS_SELECTED="$TOOLS_SELECTED $name"
+                ;;
+        esac
+    done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+    TOOLS_SELECTED="${TOOLS_SELECTED# }"
+}
+resolve_tools "$SAGENT_TOOLS"
+tool_selected() { case " $TOOLS_SELECTED " in *" $1 "*) return 0 ;; esac; return 1; }
 
 # Extra trust anchors for the sandbox image. Corporate networks often run a
 # TLS-inspecting proxy whose CA the host trusts (macOS keychain, Linux system
@@ -206,12 +320,22 @@ detect_engine_flavor() {
 }
 
 get_dockerfile_content() {
+    # Head: the only lines that interpolate wrapper settings. Everything below
+    # is a quoted heredoc; the RUN steps read the versions from the ARGs.
+    cat <<DOCKERFILE_HEAD
+FROM ubuntu:${UBUNTU_VERSION}
+ARG NODE_VERSION=${NODE_VERSION}
+ARG PYTHON_VERSION=${PYTHON_VERSION}
+ARG GO_VERSION=${GO_VERSION}
+ARG RUST_VERSION=${RUST_VERSION}
+ARG JAVA_VERSION=${JAVA_VERSION}
+DOCKERFILE_HEAD
+
     cat <<'DOCKERFILE_END'
-FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    curl git python3 python3-pip build-essential ca-certificates gnupg sudo \
+    curl git python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
     && rm -rf /var/lib/apt/lists/*
 DOCKERFILE_END
@@ -230,7 +354,6 @@ COPY sagent-ca/ /usr/local/share/ca-certificates/sagent/
 COPY sagent-ca-bundle.pem /usr/local/share/sagent-ca-bundle.pem
 RUN update-ca-certificates
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/sagent-ca-bundle.pem
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 DOCKERFILE_END
@@ -244,20 +367,170 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+# Node.js: the official tarball for the configured major (latest patch),
+# independent of the distro's packaging.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) arch=x64 ;; \
+        arm64) arch=arm64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    base="https://nodejs.org/dist/latest-v${NODE_VERSION}.x"; \
+    tarball="$(curl -fsSL "$base/SHASUMS256.txt" | grep -o "node-v[0-9.]*-linux-${arch}.tar.xz" | head -1)"; \
+    [ -n "$tarball" ]; \
+    curl -fsSL "$base/$tarball" | tar -xJ -C /usr/local --strip-components=1 \
+        --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
+    node --version && npm --version
+
+# Python: a uv-managed CPython of the configured minor version (latest
+# patch), installed system-wide ahead of the distro's own python3 on PATH.
+# It ships pip; PIP_BREAK_SYSTEM_PACKAGES below lets `pip install --user`
+# through uv's externally-managed marker into the sagent-pip volume.
+RUN set -eux; \
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh; \
+    UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin uv python install --default "${PYTHON_VERSION}"; \
+    pybin="$(python3 -c 'import os, sys; print(os.path.join(sys.prefix, "bin"))')"; \
+    ln -sf "$pybin/pip3" /usr/local/bin/pip3; \
+    ln -sf "$pybin/pip3" /usr/local/bin/pip; \
+    python3 --version && pip3 --version
+# uv's Python is built against its own OpenSSL whose compiled-in CA file is
+# /etc/ssl/cert.pem, which Ubuntu does not have. Point OpenSSL-based tools
+# (Python's ssl module, the Codex CLI) at Ubuntu's bundle explicitly.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+DOCKERFILE_END
+
+    if [ "$GO_VERSION" != "none" ]; then
+        cat <<'DOCKERFILE_END'
+
+# Go: official tarball; a major.minor resolves to its latest patch via go.dev.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in amd64) arch=amd64 ;; arm64) arch=arm64 ;; esac; \
+    case "$GO_VERSION" in \
+        *.*.*) release="go${GO_VERSION}" ;; \
+        *) release="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' \
+            | grep -oE "\"version\": ?\"go${GO_VERSION}(\.[0-9]+)?\"" | head -1 | grep -oE 'go[0-9.]+')" ;; \
+    esac; \
+    [ -n "$release" ]; \
+    curl -fsSL "https://go.dev/dl/${release}.linux-${arch}.tar.gz" | tar -xz -C /usr/local; \
+    /usr/local/go/bin/go version
+DOCKERFILE_END
+    fi
+
+    if [ "$RUST_VERSION" != "none" ]; then
+        cat <<'DOCKERFILE_END'
+
+# Rust: rustup with a system-wide toolchain (minimal profile plus rustfmt and
+# clippy). RUSTUP_HOME stays system-wide and writable so the rustup proxies
+# work for the agent; CARGO_HOME is left unset at runtime so registries and
+# `cargo install` land in the persistent home directory.
+RUN set -eux; \
+    curl -fsSL https://sh.rustup.rs | env RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo \
+        sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+        --component rustfmt --component clippy; \
+    chmod -R a+w /opt/rust/rustup; \
+    RUSTUP_HOME=/opt/rust/rustup /opt/rust/cargo/bin/cargo --version
+ENV RUSTUP_HOME=/opt/rust/rustup
+DOCKERFILE_END
+    fi
+
+    if [ "$JAVA_VERSION" != "none" ]; then
+        cat <<'DOCKERFILE_END'
+
+# Java: Eclipse Temurin JDK, latest GA build of the configured major.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in amd64) arch=x64 ;; arm64) arch=aarch64 ;; esac; \
+    mkdir -p /opt/java; \
+    curl -fsSL "https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${arch}/jdk/hotspot/normal/eclipse" \
+        | tar -xz -C /opt/java --strip-components=1; \
+    /opt/java/bin/java -version
+ENV JAVA_HOME=/opt/java
+
+DOCKERFILE_END
+    fi
+
+    # Java build tools and framework CLIs, latest stable at build time: Maven
+    # and the Spring Boot CLI resolve the highest plain X.Y.Z from Maven
+    # Central's metadata (its "release" pointer can be an RC or milestone),
+    # Gradle from gradle.org's current-version endpoint, the Quarkus CLI from
+    # its Maven Central release (the runnable uber jar behind a launcher).
+    if tool_selected maven || tool_selected gradle || tool_selected quarkus || tool_selected spring; then
+        local -a java_checks=()
+        printf '\n# Java build tools and framework CLIs, latest stable at build time.\nRUN set -eux; \\\n'
+        if tool_selected maven; then
+            cat <<'DOCKERFILE_END'
+    mvn_v="$(curl -fsSL https://repo1.maven.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml \
+        | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
+    mkdir -p /opt/maven; \
+    curl -fsSL "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/${mvn_v}/apache-maven-${mvn_v}-bin.tar.gz" \
+        | tar -xz -C /opt/maven --strip-components=1; \
+DOCKERFILE_END
+            java_checks+=("/opt/maven/bin/mvn -v")
+        fi
+        if tool_selected gradle; then
+            cat <<'DOCKERFILE_END'
+    gradle_url="$(curl -fsSL https://services.gradle.org/versions/current | grep -oE '"downloadUrl" *: *"[^"]+"' | grep -oE 'https://[^"]+')"; \
+    curl -fsSL "$gradle_url" -o /tmp/gradle.zip; \
+    unzip -q /tmp/gradle.zip -d /opt; \
+    mv /opt/gradle-* /opt/gradle; \
+    rm -f /tmp/gradle.zip; \
+DOCKERFILE_END
+            java_checks+=("/opt/gradle/bin/gradle --version")
+        fi
+        if tool_selected quarkus; then
+            cat <<'DOCKERFILE_END'
+    quarkus_v="$(curl -fsSL https://repo1.maven.org/maven2/io/quarkus/quarkus-cli/maven-metadata.xml | sed -n 's:.*<release>\(.*\)</release>.*:\1:p')"; \
+    mkdir -p /opt/quarkus; \
+    curl -fsSL "https://repo1.maven.org/maven2/io/quarkus/quarkus-cli/${quarkus_v}/quarkus-cli-${quarkus_v}-runner.jar" -o /opt/quarkus/quarkus-cli.jar; \
+    printf '%s\n' '#!/bin/sh' 'exec "${JAVA_HOME:-/opt/java}/bin/java" -jar /opt/quarkus/quarkus-cli.jar "$@"' > /usr/local/bin/quarkus; \
+    chmod 0755 /usr/local/bin/quarkus; \
+DOCKERFILE_END
+            java_checks+=("/usr/local/bin/quarkus --version")
+        fi
+        if tool_selected spring; then
+            cat <<'DOCKERFILE_END'
+    spring_v="$(curl -fsSL https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-cli/maven-metadata.xml \
+        | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
+    mkdir -p /opt/spring; \
+    curl -fsSL "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-cli/${spring_v}/spring-boot-cli-${spring_v}-bin.tar.gz" \
+        | tar -xz -C /opt/spring --strip-components=1; \
+DOCKERFILE_END
+            java_checks+=("/opt/spring/bin/spring --version")
+        fi
+        printf '    %s\n' "$(IFS=';'; printf '%s' "${java_checks[*]}" | sed 's/;/; /g')"
+    fi
+
+    cat <<'DOCKERFILE_END'
 
 # Nested container tooling (used by the wrappers' --docker mode): rootless
-# podman with the docker CLI shim, confined entirely to the sandbox.
+# podman with the docker CLI shim, confined entirely to the sandbox. passt
+# provides pasta, podman 5's default rootless network backend.
 RUN apt-get update && apt-get install -y \
-    podman podman-docker slirp4netns fuse-overlayfs \
+    podman podman-docker passt slirp4netns fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
+DOCKERFILE_END
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+    # Agent CLIs plus the selected JavaScript/TypeScript tooling, each at its
+    # latest release. React, Next.js, htmx and shadcn components are project
+    # dependencies these scaffolders pull in. yarn and pnpm come through
+    # corepack, which serves whatever version a project's packageManager field
+    # declares (Node no longer bundles corepack).
+    local -a npm_tools=()
+    local tool
+    for tool in typescript tsx bun corepack create-next-app create-vite shadcn; do
+        if tool_selected "$tool"; then npm_tools+=("$tool"); fi
+    done
+    printf '\n# Agent CLIs and JavaScript/TypeScript tooling.\nRUN npm install -g @anthropic-ai/claude-code @openai/codex'
+    if [ "${#npm_tools[@]}" -gt 0 ]; then printf ' %s' "${npm_tools[@]}"; fi
+    printf '\n'
+    if tool_selected corepack; then
+        printf 'RUN corepack enable --install-directory /usr/local/bin\nENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n'
+    fi
+
+    cat <<'DOCKERFILE_END'
 
 ARG USER_UID=1000
 ARG USER_GID=1000
-# ubuntu:24.04 ships a default "ubuntu" user with UID/GID 1000. On hosts where
+# ubuntu images ship a default "ubuntu" user with UID/GID 1000. On hosts where
 # the invoking user is UID 1000 (the common Linux desktop case), sudo resolves
 # the UID to that first passwd entry, so the "agent" sudoers rule never applies.
 # Remove it before creating agent.
@@ -322,12 +595,14 @@ ENV BROWSER=/usr/local/bin/host-open
 WORKDIR /workspace
 ENV HOME=/home/agent
 ENV TMPDIR=/tmp
-# Ubuntu 24.04 marks the system Python as externally managed (PEP 668), which
-# blocks even `pip install --user` into the dedicated pip volume. The sandbox
-# is disposable, so let pip install into the user site freely.
+# uv's Python carries an externally-managed marker (PEP 668) that would block
+# even `pip install --user` into the dedicated pip volume. The sandbox is
+# disposable, so let pip install into the user site freely.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
-ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:${PATH}"
+# Persistent, user-writable install locations first (npm globals, pip user
+# scripts, cargo install, go install), then the system-wide toolchains.
+ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/go/bin:/usr/local/go/bin:/opt/rust/cargo/bin:/opt/java/bin:/opt/maven/bin:/opt/gradle/bin:/opt/spring/bin:${PATH}"
 DOCKERFILE_END
 }
 
@@ -470,6 +745,8 @@ show_version() {
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
     echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
+    echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
+    echo "Tools: ${TOOLS_SELECTED:-none}"
     if [ -n "$CA_BUNDLE_PATH" ]; then
         echo "CA bundle: $CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"
     else
@@ -509,14 +786,301 @@ cleanup_images() {
     echo "[$SCRIPT_NAME] Cleanup complete" >&2
 }
 
-show_volumes() {
-    local volumes
+# Human-readable size (docker/podman style) to bytes, for totals.
+size_to_bytes() {
+    awk -v s="$1" 'BEGIN {
+        n = s; sub(/[^0-9.].*$/, "", n); u = s; sub(/^[0-9.]+/, "", u); u = tolower(u);
+        m = 1;
+        if (u ~ /^k/) m = 1000; else if (u ~ /^m/) m = 1000000; else if (u ~ /^g/) m = 1000000000; else if (u ~ /^t/) m = 1000000000000;
+        printf "%.0f", n * m }'
+}
 
-    echo "[$SCRIPT_NAME] Docker volumes:"
-    volumes=$("$ENGINE_CMD" volume ls --format "table {{.Name}}\t{{.Driver}}\t{{.Mountpoint}}")
-    printf '%s\n' "$volumes" | grep -E "^(NAME|sagent-|sclaude-|scodex-)" || true
-    printf "\n[%s] Volume sizes:\n" "$SCRIPT_NAME"
-    "$ENGINE_CMD" system df -v | grep -E "sagent-|sclaude-|scodex-" || echo "  (volume size info not available)"
+bytes_to_size() {
+    awk -v b="$1" 'BEGIN {
+        if (b >= 1000000000) printf "%.2fGB", b / 1000000000;
+        else if (b >= 1000000) printf "%.1fMB", b / 1000000;
+        else if (b >= 1000) printf "%.1fkB", b / 1000;
+        else printf "%dB", b }'
+}
+
+# Disk usage report: images, every volume with its purpose and size, and the
+# caches total that `reset-caches` would reclaim.
+show_volumes() {
+    local df_output volume_rows tag size total_cache=0 total_all=0 bytes cache_flag
+    local name purpose
+
+    echo "[$SCRIPT_NAME] Disk usage (engine: $ENGINE_CMD)"
+    echo "Images ($IMAGE_REPO):"
+    "$ENGINE_CMD" images "$IMAGE_REPO" --format '{{.Tag}} {{.Size}}' 2>/dev/null | while read -r tag size; do
+        if [ "$tag" = "$VERSION_HASH" ]; then
+            printf '  %-20s %-10s current\n' "$tag" "$size"
+        else
+            printf '  %-20s %-10s old, remove with: %s cleanup\n' "$tag" "$size" "$SCRIPT_NAME"
+        fi
+    done
+
+    # `system df -v` is the only engine command that reports volume sizes; both
+    # docker and podman print a "VOLUME NAME  LINKS  SIZE" table in it.
+    df_output=$("$ENGINE_CMD" system df -v 2>/dev/null || true)
+    volume_rows=$(printf '%s\n' "$df_output" | awk '/^VOLUME NAME/ {in_table = 1; next} in_table && NF == 0 {in_table = 0} in_table {print $1, $NF}')
+
+    echo "Volumes:"
+    while IFS='|' read -r name purpose cache_flag; do
+        if ! "$ENGINE_CMD" volume inspect "$name" >/dev/null 2>&1; then
+            size="(not created)"
+        else
+            size=$(printf '%s\n' "$volume_rows" | awk -v n="$name" '$1 == n {print $2; exit}')
+            size="${size:-n/a}"
+        fi
+        case "$size" in
+            *[0-9]*B) bytes=$(size_to_bytes "$size") ;;
+            *) bytes=0 ;;
+        esac
+        total_all=$((total_all + bytes))
+        if [ "$cache_flag" = "cache" ]; then
+            total_cache=$((total_cache + bytes))
+            printf '  %-20s %-10s %s [cache]\n' "$name" "$size" "$purpose"
+        else
+            printf '  %-20s %-10s %s\n' "$name" "$size" "$purpose"
+        fi
+    done <<EOF
+sclaude-config|Claude credentials, config, sessions|
+scodex-config|Codex auth and config|
+$ROOTFS_VOLUME|home directory: shell state, gh auth, Go/Rust/Java caches|
+$NPM_VOLUME|npm global packages|cache
+$PIP_VOLUME|pip user packages and uv-managed Pythons|cache
+$APT_CACHE_VOLUME|apt package downloads|cache
+$APT_LISTS_VOLUME|apt package indexes|cache
+$CONTAINERS_VOLUME|nested container images and state|cache
+EOF
+    echo "Volumes total: $(bytes_to_size "$total_all"); caches: $(bytes_to_size "$total_cache")"
+    echo "\`$SCRIPT_NAME reset-caches\` clears the [cache] volumes and keeps credentials, config and the home directory; \`$SCRIPT_NAME reset\` removes everything."
+}
+
+# Remove containers that are not running but still pin the sandbox volumes
+# (e.g. --rm containers that failed to start), so volume removal can succeed.
+remove_stale_sandbox_containers() {
+    "$ENGINE_CMD" ps -a --format '{{.ID}} {{.Image}} {{.State}}' 2>/dev/null \
+        | awk -v repo="$IMAGE_REPO" '$2 ~ "^"repo":" && $3 != "running" {print $1}' \
+        | while read -r cid; do
+            "$ENGINE_CMD" rm -v "$cid" >/dev/null 2>&1 || true
+        done
+}
+
+# Remove the named volumes; exits non-zero naming any volume still pinned by a
+# running container.
+remove_volumes() {
+    local v leftover=""
+    for v in "$@"; do
+        if "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1 \
+            && ! "$ENGINE_CMD" volume rm "$v" >/dev/null 2>&1; then
+            leftover="$leftover $v"
+        fi
+    done
+    if [ -n "$leftover" ]; then
+        echo "[$SCRIPT_NAME] WARNING: still in use by a container, not removed:$leftover" >&2
+        exit 1
+    fi
+}
+
+confirm_or_exit() {
+    if [ "${SAGENT_ASSUME_YES:-}" != "1" ]; then
+        if [ ! -t 0 ]; then
+            echo "[$SCRIPT_NAME] ERROR: refusing to delete volumes non-interactively. Set SAGENT_ASSUME_YES=1 to override." >&2
+            exit 1
+        fi
+        echo "[$SCRIPT_NAME] Press Ctrl+C to cancel, or Enter to continue..." >&2
+        read -r
+    fi
+}
+
+reset_caches() {
+    echo "[$SCRIPT_NAME] This clears the cache volumes (npm globals, pip packages, apt cache, nested container images). Credentials, config and the home directory are kept." >&2
+    confirm_or_exit
+    echo "[$SCRIPT_NAME] Removing cache volumes..." >&2
+    remove_stale_sandbox_containers
+    remove_volumes "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
+    echo "[$SCRIPT_NAME] Caches cleared. They are recreated on the next run." >&2
+}
+
+# ---- `tools` and `config` commands: inspect and edit the text config ----
+
+setting_source() {
+    local src
+    eval "src=\${SAGENT_SOURCE_$1:-default}"
+    printf '%s' "$src"
+}
+
+# Write KEY="VALUE" into the config file (replacing an existing KEY= line),
+# validating the result parses before it replaces the original.
+config_write() {
+    local key="$1" value="$2" tmp escaped
+    mkdir -p "$(dirname "$SAGENT_CONFIG_FILE")"
+    tmp=$(mktemp)
+    TEMP_FILES+=("$tmp")
+    if [ -f "$SAGENT_CONFIG_FILE" ]; then
+        grep -vE "^${key}=" "$SAGENT_CONFIG_FILE" > "$tmp" || true
+    fi
+    if [ -n "$value" ]; then
+        escaped=$(printf '%s' "$value" | sed 's/[\\"]/\\&/g')
+        printf '%s="%s"\n' "$key" "$escaped" >> "$tmp"
+    fi
+    if ! bash -n "$tmp" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] ERROR: refusing to write a config file that does not parse" >&2
+        exit 1
+    fi
+    mv "$tmp" "$SAGENT_CONFIG_FILE"
+}
+
+config_key_known() {
+    case " ${SAGENT_SETTINGS[*]} ${SAGENT_TUNABLES[*]} " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# Validate a value for a key the same way startup does; exits on failure.
+config_validate() {
+    local key="$1" value="$2"
+    case "$key" in
+        SAGENT_UBUNTU_VERSION) validate_version_setting "$key" "$value" '^[0-9]{2}\.[0-9]{2}$' 'a release like 26.04' ;;
+        SAGENT_NODE_VERSION) validate_version_setting "$key" "$value" '^[0-9]+$' 'a major version like 26' ;;
+        SAGENT_PYTHON_VERSION) validate_version_setting "$key" "$value" '^3\.[0-9]+$' 'a minor version like 3.14' ;;
+        SAGENT_GO_VERSION) validate_version_setting "$key" "$value" '^(none|1\.[0-9]+(\.[0-9]+)?)$' '1.27, 1.27.1, or none' ;;
+        SAGENT_RUST_VERSION) validate_version_setting "$key" "$value" '^(none|stable|beta|nightly|[0-9]+\.[0-9]+(\.[0-9]+)?)$' 'stable, beta, nightly, 1.98.0, or none' ;;
+        SAGENT_JAVA_VERSION) validate_version_setting "$key" "$value" '^(none|[0-9]+)$' 'a major version like 26, or none' ;;
+        SAGENT_TOOLS) resolve_tools "$value" ;;
+        SAGENT_DOCKER) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
+        SAGENT_CA_BUNDLE) ;;
+        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
+        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
+        PIDS_LIMIT | PIDS_LIMIT_NESTED) validate_version_setting "$key" "$value" '^[0-9]+$' 'a number like 200' ;;
+    esac
+}
+
+config_command() {
+    local sub="${1:-}" key value
+    case "$sub" in
+        "" | list)
+            echo "Config file: $SAGENT_CONFIG_FILE$([ -f "$SAGENT_CONFIG_FILE" ] || echo ' (not created yet)')"
+            echo "Effective settings (source: env > config > default):"
+            for key in "${SAGENT_SETTINGS[@]}"; do
+                eval "value=\${$key:-}"
+                printf '  %-26s %-40s %s\n' "$key" "${value:-(unset)}" "$(setting_source "$key")"
+            done
+            for key in "${SAGENT_TUNABLES[@]}"; do
+                eval "value=\${$key}"
+                printf '  %-26s %-40s %s\n' "$key" "$value" "$(grep -qE "^${key}=" "$SAGENT_CONFIG_FILE" 2>/dev/null && echo config || echo default)"
+            done
+            echo "Usage: $SCRIPT_NAME config set KEY VALUE | unset KEY | get KEY | path"
+            ;;
+        path) echo "$SAGENT_CONFIG_FILE" ;;
+        get)
+            key="${2:-}"
+            if ! config_key_known "$key"; then echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2; exit 1; fi
+            eval "value=\${$key:-}"
+            printf '%s\n' "$value"
+            ;;
+        set)
+            key="${2:-}"; value="${3-}"
+            if [ -z "$key" ] || [ $# -lt 3 ]; then echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME config set KEY VALUE" >&2; exit 1; fi
+            if ! config_key_known "$key"; then
+                echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2
+                echo "[$SCRIPT_NAME] Settings: ${SAGENT_SETTINGS[*]} ${SAGENT_TUNABLES[*]}" >&2
+                exit 1
+            fi
+            config_validate "$key" "$value"
+            config_write "$key" "$value"
+            echo "[$SCRIPT_NAME] $key=\"$value\" written to $SAGENT_CONFIG_FILE" >&2
+            if [ "$(setting_source "$key")" = env ]; then
+                echo "[$SCRIPT_NAME] Note: $key is also set in this environment, which takes precedence over the file." >&2
+            fi
+            ;;
+        unset)
+            key="${2:-}"
+            if ! config_key_known "$key"; then echo "[$SCRIPT_NAME] ERROR: unknown setting: $key" >&2; exit 1; fi
+            config_write "$key" ""
+            echo "[$SCRIPT_NAME] $key removed from $SAGENT_CONFIG_FILE" >&2
+            ;;
+        *)
+            echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME config [list | set KEY VALUE | unset KEY | get KEY | path]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+tools_command() {
+    local sub="${1:-}" name group desc status current new item
+    case "$sub" in
+        "" | list)
+            echo "Tools in the sandbox image (SAGENT_TOOLS=\"$SAGENT_TOOLS\", $(setting_source SAGENT_TOOLS)):"
+            printf '  %-18s %-6s %-22s %s\n' NAME GROUP STATUS DESCRIPTION
+            while IFS='|' read -r name group desc; do
+                if tool_selected "$name"; then
+                    status="included"
+                elif [ "$group" = java ] && [ "$JAVA_VERSION" = none ]; then
+                    status="excluded (Java=none)"
+                else
+                    status="excluded"
+                fi
+                printf '  %-18s %-6s %-22s %s\n' "$name" "$group" "$status" "$desc"
+            done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+            echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
+            echo "Change with: $SCRIPT_NAME tools enable|disable NAME... (names or groups all, none, js, java); versions with: $SCRIPT_NAME config set SAGENT_<LANG>_VERSION <version>"
+            ;;
+        enable | disable)
+            shift
+            if [ $# -eq 0 ]; then echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME tools $sub NAME..." >&2; exit 1; fi
+            # Start from the explicit resolved list, then add or remove.
+            current=" $TOOLS_SELECTED "
+            for item in "$@"; do
+                case "$item" in
+                    all | js | java | none) ;;
+                    *)
+                        if ! tool_known "$item"; then
+                            echo "[$SCRIPT_NAME] ERROR: unknown tool: $item" >&2
+                            echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                            exit 1
+                        fi
+                        ;;
+                esac
+            done
+            new=""
+            while IFS='|' read -r name group _; do
+                case "$sub" in
+                    enable)
+                        if [ -z "${current##* "$name" *}" ]; then new="$new,$name"; continue; fi
+                        for item in "$@"; do
+                            case "$item" in all | "$group" | "$name") new="$new,$name"; break ;; esac
+                        done
+                        ;;
+                    disable)
+                        [ -n "${current##* "$name" *}" ] && continue
+                        for item in "$@"; do
+                            case "$item" in all | none | "$group" | "$name") continue 2 ;; esac
+                        done
+                        new="$new,$name"
+                        ;;
+                esac
+            done <<EOF
+$SAGENT_TOOL_REGISTRY
+EOF
+            new="${new#,}"
+            [ -n "$new" ] || new="none"
+            resolve_tools "$new"
+            config_write SAGENT_TOOLS "$new"
+            echo "[$SCRIPT_NAME] SAGENT_TOOLS=\"$new\" written to $SAGENT_CONFIG_FILE" >&2
+            echo "[$SCRIPT_NAME] Included now: ${TOOLS_SELECTED:-none}. The image rebuilds with this selection on the next run." >&2
+            if [ "$(setting_source SAGENT_TOOLS)" = env ]; then
+                echo "[$SCRIPT_NAME] Note: SAGENT_TOOLS is also set in this environment, which takes precedence over the file." >&2
+            fi
+            ;;
+        *)
+            echo "[$SCRIPT_NAME] Usage: $SCRIPT_NAME tools [list | enable NAME... | disable NAME...]" >&2
+            exit 1
+            ;;
+    esac
 }
 
 print_release_guidance() {
@@ -866,35 +1430,13 @@ check_release() {
 
 reset_volumes() {
     echo "[$SCRIPT_NAME] WARNING: This will delete all persisted sandbox data (credentials, packages, preferences, sessions)." >&2
-    if [ "${SAGENT_ASSUME_YES:-}" != "1" ]; then
-        if [ ! -t 0 ]; then
-            echo "[$SCRIPT_NAME] ERROR: refusing to delete volumes non-interactively. Set SAGENT_ASSUME_YES=1 to override." >&2
-            exit 1
-        fi
-        echo "[$SCRIPT_NAME] Press Ctrl+C to cancel, or Enter to continue..." >&2
-        read -r
-    fi
+    confirm_or_exit
     echo "[$SCRIPT_NAME] Removing Docker volumes..." >&2
     # Stale never-started or exited sandbox containers pin the volumes; remove
     # them first so the volume removal can succeed. Running containers are left
-    # alone and keep their volumes pinned (reported below).
-    "$ENGINE_CMD" ps -a --format '{{.ID}} {{.Image}} {{.State}}' 2>/dev/null \
-        | awk -v repo="$IMAGE_REPO" '$2 ~ "^"repo":" && $3 != "running" {print $1}' \
-        | while read -r cid; do
-            "$ENGINE_CMD" rm -v "$cid" >/dev/null 2>&1 || true
-        done
-    local v
-    local leftover=""
-    for v in sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
-        if "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1 \
-            && ! "$ENGINE_CMD" volume rm "$v" >/dev/null 2>&1; then
-            leftover="$leftover $v"
-        fi
-    done
-    if [ -n "$leftover" ]; then
-        echo "[$SCRIPT_NAME] WARNING: still in use by a container, not removed:$leftover" >&2
-        exit 1
-    fi
+    # alone and keep their volumes pinned (reported by remove_volumes).
+    remove_stale_sandbox_containers
+    remove_volumes sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
     echo "[$SCRIPT_NAME] Reset complete. Volumes will be recreated on next run." >&2
 }
 
@@ -924,7 +1466,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -987,6 +1529,27 @@ sync_state() {
         bash -c '
             TARGET_UID='"$HOST_UID"'
             TARGET_GID='"$HOST_GID"'
+            # Cache volumes carry a stamp of the toolchain they were filled
+            # for. A changed stamp means the contents are for another
+            # Python/Node/Ubuntu (pip site-packages are per minor version,
+            # npm native addons per Node ABI, apt and podman state per
+            # release): clear them so the upgrade needs nothing from the user.
+            stamp_volume() {
+                local dir="$1" expected="$2" what="$3" current
+                current=$(cat "$dir/.sagent-stamp" 2>/dev/null || true)
+                if [ "$current" != "$expected" ]; then
+                    if [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 ! -name .sagent-stamp | head -1)" ]; then
+                        echo "['"$SCRIPT_NAME"'] $what changed (${current:-unstamped} -> $expected): clearing $(basename "$dir" | sed s/^vol-/sagent-/) as its contents were built for the old version" >&2
+                        find "$dir" -mindepth 1 -maxdepth 1 ! -name .sagent-stamp -exec rm -rf {} +
+                    fi
+                    printf "%s\n" "$expected" > "$dir/.sagent-stamp"
+                fi
+            }
+            stamp_volume /vol-pip "python='"$PYTHON_VERSION"'" "Sandbox Python"
+            stamp_volume /vol-npm "node='"$NODE_VERSION"'" "Sandbox Node.js"
+            stamp_volume /vol-apt-cache "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
+            stamp_volume /vol-apt-lists "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
+            stamp_volume /vol-containers "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
             for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-containers; do
                 if [ "$(stat -c %u "$d" 2>/dev/null)" != "$TARGET_UID" ]; then
                     chown -R "$TARGET_UID:$TARGET_GID" "$d"
@@ -1152,10 +1715,20 @@ run_tool() {
 
 parse_args "$@"
 
-if [ "$WRAPPER_COMMAND" = "check-update" ]; then
-    check_release true
-    exit 0
-fi
+case "$WRAPPER_COMMAND" in
+    check-update)
+        check_release true
+        exit 0
+        ;;
+    tools)
+        tools_command "${ARGS[@]+"${ARGS[@]}"}"
+        exit 0
+        ;;
+    config)
+        config_command "${ARGS[@]+"${ARGS[@]}"}"
+        exit 0
+        ;;
+esac
 
 select_engine
 detect_engine_flavor
@@ -1190,6 +1763,10 @@ case "$WRAPPER_COMMAND" in
         ;;
     reset)
         reset_volumes
+        exit 0
+        ;;
+    reset-caches)
+        reset_caches
         exit 0
         ;;
     "")
