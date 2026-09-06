@@ -48,7 +48,7 @@ Linux, against Docker or Podman.
 | T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
 | T27: Nested containers | `--docker` mode: nested pull/run/build via rootless podman | -- |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
-| T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks | -- |
+| T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks; Claude Code's localhost-callback sign-in URL is rewritten to the manual-code redirect with a paste note, other URLs untouched | #78 |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
 | T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed; FROM/ARG carry the toolchain versions, `none` omits a toolchain, `SAGENT_TOOLS` selects exactly the named tools | #68 |
@@ -60,6 +60,8 @@ Linux, against Docker or Podman.
 | T38: `tools` / `config` commands | Enable/disable rewrite `SAGENT_TOOLS` and change the hash; `config set/get/list/unset/path` with validation and unknown-key rejection; environment precedence reported; Java tools without a JDK | -- |
 | T39: `status` | Every snapshot line present with the real engine and image; still prints, naming the problem, without an engine | -- |
 | T40: `doctor` | Healthy setup: engine, workspace, build-time TLS, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
+| T42: `scodex login` | Stub engine: `login` gets `--device-auth`; explicit modes, `status` and `--help` are left alone; the tool container carries the workspace label | #78 |
+| T43: `shell` | Fresh sandbox shell sees the workspace and runs as `agent`; with a sandbox running for the workspace, `shell` attaches to that container | -- |
 | T41: TLS interception auto-fix | Stub engine answers the pre-build probe TLS-FAIL until a bundle arrives: the wrapper exports the host trust store, verifies it, persists bundle and setting, builds with the CA block; a configured bundle lacking the CA stops before the build naming the issuer | #77 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).

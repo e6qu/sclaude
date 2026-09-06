@@ -96,6 +96,8 @@ sclaude --resume             # Resume last session
 sclaude -p "query"           # Print mode (headless/CI, no TTY needed)
 sclaude --no-yolo            # Disable default yolo mode
 sclaude --no-docker          # Disable docker/podman inside the sandbox
+sclaude shell                # Bash in the sandbox: attaches to the one running for this
+                             # workspace, else starts a fresh one (args go to bash)
 
 scodex                       # Interactive Codex mode
 scodex "fix the bug"         # Direct prompt
@@ -117,15 +119,25 @@ is podman's CLI shim, and a real docker CLI talking to a podman server through
 the docker-compat socket, are both recognized and get the right build/export
 behavior (`sclaude version` shows the detected CLI and server flavors).
 
-Browser login flows work from inside the sandbox: `xdg-open`/`$BROWSER` render
-each URL as a clickable terminal hyperlink, so Cmd/Ctrl+click in the TUI opens
-it in your host browser (claude and codex logins, `gh auth login`).
+Signing in from inside the sandbox works without a browser in it:
+`xdg-open`/`$BROWSER` render each URL as a clickable terminal hyperlink, so
+Cmd/Ctrl+click opens it in your host browser. A browser can never call back
+into the sandbox, so each CLI takes its callback-free path: Claude Code's
+sign-in link is rewritten to the manual-code page, and you paste the code it
+shows at the "Paste code here" prompt; `scodex login` uses device-code
+sign-in (enable it in ChatGPT's security settings if Codex refuses it);
+`gh auth login` uses its device code as usual. Credentials you already have
+on the host are synced in automatically anyway (Claude keychain or
+credentials file, Codex `auth.json`), so signing in on the host first also
+works.
 
 The shared image is Ubuntu 26.04 with the Claude Code and Codex CLIs, the
 GitHub CLI (`gh`), and full toolchains for Node.js 26, Python 3.14 (with pip
 and `uv`), Go 1.27, Rust stable (rustup with rustfmt and clippy), and Java 26
-(Eclipse Temurin), plus git, build-essential, and rootless podman with a
-`docker` shim. Every version is a setting (see [Configuration](#configuration))
+(Eclipse Temurin), plus git, build-essential, rootless podman with a
+`docker` shim, and everyday utilities: tree, htop, btop, top, jq, ripgrep,
+fd, bat, vim, nano, less, wget, zip/unzip, rsync, ssh, file, lsof, ip, dig,
+nc, tmux, sqlite3. Every version is a setting (see [Configuration](#configuration))
 and the defaults follow the latest releases; `sclaude version` prints the
 toolchain in effect.
 
@@ -181,6 +193,7 @@ passed through.
 | `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version, toolchain, tools and build metadata |
+| `sclaude shell [bash args]` | Bash in the sandbox with the same mounts and volumes: attaches to the sandbox running for the current workspace, otherwise starts a fresh one (apt installs last until it exits; npm, pip, cargo, go and home-directory changes persist) |
 | `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, volumes, workspace |
 | `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, git state, wrapper up to date; exits 1 on any FAIL |
 | `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
