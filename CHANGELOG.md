@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/e6qu/sclaude/compare/v2.6.4...v2.7.0) (2026-09-05)
+
+
+### Features
+
+* CA bundle for TLS-inspecting proxies, Rancher Desktop guidance, symlink-safe workspace mounts ([#32](https://github.com/e6qu/sclaude/issues/32)) ([5793fb5](https://github.com/e6qu/sclaude/commit/5793fb5037e2f6308d1a5078d607c922cec19b2b))
+
 ## [2.6.4](https://github.com/e6qu/sclaude/compare/v2.6.3...v2.6.4) (2026-09-04)
 
 
