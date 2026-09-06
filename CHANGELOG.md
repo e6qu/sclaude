@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.0](https://github.com/e6qu/sclaude/compare/v2.9.0...v2.10.0) (2026-09-06)
+
+
+### Features
+
+* working sign-in from inside the sandbox, shell command, everyday utilities ([#40](https://github.com/e6qu/sclaude/issues/40)) ([94c46f3](https://github.com/e6qu/sclaude/commit/94c46f36dd0ec252d6fe7958a0ee531acf9f08ed))
+
 ## [2.9.0](https://github.com/e6qu/sclaude/compare/v2.8.0...v2.9.0) (2026-09-06)
 
 
