@@ -446,6 +446,10 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
         [ \"$rust\" = none ] || { cargo --version >/dev/null && rustfmt --version >/dev/null && cargo clippy --version >/dev/null; }
         [ \"$java\" = none ] || { java -version 2>&1 | grep -q \"version \\\"$java\\.\"; [ -n \"\$JAVA_HOME\" ]; }
         podman --version >/dev/null && command -v pasta >/dev/null
+        # Everyday utilities
+        for u in tree htop btop top jq rg fd bat vim nano wget zip unzip rsync ssh file lsof ip dig nc tmux sqlite3 less; do
+            command -v \$u >/dev/null || { echo \"utility missing: \$u\" >&2; exit 1; }
+        done
         # Every selected tool is present; every unselected one is absent.
         for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring; do
             case \" $tools \" in *\" \$tool \"*) want=1 ;; *) want=0 ;; esac
@@ -625,6 +629,17 @@ run_test "T29: browser-open shim renders clickable URL" bash -ec '
     # hyperlink target plus plain-text copy, on one line
     printf "%s" "$out" | grep -o "https://example.com/sagent-test" | grep -c . | grep -qx 2
     printf "%s" "$out" | grep -q "]8;;"
+    # Claude Code sign-in (#78): the localhost callback becomes the manual-code
+    # redirect, code=true is kept, everything else is untouched, a note follows.
+    login="https://claude.ai/oauth/authorize?code=true&client_id=abc&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A54321%2Fcallback&scope=user%3Aprofile&state=xyz"
+    out=$("$ENGINE" run --rm "$IMG" xdg-open "$login" 2>&1)
+    printf "%s" "$out" | grep -q "redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile&state=xyz"
+    if printf "%s" "$out" | grep -q "localhost"; then echo "localhost callback left in the sign-in URL" >&2; exit 1; fi
+    printf "%s" "$out" | grep -o "code=true" | grep -c . | grep -qx 2
+    printf "%s" "$out" | grep -q "paste the code"
+    # Other URLs are not rewritten.
+    out=$("$ENGINE" run --rm "$IMG" xdg-open "https://github.com/login/device" 2>&1)
+    if printf "%s" "$out" | grep -q "paste the code"; then echo "non-Claude URL got the sign-in note" >&2; exit 1; fi
 ' _ "$SCLAUDE"
 
 # ── T30: sandbox isolation assertions ────────────────────────────────
@@ -1120,6 +1135,54 @@ STUB
     if SAGENT_CA_BUNDLE="$tmp/other.pem" "$1" --build >/dev/null 2>"$tmp/err3"; then echo "build should stop when the bundle lacks the CA" >&2; exit 1; fi
     grep -q "does not contain that CA" "$tmp/err3"
     grep -q "CN=Corp Proxy Root CA" "$tmp/err3"
+' _ "$SCLAUDE"
+
+# ── T42: scodex login uses device-code sign-in ────────────────────────
+# #78: a stub engine records the container command line.
+run_test "T42: scodex login uses device-code sign-in" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t42.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image | volume) exit 0 ;;
+    ps) exit 0 ;;
+    run) echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    "$1" login 2>"$tmp/err" | grep -qE "STUB-RUN .* codex --dangerously-bypass-approvals-and-sandbox login --device-auth$"
+    grep -q "device-code sign-in" "$tmp/err"
+    "$1" login --with-api-key 2>/dev/null | grep -qE " codex .*login --with-api-key$"
+    "$1" login status 2>/dev/null | grep -qE " codex .*login status$"
+    "$1" exec --help 2>/dev/null | grep -qE " codex .*exec --help$"
+    # The tool container carries the workspace label the shell command attaches by.
+    "$1" --help 2>/dev/null | grep -q -- "--label sagent.workspace=$PWD "
+' _ "$SCODEX"
+
+# ── T43: shell into the sandbox ───────────────────────────────────────
+run_test "T43: shell command (fresh and attached)" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    WS=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t43.XXXXXX")
+    trap "rm -rf \"$WS\"; \"$ENGINE\" rm -f sagent-t43-running >/dev/null 2>&1" EXIT
+    echo t43-marker > "$WS/probe.txt"
+    # Fresh shell: same workspace mount, no yolo flag, arguments go to bash.
+    out=$(cd "$WS" && "$1" shell -c "cat probe.txt; whoami" 2>"$WS/err")
+    echo "$out" | grep -q t43-marker
+    echo "$out" | grep -q "^agent$"
+    grep -q "starting a fresh one" "$WS/err"
+    # Attached shell: a sandbox running for this workspace (by label) is joined.
+    "$ENGINE" run -d --name sagent-t43-running --label "sagent.workspace=$WS" $SAGENT_TEST_USERNS \
+        -v "$(cd "$WS" && pwd -P):$WS:rw" -w "$WS" "$SUITE_IMG" sleep 120 >/dev/null
+    cid=$("$ENGINE" ps -q --filter name=sagent-t43-running | head -1)
+    out=$(cd "$WS" && "$1" shell -c "hostname" 2>"$WS/err")
+    grep -q "Attaching a shell to the sandbox running for $WS" "$WS/err"
+    [ "$out" = "${cid:0:12}" ]
 ' _ "$SCLAUDE"
 
 print_results

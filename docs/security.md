@@ -289,6 +289,13 @@ Design choices, safest first:
 - ✅ Cannot create/modify host containers (nested containers run under the
   sandbox's own rootless podman, see the Nested Containers section)
 
+### Shell access
+
+`sclaude shell` runs bash with exactly the tool container's mounts, volumes,
+capabilities and limits (or attaches to the sandbox already running for the
+workspace with `exec`, which inherits that container's confinement). It is
+the same sandbox, not a privileged side door.
+
 ### Layer 8: Ephemeral Container
 
 ```bash

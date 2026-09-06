@@ -337,7 +337,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl git python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
-    && rm -rf /var/lib/apt/lists/*
+    tree htop btop procps jq ripgrep fd-find bat vim nano wget zip rsync file lsof \
+    dnsutils netcat-openbsd tmux sqlite3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -s /usr/bin/batcat /usr/local/bin/bat
 DOCKERFILE_END
 
     # Trust anchors go in before the first HTTPS fetch. One file per
@@ -568,6 +572,12 @@ RUN set -eux; \
 # open links on the host (Cmd/Ctrl+click). Render every xdg-open/$BROWSER
 # request as an OSC 8 hyperlink plus plain URL on the controlling terminal so
 # login flows (claude, codex, gh auth) reach the host browser via a click.
+# Claude Code hands the opener its localhost-callback sign-in URL; that
+# callback can never reach a listener inside the sandbox, so the shim swaps
+# in the manual-code redirect Claude Code itself prints as the fallback: the
+# page then shows a code, and the CLI accepts it at its "Paste code here"
+# prompt (its token exchange uses that redirect whenever the local listener
+# saw nothing) (#78).
 RUN set -eux; \
     printf '%s\n' \
         '#!/bin/sh' \
@@ -581,8 +591,18 @@ RUN set -eux; \
         '    exec >&2' \
         'fi' \
         'for url in "$@"; do' \
+        '    note=""' \
+        '    case "$url" in' \
+        '        *oauth/authorize*redirect_uri=http%3A%2F%2Flocalhost%3A*%2Fcallback*)' \
+        '            url=$(printf %s "$url" | sed -E "s#redirect_uri=http%3A%2F%2Flocalhost%3A[0-9]+%2Fcallback#redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback#")' \
+        '            case "$url" in *code=true*) ;; *) url="$url&code=true" ;; esac' \
+        '            note="Sign in there, then paste the code the page shows at the prompt below (a browser cannot call back into the sandbox)."' \
+        '            ;;' \
+        '    esac' \
         '    printf '"'"'\n[sagent] Open in your browser (Cmd/Ctrl+click):\n'"'"'' \
-        '    printf '"'"'\033]8;;%s\033\\%s\033]8;;\033\\\n\n'"'"' "$url" "$url"' \
+        '    printf '"'"'\033]8;;%s\033\\%s\033]8;;\033\\\n'"'"' "$url" "$url"' \
+        '    if [ -n "$note" ]; then printf '"'"'[sagent] %s\n'"'"' "$note"; fi' \
+        '    printf '"'"'\n'"'"'' \
         'done' \
         > /usr/local/bin/host-open; \
     chmod 0755 /usr/local/bin/host-open; \
@@ -1857,7 +1877,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor|shell)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -2032,6 +2052,22 @@ build_docker_tty_flags() {
     fi
 }
 
+# `shell`: a bash shell in the sandbox. Attaches to the sandbox already
+# running for this workspace when there is one (the agent's live environment,
+# same container), otherwise starts a fresh sandbox with the same mounts and
+# volumes. Extra arguments go to bash (e.g. -c 'cmd').
+open_shell() {
+    local running
+    running=$("$ENGINE_CMD" ps --filter "label=sagent.workspace=$WORKSPACE_PATH" --filter status=running --format '{{.ID}}' 2>/dev/null | head -1)
+    if [ -n "$running" ]; then
+        echo "[$SCRIPT_NAME] Attaching a shell to the sandbox running for $WORKSPACE_PATH (container $running)." >&2
+        exec "$ENGINE_CMD" exec "${DOCKER_TTY_FLAGS[@]}" -w "$WORKSPACE_PATH" "$running" bash "${ARGS[@]+"${ARGS[@]}"}"
+    fi
+    echo "[$SCRIPT_NAME] No sandbox is running for $WORKSPACE_PATH; starting a fresh one. apt installs last until this shell exits; npm, pip, cargo, go and home-directory changes persist." >&2
+    TOOL_BIN=bash
+    YOLO=false
+}
+
 run_tool() {
     local tool_args=()
     local nested_args=()
@@ -2075,6 +2111,8 @@ run_tool() {
         -v "$APT_CACHE_VOLUME:/var/cache/apt:rw" \
         -v "$APT_LISTS_VOLUME:/var/lib/apt/lists:rw" \
         -w "$WORKSPACE_PATH" \
+        --label "sagent.workspace=$WORKSPACE_PATH" \
+        --label "sagent.tool=$SCRIPT_NAME" \
         --memory="$MEMORY_LIMIT" \
         --cpus="$CPU_LIMIT" \
         --pids-limit="$pids_limit" \
@@ -2178,4 +2216,7 @@ check_release false
 create_volumes
 sync_state
 build_docker_tty_flags
+if [ "$WRAPPER_COMMAND" = "shell" ]; then
+    open_shell
+fi
 run_tool
