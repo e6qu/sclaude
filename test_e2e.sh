@@ -1105,8 +1105,17 @@ STUB
     "$1" --build >"$tmp/out2" 2>"$tmp/err2"
     if grep -q "intercepts TLS" "$tmp/err2"; then echo "second run should have used the persisted bundle" >&2; exit 1; fi
     grep -q "Baking" "$tmp/err2"
-    # A configured bundle that does not contain the CA stops before the build.
-    printf "%s\n" "-----BEGIN CERTIFICATE-----" "MIIB" "-----END CERTIFICATE-----" > "$tmp/other.pem"
+    # The wrapper-managed bundle is refreshed from the host trust store when
+    # it stops matching (an older System-keychain-only export).
+    printf "%s\n" "-----BEGIN CERTIFICATE-----" "SAGENT-T41-STALE" "-----END CERTIFICATE-----" > "$tmp/cfg/ca-bundle.pem"
+    sed -i.bak "s|grep -q \"BEGIN CERTIFICATE\"|! grep -q SAGENT-T41-STALE|" "$tmp/fake-engine"   # the stub now rejects the stale bundle only
+    "$1" --build >"$tmp/out4" 2>"$tmp/err4"
+    grep -q "does not contain that CA; refreshing it from the host trust store" "$tmp/err4"
+    grep -q "The host trust store has it" "$tmp/err4"
+    if grep -q SAGENT-T41-STALE "$tmp/cfg/ca-bundle.pem"; then echo "managed bundle was not refreshed" >&2; exit 1; fi
+    grep -q STUB-BUILT "$tmp/out4"
+    # A user-supplied bundle that does not contain the CA stops before the build.
+    printf "%s\n" "-----BEGIN CERTIFICATE-----" "SAGENT-T41-STALE" "-----END CERTIFICATE-----" > "$tmp/other.pem"
     touch "$tmp/never-ok"   # the stub now rejects every bundle
     if SAGENT_CA_BUNDLE="$tmp/other.pem" "$1" --build >/dev/null 2>"$tmp/err3"; then echo "build should stop when the bundle lacks the CA" >&2; exit 1; fi
     grep -q "does not contain that CA" "$tmp/err3"

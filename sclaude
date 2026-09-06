@@ -1263,13 +1263,20 @@ ensure_build_tls() {
             exit 1
             ;;
     esac
-    # TLS-FAIL
-    if [ -n "$CA_BUNDLE_PATH" ]; then
+    # TLS-FAIL. The wrapper-managed bundle file is refreshed from the host
+    # trust store like a missing one (an older export may have covered only
+    # the System keychain); a user-supplied path is the user's to fix.
+    bundle_dir="$(dirname "$SAGENT_CONFIG_FILE")"
+    if [ -n "$CA_BUNDLE_PATH" ] && [ "$CA_BUNDLE_PATH" != "$bundle_dir/ca-bundle.pem" ]; then
         echo "[$SCRIPT_NAME] ERROR: this network intercepts TLS (chain issuer: $issuer) and SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s)) does not contain that CA." >&2
         echo "[$SCRIPT_NAME] Obtain the CA for \"$issuer\" as PEM and put it in that bundle, or unset SAGENT_CA_BUNDLE to let $SCRIPT_NAME take it from the host trust store." >&2
         exit 1
     fi
-    echo "[$SCRIPT_NAME] This network intercepts TLS (chain issuer: $issuer); looking for that CA in the host trust store..." >&2
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        echo "[$SCRIPT_NAME] This network intercepts TLS (chain issuer: $issuer) and the saved bundle $CA_BUNDLE_PATH does not contain that CA; refreshing it from the host trust store..." >&2
+    else
+        echo "[$SCRIPT_NAME] This network intercepts TLS (chain issuer: $issuer); looking for that CA in the host trust store..." >&2
+    fi
     candidate=$(mktemp); TEMP_FILES+=("$candidate")
     export_host_trust_store > "$candidate"
     count=$(grep -c -- '-----BEGIN CERTIFICATE-----' "$candidate" || true)
@@ -1285,7 +1292,6 @@ ensure_build_tls() {
         echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see README, \"Corporate networks\")." >&2
         exit 1
     fi
-    bundle_dir="$(dirname "$SAGENT_CONFIG_FILE")"
     mkdir -p "$bundle_dir"
     cp "$candidate" "$bundle_dir/ca-bundle.pem"
     chmod 0644 "$bundle_dir/ca-bundle.pem"
