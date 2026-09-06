@@ -739,6 +739,7 @@ run_test "T32: Dockerfile generation and build guidance" bash -ec '
 case "\$1" in
     info) exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run) cat >/dev/null; echo TLS-OK; exit 0 ;;
     build)
         for last; do :; done
         cp "\$last/Dockerfile" "$tmp/Dockerfile"
@@ -757,7 +758,7 @@ STUB
         exit 1
     fi
     grep -q "sandbox image build failed" "$tmp/out"
-    grep -q "point SAGENT_CA_BUNDLE at it" "$tmp/out"
+    grep -q "TLS interception was checked before the build" "$tmp/out"
     if grep -q "sagent-ca" "$tmp/Dockerfile"; then
         echo "CA block emitted without SAGENT_CA_BUNDLE" >&2
         exit 1
@@ -804,7 +805,7 @@ STUB
         exit 1
     fi
     grep -q "Baking 3 CA certificate(s)" "$tmp/out"
-    grep -q "(3 certificate(s)) was baked in" "$tmp/out"
+    grep -q "with SAGENT_CA_BUNDLE=.*(3 certificate(s))" "$tmp/out"
     # the CA block precedes the first HTTPS fetch (the gh keyring download)
     ca_line=$(grep -n "^COPY sagent-ca/" "$tmp/Dockerfile" | cut -d: -f1)
     gh_line=$(grep -n "cli.github.com" "$tmp/Dockerfile" | head -1 | cut -d: -f1)
@@ -1034,6 +1035,7 @@ run_test "T40: doctor diagnostics" bash -ec '
     out=$("$1" doctor) || { echo "$out" >&2; echo "doctor failed on a healthy setup" >&2; exit 1; }
     echo "$out" | grep -qE "^  PASS  engine "
     echo "$out" | grep -qE "^  PASS  workspace "
+    echo "$out" | grep -qE "^  PASS  build-tls "
     echo "$out" | grep -qE "^  PASS  image +$SUITE_IMG"
     echo "$out" | grep -qE "^  PASS  cli:claude "
     echo "$out" | grep -qE "^  PASS  cli:gh "
@@ -1061,6 +1063,54 @@ STUB
     chmod +x "$tmp/fake-engine"
     if out=$(SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$1" doctor); then echo "doctor should exit 1 on a rootless docker CLI" >&2; exit 1; fi
     echo "$out" | grep -qE "^  FAIL  workspace .*rootless podman daemon"
+' _ "$SCLAUDE"
+
+# ── T41: TLS interception fixed from the host trust store before building ─
+# #77: a stub engine answers the pre-build probe with TLS-FAIL until a bundle
+# arrives on stdin, then with TLS-OK. The wrapper must export the host trust
+# store, verify it, persist the bundle and setting, and build with the CA
+# block; with a bundle that still fails it must stop naming the issuer.
+run_test "T41: TLS interception auto-fixed from host trust store" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t41.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run)
+        if [ ! -f "$tmp/never-ok" ] && grep -q "BEGIN CERTIFICATE" 2>/dev/null; then echo TLS-OK; else printf "TLS-FAIL\n* issuer: CN=Corp Proxy Root CA\n"; fi
+        exit 0 ;;
+    build)
+        for last; do :; done
+        cp "\$last/Dockerfile" "$tmp/Dockerfile"
+        (cd "\$last" && find . -type f | sort) > "$tmp/context.txt"
+        echo "STUB-BUILT"; exit 0 ;;
+    image) exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/cfg/config"
+    "$1" --build >"$tmp/out" 2>"$tmp/err"
+    grep -q "This network intercepts TLS (chain issuer: CN=Corp Proxy Root CA)" "$tmp/err"
+    grep -q "The host trust store has it" "$tmp/err"
+    grep -q "SAGENT_CA_BUNDLE" "$tmp/cfg/config"
+    grep -q -- "-----BEGIN CERTIFICATE-----" "$tmp/cfg/ca-bundle.pem"
+    grep -q "^COPY sagent-ca/" "$tmp/Dockerfile"
+    grep -q "sagent-ca-bundle.pem" "$tmp/context.txt"
+    grep -q STUB-BUILT "$tmp/out"
+    # The persisted setting makes the next run skip the export: the probe
+    # answers TLS-OK for the configured bundle and no new message appears.
+    "$1" --build >"$tmp/out2" 2>"$tmp/err2"
+    if grep -q "intercepts TLS" "$tmp/err2"; then echo "second run should have used the persisted bundle" >&2; exit 1; fi
+    grep -q "Baking" "$tmp/err2"
+    # A configured bundle that does not contain the CA stops before the build.
+    printf "%s\n" "-----BEGIN CERTIFICATE-----" "MIIB" "-----END CERTIFICATE-----" > "$tmp/other.pem"
+    touch "$tmp/never-ok"   # the stub now rejects every bundle
+    if SAGENT_CA_BUNDLE="$tmp/other.pem" "$1" --build >/dev/null 2>"$tmp/err3"; then echo "build should stop when the bundle lacks the CA" >&2; exit 1; fi
+    grep -q "does not contain that CA" "$tmp/err3"
+    grep -q "CN=Corp Proxy Root CA" "$tmp/err3"
 ' _ "$SCLAUDE"
 
 print_results

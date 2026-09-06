@@ -666,6 +666,15 @@ build_image() {
         stage_ca_bundle "$temp_context"
     fi
 
+    # Detect TLS interception and take the CA from the host before spending
+    # minutes on a build that would fail at its first HTTPS fetch. Regenerate
+    # the Dockerfile and context afterwards: the bundle changes both.
+    ensure_build_tls
+    get_dockerfile_content > "$temp_dockerfile"
+    if [ -n "$CA_BUNDLE_PATH" ] && [ ! -d "$temp_context/sagent-ca" ]; then
+        stage_ca_bundle "$temp_context"
+    fi
+
     build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     cat >> "$temp_dockerfile" <<EOF
 
@@ -709,23 +718,8 @@ stage_ca_bundle() {
 
 print_build_failure_guidance() {
     echo "[$SCRIPT_NAME] ERROR: sandbox image build failed (engine output above)." >&2
-    if [ -n "$CA_BUNDLE_PATH" ]; then
-        echo "[$SCRIPT_NAME] SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s)) was baked in; a TLS failure above means the intercepting proxy's CA is not among them." >&2
-        return 0
-    fi
-    cat >&2 <<EOF
-[$SCRIPT_NAME] A TLS error in a RUN step above (curl "(60) SSL certificate problem", npm
-[$SCRIPT_NAME] "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", apt "Certificate verification failed")
-[$SCRIPT_NAME] means this network has a TLS-inspecting proxy whose CA the host trusts but
-[$SCRIPT_NAME] the sandbox does not (Docker Desktop and Rancher Desktop only apply host CAs
-[$SCRIPT_NAME] to image pulls, not to build steps or containers). Export that CA as PEM and
-[$SCRIPT_NAME] point SAGENT_CA_BUNDLE at it, then rerun:
-  mkdir -p ~/.config/sagent
-  # macOS: every certificate in the System keychain (where MDM/proxy CAs land)
-  security find-certificate -a -p /Library/Keychains/System.keychain > ~/.config/sagent/ca-bundle.pem
-  # Linux: copy the proxy CA from /usr/local/share/ca-certificates or /etc/pki/ca-trust/source/anchors
-  echo 'SAGENT_CA_BUNDLE="\$HOME/.config/sagent/ca-bundle.pem"' >> ~/.config/sagent/config
-EOF
+    echo "[$SCRIPT_NAME] TLS interception was checked before the build$([ -n "$CA_BUNDLE_PATH" ] && echo " with SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"), so a TLS error above means a host this build fetches from is handled differently by the proxy; \`$SCRIPT_NAME doctor\` reports the CA the network presents." >&2
+    echo "[$SCRIPT_NAME] Any other error above is from the build step itself; rerun with \`$SCRIPT_NAME --build\` after fixing what it names." >&2
 }
 
 ensure_image() {
@@ -1200,6 +1194,136 @@ EOF
 }
 
 DOCTOR_PASS=0; DOCTOR_WARN=0; DOCTOR_FAIL=0
+
+# Run the fetch a build step runs (curl to cli.github.com) inside the plain
+# base image, with $1 applied as an extra CA bundle the way the build applies
+# it (/dev/null for none). Prints a status line (TLS-OK, TLS-FAIL, APT-FAILED,
+# PROBE-FAILED) and, on TLS-FAIL, the issuer of the chain the network presents.
+build_tls_probe() {
+    local bundle_in="$1" out status issuer
+    # shellcheck disable=SC2016
+    out=$("$ENGINE_CMD" run --rm -i "ubuntu:${UBUNTU_VERSION}" sh -c '
+        cat > /tmp/bundle.pem
+        export DEBIAN_FRONTEND=noninteractive
+        if ! (apt-get update && apt-get install -y curl ca-certificates) >/dev/null 2>&1; then
+            echo APT-FAILED; exit 0
+        fi
+        if [ -s /tmp/bundle.pem ]; then
+            mkdir -p /usr/local/share/ca-certificates/sagent
+            awk -v dir=/usr/local/share/ca-certificates/sagent \
+                "/-----BEGIN CERTIFICATE-----/ { n++; f = sprintf(\"%s/sagent-%03d.crt\", dir, n) } f { print > f } /-----END CERTIFICATE-----/ { close(f); f = \"\" }" /tmp/bundle.pem
+            update-ca-certificates >/dev/null 2>&1
+        fi
+        if curl -fsSI --max-time 20 https://cli.github.com/ >/dev/null 2>&1; then
+            echo TLS-OK
+        else
+            echo TLS-FAIL
+            curl -kvsI --max-time 20 https://cli.github.com/ 2>&1 | grep -i "^\* *issuer:" | head -1
+        fi
+    ' < "$bundle_in" 2>&1) || true
+    status=$(printf '%s\n' "$out" | grep -E '^(TLS-OK|TLS-FAIL|APT-FAILED)$' | head -1)
+    issuer=$(printf '%s\n' "$out" | sed -n 's/^\* *issuer: *//Ip' | head -1)
+    printf '%s\n%s\n' "${status:-PROBE-FAILED}" "${issuer:-unknown}"
+}
+
+# Every certificate the host itself trusts beyond the public roots: the macOS
+# System and login keychains (where MDM and proxy CAs land), or the Linux
+# system bundle (which contains the site CA when the host trusts it).
+export_host_trust_store() {
+    local kc
+    if [ "$(uname -s)" = "Darwin" ]; then
+        for kc in /Library/Keychains/System.keychain "$HOME/Library/Keychains/login.keychain-db"; do
+            [ -r "$kc" ] && security find-certificate -a -p "$kc" 2>/dev/null
+        done
+    else
+        for kc in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
+            if [ -r "$kc" ]; then cat "$kc"; break; fi
+        done
+    fi
+    return 0
+}
+
+# Before any build: detect TLS interception on this network and fix it from
+# the host's own trust store, so install and update need nothing from the
+# user (#77). Facts drive every branch: the probe's result and what the host
+# trust store contains; nothing is retried or degraded silently.
+ensure_build_tls() {
+    local result status issuer candidate count bundle_dir
+    echo "[$SCRIPT_NAME] Checking that build steps can fetch over HTTPS from this network..." >&2
+    result=$(build_tls_probe "${CA_BUNDLE_PATH:-/dev/null}")
+    status=$(printf '%s\n' "$result" | sed -n 1p); issuer=$(printf '%s\n' "$result" | sed -n 2p)
+    case "$status" in
+        TLS-OK) return 0 ;;
+        APT-FAILED)
+            echo "[$SCRIPT_NAME] ERROR: a build container cannot reach Ubuntu's apt mirrors: containers on this engine have no network." >&2
+            exit 1
+            ;;
+        PROBE-FAILED)
+            echo "[$SCRIPT_NAME] ERROR: could not start the probe container from ubuntu:${UBUNTU_VERSION} (is the engine able to pull images?)." >&2
+            exit 1
+            ;;
+    esac
+    # TLS-FAIL
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        echo "[$SCRIPT_NAME] ERROR: this network intercepts TLS (chain issuer: $issuer) and SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s)) does not contain that CA." >&2
+        echo "[$SCRIPT_NAME] Obtain the CA for \"$issuer\" as PEM and put it in that bundle, or unset SAGENT_CA_BUNDLE to let $SCRIPT_NAME take it from the host trust store." >&2
+        exit 1
+    fi
+    echo "[$SCRIPT_NAME] This network intercepts TLS (chain issuer: $issuer); looking for that CA in the host trust store..." >&2
+    candidate=$(mktemp); TEMP_FILES+=("$candidate")
+    export_host_trust_store > "$candidate"
+    count=$(grep -c -- '-----BEGIN CERTIFICATE-----' "$candidate" || true)
+    if [ "$count" -eq 0 ]; then
+        echo "[$SCRIPT_NAME] ERROR: the host trust store exported no certificates, so the CA for \"$issuer\" cannot be taken from it." >&2
+        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see README, \"Corporate networks\")." >&2
+        exit 1
+    fi
+    result=$(build_tls_probe "$candidate")
+    status=$(printf '%s\n' "$result" | sed -n 1p)
+    if [ "$status" != "TLS-OK" ]; then
+        echo "[$SCRIPT_NAME] ERROR: the host trust store ($count certificate(s)) does not contain a CA for \"$issuer\" either." >&2
+        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see README, \"Corporate networks\")." >&2
+        exit 1
+    fi
+    bundle_dir="$(dirname "$SAGENT_CONFIG_FILE")"
+    mkdir -p "$bundle_dir"
+    cp "$candidate" "$bundle_dir/ca-bundle.pem"
+    chmod 0644 "$bundle_dir/ca-bundle.pem"
+    config_write SAGENT_CA_BUNDLE "$bundle_dir/ca-bundle.pem"
+    CA_BUNDLE_PATH="$bundle_dir/ca-bundle.pem"
+    CA_BUNDLE_CERT_COUNT="$count"
+    VERSION_HASH=$(get_version_hash)
+    IMAGE_NAME="${IMAGE_REPO}:${VERSION_HASH}"
+    echo "[$SCRIPT_NAME] The host trust store has it: $count certificate(s) saved to $CA_BUNDLE_PATH and SAGENT_CA_BUNDLE written to $SAGENT_CONFIG_FILE; the image (now $VERSION_HASH) will trust this network." >&2
+}
+
+doctor_build_tls_check() {
+    local result status issuer
+    result=$(build_tls_probe "${CA_BUNDLE_PATH:-/dev/null}")
+    status=$(printf '%s\n' "$result" | sed -n 1p); issuer=$(printf '%s\n' "$result" | sed -n 2p)
+    case "$status" in
+        TLS-OK)
+            if [ -n "$CA_BUNDLE_PATH" ]; then
+                doctor_report PASS build-tls "build steps reach https://cli.github.com with SAGENT_CA_BUNDLE applied ($CA_BUNDLE_CERT_COUNT certificate(s))"
+            else
+                doctor_report PASS build-tls "build steps reach https://cli.github.com; no TLS interception on this network"
+            fi
+            ;;
+        TLS-FAIL)
+            if [ -n "$CA_BUNDLE_PATH" ]; then
+                doctor_report FAIL build-tls "SAGENT_CA_BUNDLE ($CA_BUNDLE_CERT_COUNT certificate(s)) does not contain the CA that signs this network's TLS (chain issuer: $issuer); unset it to let the next build take the CA from the host trust store, or add that CA to the bundle"
+            else
+                doctor_report WARN build-tls "this network intercepts TLS (chain issuer: $issuer); the next build takes that CA from the host trust store automatically and stops with a message if it is not there"
+            fi
+            ;;
+        APT-FAILED)
+            doctor_report FAIL build-tls "a build container cannot reach Ubuntu's apt mirrors (no network from containers on this engine)"
+            ;;
+        *)
+            doctor_report FAIL build-tls "could not start the probe container from ubuntu:${UBUNTU_VERSION}"
+            ;;
+    esac
+}
 doctor_report() {
     local level="$1" check="$2" message="$3"
     case "$level" in
@@ -1269,6 +1393,13 @@ EOF
         fi
     else
         doctor_report WARN git "workspace is not a git repository; there is no way to review or revert the agent's edits"
+    fi
+
+    # Build-time TLS: exactly what a RUN step sees, in the plain base image,
+    # with the configured CA bundle applied the way the build applies it. Works
+    # before the sandbox image exists and names the intercepting CA on failure.
+    if [ -n "$ENGINE_CMD" ]; then
+        doctor_build_tls_check
     fi
 
     # image and what runs inside it

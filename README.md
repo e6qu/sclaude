@@ -29,26 +29,26 @@ against Rancher Desktop on macOS.
 workspace, config, image, TLS from inside the sandbox, credentials) and names
 the fix for anything it flags; `sclaude status` shows what a run would use.
 
-**Corporate networks (TLS-inspecting proxies)**: if the first build fails with
-`curl: (60) SSL certificate problem: unable to get local issuer certificate`,
-your proxy re-signs HTTPS traffic with a CA your machine trusts but a fresh
-Ubuntu image does not. Docker Desktop and Rancher Desktop apply the host's
-CAs to image pulls only, never to build steps or running containers. Export
-that CA to a PEM file and point `SAGENT_CA_BUNDLE` at it; the wrappers bake
-it into the image for curl, apt, git, Python, pip, Node/npm, the Claude and
-Codex CLIs, `gh`, and nested podman:
+**Corporate networks (TLS-inspecting proxies)**: handled automatically.
+Before every image build, the wrapper runs the fetch a build step would run
+inside the plain base image. If the network re-signs HTTPS with a CA that
+Ubuntu does not know, it takes that CA from the host's own trust store (the
+macOS System and login keychains, or the Linux system bundle), verifies it
+fixes the fetch, saves it as `~/.config/sagent/ca-bundle.pem`, writes
+`SAGENT_CA_BUNDLE` to the config file, and bakes it into the image for curl,
+apt, git, Python, pip, Node/npm, the Claude and Codex CLIs, `gh`, and nested
+podman. `sclaude status` shows the bundle in effect, `sclaude doctor` names
+the CA the proxy presents. The only case that stops with a message is a
+proxy CA the host itself does not trust; then obtain it as PEM and point
+`SAGENT_CA_BUNDLE` at it:
 
 ```bash
-mkdir -p ~/.config/sagent
-# macOS: every certificate in the System keychain (where MDM/proxy CAs land)
-security find-certificate -a -p /Library/Keychains/System.keychain > ~/.config/sagent/ca-bundle.pem
-# Linux: copy the proxy CA from /usr/local/share/ca-certificates or /etc/pki/ca-trust/source/anchors
-echo 'SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"' >> ~/.config/sagent/config
+sclaude config set SAGENT_CA_BUNDLE /path/to/proxy-ca.pem
 sclaude --build
 ```
 
 The bundle's content is part of the image hash, so changing it triggers a
-rebuild; `sclaude version` shows which bundle is in effect.
+rebuild.
 
 ## Install
 
