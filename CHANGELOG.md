@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.0](https://github.com/e6qu/sclaude/compare/v2.8.0...v2.9.0) (2026-09-06)
+
+
+### Features
+
+* detect TLS interception before every build and take the CA from the host trust store ([#38](https://github.com/e6qu/sclaude/issues/38)) ([d46e9ac](https://github.com/e6qu/sclaude/commit/d46e9ac62b0cd6b85582682a53faefea25177d0a))
+
 ## [2.8.0](https://github.com/e6qu/sclaude/compare/v2.7.0...v2.8.0) (2026-09-06)
 
 
