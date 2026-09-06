@@ -138,7 +138,7 @@ jobs:
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - name: Install docker CLI, buildx, and colima
@@ -164,6 +164,16 @@ jobs:
           echo "colima reports started but docker is not reachable" >&2
           colima status
           exit 1
+      - name: Trim the sandbox image for this VM job
+        # This job's coverage is the mac-host/VM topology; the Linux jobs build
+        # the full image. Without the optional tooling and Rust the cold build
+        # on the Intel runner stays well inside the job limit (the full image
+        # took 60 minutes on colima). Written to the config file, not the
+        # environment, so tests that set their own SAGENT_CONFIG_FILE or
+        # environment (T32, T35, T38) still see the defaults they expect.
+        run: |
+          mkdir -p ~/.config/sagent
+          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' > ~/.config/sagent/config
       - name: Prime the image build cache
         # The cold build takes 10-20+ minutes depending on the runner instance
         # and would trip the per-test timeout inside the suite; built here, T02
@@ -199,7 +209,7 @@ jobs:
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
     steps:
@@ -249,6 +259,16 @@ jobs:
           command -v docker | grep -q "/.rd/bin/docker"
           docker context show
           docker version
+      - name: Trim the sandbox image for this VM job
+        # This job's coverage is the mac-host/VM topology; the Linux jobs build
+        # the full image. Without the optional tooling and Rust the cold build
+        # on the Intel runner stays well inside the job limit (the full image
+        # took 60 minutes on colima). Written to the config file, not the
+        # environment, so tests that set their own SAGENT_CONFIG_FILE or
+        # environment (T32, T35, T38) still see the defaults they expect.
+        run: |
+          mkdir -p ~/.config/sagent
+          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' > ~/.config/sagent/config
       - name: Prime the image build cache
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests

@@ -121,8 +121,8 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
-| test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount) |
+| test-macos | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization); skips T10 and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`); builds a trimmed image (`SAGENT_TOOLS=none`, no Rust) via the config file so the cold build fits the job limit, which also exercises the "none" paths |
+| test-macos-rancher | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; skips T10, T31 and T12b (Rancher Desktop shares only `$HOME`, so a `/tmp` workspace cannot mount); same trimmed image as test-macos |
 | test-devcontainers | UID-1000 docker-in-docker dev container |
 
 T27 inside each job adds one more nesting level (nested podman in the
