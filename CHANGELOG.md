@@ -6,6 +6,7 @@
 ### Features
 
 * CA bundle for TLS-inspecting proxies, Rancher Desktop guidance, symlink-safe workspace mounts ([#32](https://github.com/e6qu/sclaude/issues/32)) ([5793fb5](https://github.com/e6qu/sclaude/commit/5793fb5037e2f6308d1a5078d607c922cec19b2b))
+* configurable toolchains with latest defaults, JS/Java tooling, self-clearing caches, disk usage report ([#34](https://github.com/e6qu/sclaude/issues/34)) ([485620b](https://github.com/e6qu/sclaude/commit/485620b52f66aa09d96edfd0cb95699fbcd8e4af))
 
 ## [2.6.4](https://github.com/e6qu/sclaude/compare/v2.6.3...v2.6.4) (2026-09-04)
 
