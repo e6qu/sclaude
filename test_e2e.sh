@@ -1010,4 +1010,57 @@ run_test "T38: tools/config commands" bash -ec '
     bash -n "$cfg/config"
 ' _ "$SCLAUDE"
 
+# ── T39: status snapshot ─────────────────────────────────────────────
+run_test "T39: status snapshot" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    out=$("$1" status)
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials Volumes Workspace; do
+        echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
+    done
+    echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
+    echo "$out" | grep -q "^Image: .*$SUITE_IMG"
+    echo "$out" | grep -q "^Toolchain: *ubuntu="
+    echo "$out" | grep -qE "^Workspace: .*(git: |not a git repository)"
+    # No engine: status still prints, naming the problem instead of failing.
+    SAGENT_CONTAINER_ENGINE=/nonexistent/engine "$1" status | grep -q "^Engine: .*none responding"
+' _ "$SCLAUDE"
+
+# ── T40: doctor diagnostics ──────────────────────────────────────────
+# A healthy setup with a built image has no FAIL lines and exits 0; the
+# checks that spot real problems (missing engine, unmountable workspace,
+# rootless docker CLI) report FAIL and exit 1.
+run_test "T40: doctor diagnostics" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    out=$("$1" doctor) || { echo "$out" >&2; echo "doctor failed on a healthy setup" >&2; exit 1; }
+    echo "$out" | grep -qE "^  PASS  engine "
+    echo "$out" | grep -qE "^  PASS  workspace "
+    echo "$out" | grep -qE "^  PASS  image +$SUITE_IMG"
+    echo "$out" | grep -qE "^  PASS  cli:claude "
+    echo "$out" | grep -qE "^  PASS  cli:gh "
+    echo "$out" | grep -qE "^  PASS  network "
+    echo "$out" | grep -qE "^  PASS  nested "
+    echo "$out" | grep -qE "^  PASS  caches "
+    echo "$out" | grep -qE "^Summary: [0-9]+ passed, [0-9]+ warning\(s\), 0 failed$"
+    if echo "$out" | grep -q "^  FAIL"; then echo "$out" >&2; exit 1; fi
+    # Missing engine: FAIL line, exit 1, and the rest of the report still prints.
+    if out=$(SAGENT_CONTAINER_ENGINE=/nonexistent/engine "$1" doctor); then echo "doctor should exit 1 without an engine" >&2; exit 1; fi
+    echo "$out" | grep -qE "^  FAIL  engine "
+    echo "$out" | grep -qE "^  (PASS|WARN)  auth:claude "
+    echo "$out" | grep -q "^Summary: .* 1 failed$"
+    # Stub rootless podman behind the docker CLI: workspace check fails.
+    tmp=$(mktemp -d /tmp/sagent-t40.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) [ "\${2:-}" = "--format" ] && echo "name=rootless"; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer:\n Podman Engine:\n"; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    if out=$(SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$1" doctor); then echo "doctor should exit 1 on a rootless docker CLI" >&2; exit 1; fi
+    echo "$out" | grep -qE "^  FAIL  workspace .*rootless podman daemon"
+' _ "$SCLAUDE"
+
 print_results

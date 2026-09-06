@@ -243,11 +243,11 @@ select_engine() {
     if [ -n "$requested" ]; then
         if ! command -v "$requested" >/dev/null 2>&1; then
             echo "[$SCRIPT_NAME] ERROR: requested container engine not found: $requested" >&2
-            exit 1
+            return 1
         fi
         if ! run_with_timeout_quiet "$ENGINE_TIMEOUT_SECONDS" "$requested" info; then
             echo "[$SCRIPT_NAME] ERROR: requested container engine is not responding: $requested" >&2
-            exit 1
+            return 1
         fi
         ENGINE_CMD="$requested"
         return 0
@@ -272,7 +272,7 @@ select_engine() {
         echo "[$SCRIPT_NAME] ERROR: neither docker nor podman is available and responding." >&2
     fi
     echo "[$SCRIPT_NAME] Set SAGENT_CONTAINER_ENGINE=docker or SAGENT_CONTAINER_ENGINE=podman to choose explicitly." >&2
-    exit 1
+    return 1
 }
 
 # The command name does not identify the engine: a `docker` command can be
@@ -1083,6 +1083,260 @@ EOF
     esac
 }
 
+# ---- `status` and `doctor`: snapshot and diagnostics ----
+
+wrapper_install_kind() {
+    local script_path script_dir
+    script_path="$(realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-$0}")"
+    script_dir="$(dirname "$script_path")"
+    if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf 'git checkout at %s' "$script_dir"
+    else
+        printf 'release install at %s' "$script_path"
+    fi
+}
+
+host_has_claude_credentials() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1
+    else
+        [ -f "${HOME}/.claude/.credentials.json" ] || [ -f "${XDG_CONFIG_HOME:-${HOME}/.config}/claude-code/credentials.json" ]
+    fi
+}
+
+host_has_codex_auth() { [ -f "${CODEX_HOME:-${HOME}/.codex}/auth.json" ]; }
+
+# Read-only snapshot of what a run would use. Tolerates a missing engine.
+status_command() {
+    local latest cache_file engine_line image_line git_line vol_count vol_total=0 v size bytes
+    local settings_from_file=0 settings_from_env=0 key
+
+    printf '%-13s %s\n' "Wrapper:" "$SCRIPT_NAME v$WRAPPER_VERSION ($(wrapper_install_kind))"
+    cache_file="${XDG_CACHE_HOME:-${HOME}/.cache}/sagent/release-check"
+    latest=$(fetch_latest_release_tag 3)
+    if [ -n "$latest" ]; then
+        if [ "${latest#v}" = "$WRAPPER_VERSION" ]; then
+            printf '%-13s %s\n' "Latest:" "$latest (up to date)"
+        elif version_gt "${latest#v}" "$WRAPPER_VERSION"; then
+            printf '%-13s %s\n' "Latest:" "$latest (newer; run: $SCRIPT_NAME update)"
+        else
+            printf '%-13s %s\n' "Latest:" "$latest (this wrapper is ahead of the latest release)"
+        fi
+    else
+        printf '%-13s %s\n' "Latest:" "unknown (releases API unreachable$([ -f "$cache_file" ] && echo "; last check $(date -r "$(cat "$cache_file" 2>/dev/null || echo 0)" +%Y-%m-%dT%H:%M 2>/dev/null)"))"
+    fi
+
+    for key in "${SAGENT_SETTINGS[@]}"; do
+        case "$(setting_source "$key")" in
+            config) settings_from_file=$((settings_from_file + 1)) ;;
+            env) settings_from_env=$((settings_from_env + 1)) ;;
+        esac
+    done
+    if [ -f "$SAGENT_CONFIG_FILE" ]; then
+        printf '%-13s %s\n' "Config:" "$SAGENT_CONFIG_FILE ($settings_from_file setting(s) from the file, $settings_from_env from the environment; \`$SCRIPT_NAME config\` lists them)"
+    else
+        printf '%-13s %s\n' "Config:" "$SAGENT_CONFIG_FILE (not created; $settings_from_env setting(s) from the environment)"
+    fi
+
+    if select_engine >/dev/null 2>&1; then
+        detect_engine_flavor
+        engine_line="$ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR, rootless: $ENGINE_ROOTLESS"
+        if [ "$ENGINE_CLI_FLAVOR" = docker ]; then
+            engine_line="$engine_line, context: $("$ENGINE_CMD" context show 2>/dev/null || echo unknown)"
+        fi
+        printf '%-13s %s\n' "Engine:" "$engine_line)"
+        if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+            image_line="$IMAGE_NAME built $("$ENGINE_CMD" image inspect "$IMAGE_NAME" --format '{{.Created}}' 2>/dev/null | cut -c1-16), $("$ENGINE_CMD" images "$IMAGE_REPO" --format '{{.Tag}} {{.Size}}' 2>/dev/null | awk -v t="$VERSION_HASH" '$1 == t {print $2}')"
+        else
+            image_line="$IMAGE_NAME not built (builds on the next run)"
+        fi
+        printf '%-13s %s\n' "Image:" "$image_line"
+    else
+        printf '%-13s %s\n' "Engine:" "none responding (run \`$SCRIPT_NAME doctor\`)"
+        printf '%-13s %s\n' "Image:" "$IMAGE_NAME (engine unavailable)"
+    fi
+    printf '%-13s %s\n' "Toolchain:" "ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
+    printf '%-13s %s\n' "Tools:" "${TOOLS_SELECTED:-none} (SAGENT_TOOLS=\"$SAGENT_TOOLS\")"
+    if [ -n "$CA_BUNDLE_PATH" ]; then
+        printf '%-13s %s\n' "CA bundle:" "$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"
+    else
+        printf '%-13s %s\n' "CA bundle:" "none"
+    fi
+    if [ "${SAGENT_DOCKER:-1}" = "0" ]; then
+        printf '%-13s %s\n' "Nested:" "off (SAGENT_DOCKER=0)"
+    else
+        printf '%-13s %s\n' "Nested:" "on (--no-docker or SAGENT_DOCKER=0 to disable)"
+    fi
+    printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
+    printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
+
+    if [ -n "$ENGINE_CMD" ]; then
+        vol_count=0
+        for v in sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
+            if "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1; then vol_count=$((vol_count + 1)); fi
+        done
+        while read -r v size; do
+            case "$size" in *[0-9]*B) bytes=$(size_to_bytes "$size"); vol_total=$((vol_total + bytes)) ;; esac
+        done <<EOF
+$("$ENGINE_CMD" system df -v 2>/dev/null | awk '/^VOLUME NAME/ {t = 1; next} t && NF == 0 {t = 0} t && ($1 ~ /^(sagent-|sclaude-|scodex-)/) {print $1, $NF}')
+EOF
+        printf '%-13s %s\n' "Volumes:" "$vol_count of 8 present, $(bytes_to_size "$vol_total") (\`$SCRIPT_NAME volumes\` for the breakdown)"
+    fi
+
+    if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if [ -z "$(git -C "$PWD" status --porcelain 2>/dev/null)" ]; then
+            git_line="git: clean"
+        else
+            git_line="git: $(git -C "$PWD" status --porcelain 2>/dev/null | wc -l | tr -d ' ') uncommitted change(s)"
+        fi
+    else
+        git_line="not a git repository"
+    fi
+    if [ "$(pwd -P)" != "$PWD" ]; then
+        printf '%-13s %s\n' "Workspace:" "$PWD ($git_line; mounted from $(pwd -P))"
+    else
+        printf '%-13s %s\n' "Workspace:" "$PWD ($git_line)"
+    fi
+}
+
+DOCTOR_PASS=0; DOCTOR_WARN=0; DOCTOR_FAIL=0
+doctor_report() {
+    local level="$1" check="$2" message="$3"
+    case "$level" in
+        PASS) DOCTOR_PASS=$((DOCTOR_PASS + 1)) ;;
+        WARN) DOCTOR_WARN=$((DOCTOR_WARN + 1)) ;;
+        FAIL) DOCTOR_FAIL=$((DOCTOR_FAIL + 1)) ;;
+    esac
+    printf '  %-4s  %-12s %s\n' "$level" "$check" "$message"
+}
+
+# Environment diagnostics with a fix for anything that is wrong. Exit 1 when
+# any check fails. Only reads state; the one container it may start runs
+# `true`/`curl` inside the already-built image.
+doctor_command() {
+    local msg latest out rc v stamp expected stale="" old_images key unknown=""
+    echo "[$SCRIPT_NAME] doctor"
+
+    # wrapper
+    latest=$(fetch_latest_release_tag 5)
+    if [ -z "$latest" ]; then
+        doctor_report WARN wrapper "v$WRAPPER_VERSION; could not reach the GitHub releases API to check for updates"
+    elif version_gt "${latest#v}" "$WRAPPER_VERSION"; then
+        doctor_report WARN wrapper "v$WRAPPER_VERSION installed, $latest available: run \`$SCRIPT_NAME update\`"
+    else
+        doctor_report PASS wrapper "v$WRAPPER_VERSION is current ($(wrapper_install_kind))"
+    fi
+    doctor_report PASS shell "bash ${BASH_VERSION:-unknown} runs this wrapper (3.2+ supported; zsh works too)"
+
+    # config
+    if [ -f "$SAGENT_CONFIG_FILE" ]; then
+        while IFS= read -r key; do
+            config_key_known "$key" || unknown="$unknown $key"
+        done <<EOF
+$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$SAGENT_CONFIG_FILE" | tr -d '=')
+EOF
+        if [ -n "$unknown" ]; then
+            doctor_report WARN config "$SAGENT_CONFIG_FILE sets keys the wrapper does not use:$unknown"
+        else
+            doctor_report PASS config "$SAGENT_CONFIG_FILE parses; settings valid"
+        fi
+    else
+        doctor_report PASS config "no config file ($SAGENT_CONFIG_FILE); defaults in effect"
+    fi
+
+    # engine (no subshell: select_engine sets ENGINE_CMD for the checks below)
+    msg=$(mktemp); TEMP_FILES+=("$msg")
+    if select_engine 2>"$msg"; then
+        detect_engine_flavor
+        doctor_report PASS engine "$ENGINE_CMD responding (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR, rootless: $ENGINE_ROOTLESS)"
+    else
+        doctor_report FAIL engine "$(sed "s/^\[$SCRIPT_NAME\] //" "$msg" | tr '\n' ' ')"
+    fi
+
+    # workspace (engine-dependent checks inside validate_workspace)
+    if [ -n "$ENGINE_CMD" ]; then
+        if msg=$( (validate_workspace) 2>&1 ); then
+            doctor_report PASS workspace "$PWD can be mounted$([ "$(pwd -P)" != "$PWD" ] && echo " (from $(pwd -P))")"
+        else
+            doctor_report FAIL workspace "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
+        fi
+    fi
+    if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if [ -n "$(git -C "$PWD" status --porcelain 2>/dev/null)" ]; then
+            doctor_report WARN git "workspace has uncommitted changes; commit first so the agent's edits stay reviewable with git diff"
+        else
+            doctor_report PASS git "workspace is a clean git checkout"
+        fi
+    else
+        doctor_report WARN git "workspace is not a git repository; there is no way to review or revert the agent's edits"
+    fi
+
+    # image and what runs inside it
+    if [ -n "$ENGINE_CMD" ]; then
+        if "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+            doctor_report PASS image "$IMAGE_NAME built"
+            for v in "$TOOL_BIN" gh; do
+                if out=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$v" --version 2>&1 | head -1); then
+                    doctor_report PASS "cli:$v" "$out"
+                else
+                    doctor_report FAIL "cli:$v" "does not run inside the image: $out"
+                fi
+            done
+            # TLS from inside the sandbox: the corporate-proxy failure mode.
+            out=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" curl -fsSI --max-time 15 https://registry.npmjs.org/ 2>&1 >/dev/null); rc=$?
+            if [ "$rc" -eq 0 ]; then
+                doctor_report PASS network "the sandbox reaches https://registry.npmjs.org with a trusted certificate"
+            elif printf '%s' "$out" | grep -qE 'curl: \(60\)|certificate'; then
+                doctor_report FAIL network "TLS verification fails inside the sandbox (a TLS-inspecting proxy?): export its CA and set SAGENT_CA_BUNDLE (README, \"Corporate networks\")"
+            else
+                doctor_report FAIL network "no HTTPS from inside the sandbox: $(printf '%s' "$out" | tail -1)"
+            fi
+            if [ "${SAGENT_DOCKER:-1}" != "0" ]; then
+                if out=$("$ENGINE_CMD" run --rm --device /dev/fuse --device /dev/net/tun "$IMAGE_NAME" true 2>&1); then
+                    doctor_report PASS nested "engine exposes /dev/fuse and /dev/net/tun for nested containers"
+                else
+                    doctor_report FAIL nested "engine cannot pass /dev/fuse or /dev/net/tun ($(printf '%s' "$out" | tail -1)); run with --no-docker or set SAGENT_DOCKER=0"
+                fi
+            fi
+            # cache stamps that the next run would clear
+            for v in "$PIP_VOLUME:python=$PYTHON_VERSION" "$NPM_VOLUME:node=$NODE_VERSION" "$APT_CACHE_VOLUME:ubuntu=$UBUNTU_VERSION" "$CONTAINERS_VOLUME:ubuntu=$UBUNTU_VERSION"; do
+                expected="${v#*:}"; v="${v%%:*}"
+                "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1 || continue
+                stamp=$("$ENGINE_CMD" run --rm -v "$v:/vol:ro" "$IMAGE_NAME" sh -c 'cat /vol/.sagent-stamp 2>/dev/null; ls -A /vol | grep -v "^.sagent-stamp$" | head -1 >/dev/null && echo NONEMPTY' 2>/dev/null)
+                case "$stamp" in
+                    *NONEMPTY*) [ "$(printf '%s\n' "$stamp" | head -1)" = "$expected" ] || stale="$stale $v" ;;
+                esac
+            done
+            if [ -n "$stale" ]; then
+                doctor_report WARN caches "filled for another toolchain and cleared on the next run:$stale"
+            else
+                doctor_report PASS caches "cache volumes match the toolchain"
+            fi
+        else
+            doctor_report WARN image "$IMAGE_NAME not built yet; the first run builds it (about 20 minutes), or run \`$SCRIPT_NAME --build\` now"
+        fi
+        old_images=$("$ENGINE_CMD" images "$IMAGE_REPO" --format '{{.Tag}}' 2>/dev/null | grep -vcE "^($VERSION_HASH|latest)$" || true)
+        if [ "${old_images:-0}" -gt 0 ]; then
+            doctor_report WARN images "$old_images old sandbox image(s) on disk; \`$SCRIPT_NAME cleanup\` removes them"
+        fi
+    fi
+
+    # credentials
+    if host_has_claude_credentials; then
+        doctor_report PASS auth:claude "Claude credentials found on the host (synced into the sandbox each run)"
+    else
+        doctor_report WARN auth:claude "no Claude credentials on the host; run \`claude\` once here, or log in inside the sandbox (persisted in sclaude-config)"
+    fi
+    if host_has_codex_auth; then
+        doctor_report PASS auth:codex "Codex auth.json found on the host"
+    else
+        doctor_report WARN auth:codex "no Codex auth.json on the host; scodex users log in inside the sandbox (persisted in scodex-config)"
+    fi
+
+    echo "Summary: $DOCTOR_PASS passed, $DOCTOR_WARN warning(s), $DOCTOR_FAIL failed"
+    [ "$DOCTOR_FAIL" -eq 0 ]
+}
+
 print_release_guidance() {
     local latest_tag="$1"
 
@@ -1466,7 +1720,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -1764,9 +2018,17 @@ case "$WRAPPER_COMMAND" in
         config_command "${ARGS[@]+"${ARGS[@]}"}"
         exit 0
         ;;
+    status)
+        status_command
+        exit 0
+        ;;
+    doctor)
+        if doctor_command; then exit 0; fi
+        exit 1
+        ;;
 esac
 
-select_engine
+select_engine || exit 1
 detect_engine_flavor
 
 case "$WRAPPER_COMMAND" in

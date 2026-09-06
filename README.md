@@ -25,6 +25,10 @@ mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested
 container tooling works in Rancher Desktop's VM; CI runs the full suite
 against Rancher Desktop on macOS.
 
+**Something off?** `sclaude doctor` checks the environment end to end (engine,
+workspace, config, image, TLS from inside the sandbox, credentials) and names
+the fix for anything it flags; `sclaude status` shows what a run would use.
+
 **Corporate networks (TLS-inspecting proxies)**: if the first build fails with
 `curl: (60) SSL certificate problem: unable to get local issuer certificate`,
 your proxy re-signs HTTPS traffic with a CA your machine trusts but a fresh
@@ -177,6 +181,8 @@ passed through.
 | `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version, toolchain, tools and build metadata |
+| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, volumes, workspace |
+| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, git state, wrapper up to date; exits 1 on any FAIL |
 | `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
 | `sclaude config` | Show effective settings and their source; `config set KEY VALUE`, `config unset KEY`, `config get KEY`, `config path` edit the config file with validation |
 | `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
