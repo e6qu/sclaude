@@ -58,6 +58,8 @@ Linux, against Docker or Podman.
 | T36: Toolchain stamps | A pip volume stamped for another Python is cleared with a warning on the next run; an unchanged toolchain leaves it alone | #76 |
 | T37: `reset-caches` | Cache volumes removed; credentials, config and home volumes kept | -- |
 | T38: `tools` / `config` commands | Enable/disable rewrite `SAGENT_TOOLS` and change the hash; `config set/get/list/unset/path` with validation and unknown-key rejection; environment precedence reported; Java tools without a JDK | -- |
+| T39: `status` | Every snapshot line present with the real engine and image; still prints, naming the problem, without an engine | -- |
+| T40: `doctor` | Healthy setup: engine, workspace, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
