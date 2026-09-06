@@ -180,6 +180,10 @@ jobs:
         env:
           TEST_TIMEOUT_SECONDS: "1200"
           SAGENT_TEST_SKIP: "T10 T31 T12b"
+          # The engine probe (docker info) can stall for more than the 10s
+          # default while the Lima VM is under build/test load; one such stall
+          # failed T04 with "engine not responding" on an otherwise green run.
+          SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
@@ -251,6 +255,7 @@ jobs:
         env:
           TEST_TIMEOUT_SECONDS: "1200"
           SAGENT_TEST_SKIP: "T10 T31 T12b"
+          SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
