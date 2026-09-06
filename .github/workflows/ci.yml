@@ -239,13 +239,36 @@ jobs:
             --no-modal-dialogs
           echo "$HOME/.rd/bin" >> "$GITHUB_PATH"
       - name: Wait for Rancher Desktop's docker daemon
+        # The VZ guest occasionally boots without network on a runner host (its
+        # SSH address stays unreachable while the VM reports "running"); a
+        # second start on the same runner has recovered from that. One
+        # restart, bounded, then the diagnostics below.
         run: |
-          for _ in $(seq 1 90); do
-            if [ -x "$HOME/.rd/bin/docker" ] && "$HOME/.rd/bin/docker" info >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 10
-          done
+          wait_ready() {
+            for _ in $(seq 1 "$1"); do
+              if [ -x "$HOME/.rd/bin/docker" ] && "$HOME/.rd/bin/docker" info >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 10
+            done
+            return 1
+          }
+          if wait_ready 42; then exit 0; fi
+          echo "Rancher Desktop not ready after 7 minutes; restarting it once" >&2
+          "$RDCTL" shutdown || true
+          sleep 15
+          "$RDCTL" start \
+            --application.start-in-background \
+            --application.admin-access=false \
+            --application.updater.enabled=false \
+            --application.path-management-strategy=manual \
+            --container-engine.name=moby \
+            --kubernetes.enabled=false \
+            --virtual-machine.type=vz \
+            --virtual-machine.memory-in-gb=10 \
+            --virtual-machine.number-cpus=4 \
+            --no-modal-dialogs
+          if wait_ready 60; then exit 0; fi
           echo "Rancher Desktop did not become ready" >&2
           pgrep -fl "Rancher Desktop" || echo "no Rancher Desktop process"
           "$RDCTL" list-settings || true
