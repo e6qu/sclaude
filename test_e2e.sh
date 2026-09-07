@@ -579,6 +579,8 @@ EOF
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         mkdir -p /h/.ssh && echo sandbox-key > /h/.ssh/id_sandbox
     "
+    # The sync mirrors ~/.ssh only when it exists; a CI runner may have none.
+    if [ ! -d ~/.ssh ]; then mkdir -m 700 ~/.ssh; fi
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
