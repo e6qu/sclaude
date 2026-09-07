@@ -2179,7 +2179,7 @@ stage_host_ssh() {
     mkdir -p "$dir/home/.ssh"
     : > "$dir/home/.ssh/.sagent-synced"
     for f in "$src"/* "$src"/.[!.]*; do
-        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
         name=$(basename "$f")
         case "$name" in .sagent-synced) continue ;; esac
         if [ "$name" = config ]; then
