@@ -186,19 +186,34 @@ for git, gh and the clipboard.
 **git and gh work as on the host.** Before every run the wrapper carries
 over your global git config (identity, aliases, pull/push/rebase
 preferences, the global excludes file) and your `gh` login (the token gh
-holds in its keyring or `hosts.yml`, for every host you are logged in to).
-Inside the sandbox git serves GitHub credentials through `gh auth
-git-credential`, and `git@github.com:` remotes are rewritten to HTTPS since
-the sandbox has no SSH keys, so `git push`, `gh pr create` and friends just
-work. Left out on purpose: credential helpers, signing settings (no keys in
-the sandbox, so commits there are unsigned), editor, pager, diff/merge tools
-and anything naming a host path or daemon. The synced config is git's
-XDG-level file; `git config --global` inside the sandbox writes
-`~/.gitconfig`, which wins over it and persists in `sagent-rootfs`. A `gh
-auth login` made inside the sandbox stays until the host has a login, which
-then takes over. `GH_TOKEN` set on the host is forwarded as is and never
-written down. `sclaude status` shows what will be synced; `sclaude doctor`
-flags a missing identity or login.
+holds in its keyring or `hosts.yml`, for every host you are logged in to),
+so `git push`, `gh pr create` and friends just work. Left out on purpose:
+credential helpers, signing settings (no signing keys in the sandbox, so
+commits there are unsigned), editor, pager, diff/merge tools and anything
+naming a host path or daemon. The synced config is git's XDG-level file;
+`git config --global` inside the sandbox writes `~/.gitconfig`, which wins
+over it and persists in `sagent-rootfs`. A `gh auth login` made inside the
+sandbox stays until the host has a login, which then takes over. `GH_TOKEN`
+set on the host is forwarded as is and never written down.
+
+**SSH or HTTPS** for GitHub is `SAGENT_GIT_PROTOCOL`; unset, it follows
+the protocol your host `gh` is configured with (`gh config get
+git_protocol`, https when never set). With `ssh` the regular files of your
+`~/.ssh` (keys, `config` with its `Host` aliases, `known_hosts`) are synced
+into the sandbox home, `config` minus the macOS-only `UseKeychain` line and
+with `$HOME` paths rewritten to `~`; remotes stay as they are. The sandbox
+cannot unlock a passphrase-protected key (no agent, no prompt), so use an
+unprotected key for GitHub or switch to https. With `https` no key enters
+the sandbox: git serves the gh token through `gh auth git-credential` and
+`git@github.com:` remotes are rewritten to HTTPS. Switching removes what
+the other mode synced; keys made inside the sandbox are left alone.
+`sclaude status` shows the protocol, its source and what will be synced;
+`sclaude doctor` flags a missing identity, login or key.
+
+```bash
+sclaude config set SAGENT_GIT_PROTOCOL https   # keep SSH keys out of the sandbox
+sclaude config set SAGENT_GIT_PROTOCOL ssh     # sync ~/.ssh, keep SSH remotes
+```
 
 **Clipboard.** Selecting and pasting text is the terminal's business and
 works unchanged; with Claude Code's mouse tracking on, hold Option (iTerm2),
@@ -282,6 +297,7 @@ PIDS_LIMIT_NESTED="1024"   # Default: 512 (used when container tooling is on)
 SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
 SAGENT_CONTAINER_ENGINE=podman
 SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"  # Extra CA certs baked into the image
+SAGENT_GIT_PROTOCOL=ssh    # ssh (sync ~/.ssh) or https (gh token, SSH remotes rewritten); default: the host gh's setting
 
 # Toolchain versions (defaults are the latest releases; all part of the image hash)
 SAGENT_UBUNTU_VERSION="26.04"   # Ubuntu base image tag

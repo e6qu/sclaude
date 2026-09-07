@@ -61,8 +61,9 @@ run after a version change; `sclaude volumes` shows usage and
 - `/home/agent/` - Shared user home directory (theme preferences, CLI state, etc.)
 - `/home/agent/.config/git/config` - The host's global git config minus host-only keys (credential helpers, signing, editor, pager, diff/merge tools, host paths), rewritten on every run; `/home/agent/.config/git/ignore` is the host's global excludes file
 - `/home/agent/.gitconfig` - Sandbox-only git settings (`git config --global` inside the sandbox writes here); read after the synced file, so it wins
-- `/home/agent/.config/gh/hosts.yml` - gh login carried over from the host (token per host, `git_protocol: https`), rewritten on every run the host has a login; a login made inside the sandbox stays otherwise
-- `/etc/gitconfig` (image) - `gh auth git-credential` as the credential helper for github.com, `git@github.com:` and `ssh://git@github.com/` rewritten to HTTPS, git-lfs filters
+- `/home/agent/.config/gh/hosts.yml` - gh login carried over from the host (token per host, `git_protocol` as in effect), rewritten on every run the host has a login; a login made inside the sandbox stays otherwise
+- `/home/agent/.ssh/` - with `SAGENT_GIT_PROTOCOL=ssh`, the regular files of the host's `~/.ssh` (700/600), listed in `.sagent-synced` so the next run removes exactly them before syncing again; files made inside the sandbox are not listed and stay
+- `/etc/gitconfig` (image) - `gh auth git-credential` as the credential helper for github.com, git-lfs filters; the SSH-to-HTTPS rewrite for `https` runs lives in the synced git config
 
 ### Package Management
 - `/home/agent/.npm-global/` - npm global packages
@@ -82,6 +83,7 @@ sclaude and scodex carry credentials and host state into Docker volumes on each 
 **Codex**: Reads from `${CODEX_HOME:-$HOME/.codex}/auth.json` and common config files
 **git**: `git config --global --includes --list` on the host, filtered (see above), plus the global excludes file
 **gh**: `gh auth token --hostname H` for every host in the host's `hosts.yml` (keyring or file; `GH_TOKEN` is masked for the lookup and forwarded separately)
+**ssh**: with `SAGENT_GIT_PROTOCOL=ssh`, the regular files of `~/.ssh`; `config` loses `UseKeychain` lines and gets `$HOME` rewritten to `~`
 
 1. Stages everything as one tree in a temporary directory on the host (`config/` for the tool's config volume, `home/` for the home volume)
 2. Streams it over stdin as a tar into a root helper container (no host bind mount: denied on SELinux hosts, breaks on paths with colons)
