@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.0](https://github.com/e6qu/sclaude/compare/v2.12.0...v2.13.0) (2026-09-07)
+
+
+### Features
+
+* publish the sandbox image per architecture with a multi-arch manifest ([#46](https://github.com/e6qu/sclaude/issues/46)) ([bbaac8b](https://github.com/e6qu/sclaude/commit/bbaac8be6323cf5cb1c486ad43dac05bf8523881))
+
 ## [2.12.0](https://github.com/e6qu/sclaude/compare/v2.11.0...v2.12.0) (2026-09-07)
 
 
