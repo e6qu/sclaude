@@ -963,6 +963,27 @@ STUB
         | diff - "$tmp/context.txt"
 ' _ "$SCLAUDE"
 
+# ── T32b: `dockerfile` prints the build's Dockerfile ─────────────────
+# The release workflow builds the published images from this output, so it
+# must be the Dockerfile a build would use: same content, the metadata
+# stamp with the version hash, and SAGENT_IMAGE_UID/GID re-keying the hash
+# to the user the image is built for.
+run_test "T32b: dockerfile command" bash -ec '
+    tmp=$(mktemp -d)
+    trap "rm -rf \"$tmp\"" EXIT
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$tmp/no-config"
+    "$1" dockerfile > "$tmp/Dockerfile"
+    head -1 "$tmp/Dockerfile" | grep -q "^FROM ubuntu:"
+    hash=$("$1" version | sed -n "s/^Image hash: //p")
+    grep -q "\"version\": \"$hash\"" "$tmp/Dockerfile"
+    tail -1 "$tmp/Dockerfile" | grep -qx "USER agent"
+    # Another uid/gid is another image: the stamp follows.
+    other=$(SAGENT_IMAGE_UID=4242 SAGENT_IMAGE_GID=4242 "$1" dockerfile | sed -n "s/.*\"version\": \"\([0-9a-f]*\)\".*/\1/p")
+    [ -n "$other" ] && [ "$other" != "$hash" ]
+    # Same for both wrappers (one shared image).
+    diff <(grep -v build_timestamp "$tmp/Dockerfile") <("$2" dockerfile | grep -v build_timestamp)
+' _ "$SCLAUDE" "$SCODEX"
+
 # ── T33: unshared workspace on VM-backed engines is refused ──────────
 # #74: Rancher Desktop and colima share only $HOME (plus one /tmp subdir)
 # with their VM, so any other workspace mounts empty. A stub engine reporting

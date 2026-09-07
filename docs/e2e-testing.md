@@ -54,6 +54,7 @@ Linux, against Docker or Podman.
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
 | T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed; FROM/ARG carry the toolchain versions, `none` omits a toolchain, `SAGENT_TOOLS` selects exactly the named tools | #68 |
+| T32b: dockerfile command | Prints the build's Dockerfile: `FROM`, the metadata stamp carrying the version hash, `USER agent` last; `SAGENT_IMAGE_UID`/`GID` change the hash; identical from both wrappers | -- |
 | T33: VM share check | Stub engine reporting the `rancher-desktop` and `colima` contexts: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass; other contexts are not checked | #74 |
 | T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused before any engine call; `version` still works | #75 |
 | T35: Toolchain settings | Invalid versions rejected up front; each setting changes the image hash; config file applies and the environment wins | -- |

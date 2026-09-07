@@ -697,6 +697,35 @@ get_version_hash() {
 VERSION_HASH=$(get_version_hash)
 IMAGE_NAME="${IMAGE_REPO}:${VERSION_HASH}"
 
+# The trailing Dockerfile lines that stamp the image with its version hash
+# and build time (`version` and `doctor` read them back).
+dockerfile_metadata_block() {
+    local build_timestamp
+    build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    cat <<EOF
+
+USER root
+RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' > /sagent-metadata.json
+USER agent
+EOF
+}
+
+# `dockerfile`: print the Dockerfile a build would use, for building the
+# image elsewhere (the release workflow publishes it for both
+# architectures). SAGENT_IMAGE_UID/SAGENT_IMAGE_GID pick the user the
+# image is built for when it is not the one running this; the version hash
+# in the metadata follows, so the printed file is what a wrapper run by
+# that user would build. Pass the same ids as USER_UID/USER_GID build args.
+dockerfile_command() {
+    if [ -n "${SAGENT_IMAGE_UID:-}" ] || [ -n "${SAGENT_IMAGE_GID:-}" ]; then
+        HOST_UID="${SAGENT_IMAGE_UID:-$HOST_UID}"
+        HOST_GID="${SAGENT_IMAGE_GID:-$HOST_GID}"
+        VERSION_HASH=$(get_version_hash)
+    fi
+    get_dockerfile_content
+    dockerfile_metadata_block
+}
+
 build_image() {
     local no_cache="${1:-}"
     local temp_context
@@ -748,13 +777,7 @@ build_image() {
         stage_ca_bundle "$temp_context"
     fi
 
-    build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    cat >> "$temp_dockerfile" <<EOF
-
-USER root
-RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' > /sagent-metadata.json
-USER agent
-EOF
+    dockerfile_metadata_block >> "$temp_dockerfile"
 
     if ! "${build_env[@]+"${build_env[@]}"}" "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
         --build-arg USER_UID="$HOST_UID" \
@@ -1980,7 +2003,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor|shell)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor|shell|dockerfile)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -2574,6 +2597,10 @@ case "$WRAPPER_COMMAND" in
     doctor)
         if doctor_command; then exit 0; fi
         exit 1
+        ;;
+    dockerfile)
+        dockerfile_command
+        exit 0
         ;;
 esac
 
