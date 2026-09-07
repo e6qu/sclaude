@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.12.0](https://github.com/e6qu/sclaude/compare/v2.11.0...v2.12.0) (2026-09-07)
+
+
+### Features
+
+* SAGENT_GIT_PROTOCOL, ssh by default when the host gh uses it ([#44](https://github.com/e6qu/sclaude/issues/44)) ([b7a0a68](https://github.com/e6qu/sclaude/commit/b7a0a68ab2494ba0669895f225cdb96c52018bed))
+
 ## [2.11.0](https://github.com/e6qu/sclaude/compare/v2.10.0...v2.11.0) (2026-09-07)
 
 
