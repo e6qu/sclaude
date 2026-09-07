@@ -499,9 +499,13 @@ EOF
 ' _ "$SCLAUDE"
 
 # ── T20a: host git config and gh login sync ──────────────────────────
-# The wrapper carries the host'"'"'s global git config (minus host-only keys)
+# The wrapper carries the host's global git config (minus host-only keys)
 # and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
-# GH_CONFIG_DIR point git and a fake gh at synthetic state.
+# GH_CONFIG_DIR point git and a fake gh at synthetic state; XDG_CONFIG_HOME
+# stays untouched because the wrapper's own config file lives there and CI
+# slims the image through it. The volume is inspected as root: on rootless
+# podman the image's user maps to a subordinate UID and cannot read the
+# 600-mode hosts.yml.
 run_test "T20a: host git config and gh login sync" bash -ec '
     TMP=$(mktemp -d)
     trap "rm -rf \"$TMP\"" EXIT
@@ -542,7 +546,7 @@ case "\$4" in
 esac
 EOF
     chmod +x "$TMP/bin/gh"
-    PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
+    PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         cfg=/h/.config/git/config
@@ -563,8 +567,11 @@ EOF
         ! grep -q LEAKED_ENV_TOKEN /h/.config/gh/hosts.yml
         [ \"\$(stat -c %a /h/.config/gh/hosts.yml)\" = 600 ]
     "
-    # The synced git files mirror the host: gone from the host, gone from the volume.
-    PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/none" GH_CONFIG_DIR="$TMP/gh" \
+    # The synced git files mirror the host: gone from the host, gone from the
+    # volume. An excludes file that no longer exists stands in for "none"
+    # (the default ~/.config/git/ignore may exist on the machine running this).
+    printf "[core]\n\texcludesfile = %s\n" "$TMP/missing" > "$TMP/gitconfig2"
+    PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         ! git config --file /h/.config/git/config --get user.name
