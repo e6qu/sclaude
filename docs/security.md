@@ -243,16 +243,22 @@ inside the sandbox, which is why CA-file variables such as `SSL_CERT_FILE`
 are not forwarded; extra trust anchors go through `SAGENT_CA_BUNDLE`
 instead.
 
-#### Clipboard (OSC 52)
+#### Clipboard bridge
 
-The clipboard shims in the image (`pbcopy`, `xclip`, `wl-copy`, `xsel`)
-write to the host clipboard by emitting an OSC 52 escape sequence on the
-sandbox's terminal, which the host terminal applies when its settings allow
-(iTerm2: *Applications in terminal may access clipboard*). This is a
-write-only channel: an agent can overwrite your clipboard with text of its
-choosing, which is the same power any program in the terminal has, and the
-terminal setting turns it off. Reading the host clipboard is not possible
-from inside; the read shims fail.
+For every run the wrapper starts a clipboard agent on the host and mounts a
+per-run directory (`~/.cache/sagent/clipboard.*`, mode 700, removed with
+the run) into the sandbox at `/run/sagent/clipboard`. The sandbox's
+`pbcopy`/`pbpaste`/`xclip`/`xsel`/`wl-copy`/`wl-paste` shims drop request
+files there; the agent answers them with the host's own clipboard tools.
+That gives the agent inside the sandbox two powers: it can set your
+clipboard to text of its choosing, and it can read whatever is on it at any
+time, including a password you just copied. The channel is only the host's
+clipboard: the agent runs fixed commands (`pbcopy`, `pbpaste`, an
+`osascript` that reads the clipboard as PNG, or their Linux equivalents) on
+data from the request files, never the data as commands, and the directory
+is writable to the sandbox user only. Set `SAGENT_CLIPBOARD=0` to leave the
+bridge out; copies then go out as OSC 52 through the terminal (a write-only
+channel the terminal's settings govern) and reads fail.
 
 #### Extra trust anchors (`SAGENT_CA_BUNDLE`)
 
