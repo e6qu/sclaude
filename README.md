@@ -132,7 +132,7 @@ credentials file, Codex `auth.json`), so signing in on the host first also
 works.
 
 The shared image is Ubuntu 26.04 with the Claude Code and Codex CLIs, the
-GitHub CLI (`gh`), and full toolchains for Node.js 26, Python 3.14 (with pip
+GitHub CLI (`gh`) with `git-lfs`, and full toolchains for Node.js 26, Python 3.14 (with pip
 and `uv`), Go 1.27, Rust stable (rustup with rustfmt and clippy), and Java 26
 (Eclipse Temurin), plus git, build-essential, rootless podman with a
 `docker` shim, and everyday utilities: tree, htop, btop, top, jq, ripgrep,
@@ -160,12 +160,8 @@ sclaude config set SAGENT_NODE_VERSION 24   # any setting, validated, written to
 sclaude config                     # effective settings and where each comes from
 ```
 
-A changed selection or version is a new image that builds on the next run. `gh` authenticates either with `gh auth login` inside
-the sandbox (persisted in the `sagent-rootfs` volume) or with a `GH_TOKEN`
-set on the host, which is passed through.
-
-Upgrades never need anything from you: a changed version is a new image that
-builds on the next run, and cache volumes that were filled for the old
+A changed selection or version is a new image that builds on the next run.
+Upgrades never need anything from you: cache volumes that were filled for the old
 toolchain (pip packages are per Python minor, npm globals per Node major, apt
 and nested-container state per Ubuntu release) are cleared automatically
 with a warning. Go, Rust and Java caches live in the home directory and are
@@ -182,7 +178,44 @@ Codex syntax such as `scodex exec "query"` for non-interactive Codex runs.
 Claude OAuth credentials auto-sync from the host (macOS Keychain or
 `~/.claude/.credentials.json` on Linux). Codex auth auto-syncs
 `${CODEX_HOME:-$HOME/.codex}/auth.json`; API key environment variables are also
-passed through.
+passed through. See [Host state inside the sandbox](#host-state-inside-the-sandbox)
+for git, gh and the clipboard.
+
+## Host state inside the sandbox
+
+**git and gh work as on the host.** Before every run the wrapper carries
+over your global git config (identity, aliases, pull/push/rebase
+preferences, the global excludes file) and your `gh` login (the token gh
+holds in its keyring or `hosts.yml`, for every host you are logged in to).
+Inside the sandbox git serves GitHub credentials through `gh auth
+git-credential`, and `git@github.com:` remotes are rewritten to HTTPS since
+the sandbox has no SSH keys, so `git push`, `gh pr create` and friends just
+work. Left out on purpose: credential helpers, signing settings (no keys in
+the sandbox, so commits there are unsigned), editor, pager, diff/merge tools
+and anything naming a host path or daemon. The synced config is git's
+XDG-level file; `git config --global` inside the sandbox writes
+`~/.gitconfig`, which wins over it and persists in `sagent-rootfs`. A `gh
+auth login` made inside the sandbox stays until the host has a login, which
+then takes over. `GH_TOKEN` set on the host is forwarded as is and never
+written down. `sclaude status` shows what will be synced; `sclaude doctor`
+flags a missing identity or login.
+
+**Clipboard.** Selecting and pasting text is the terminal's business and
+works unchanged; with Claude Code's mouse tracking on, hold Option (iTerm2),
+Fn (Terminal.app) or Shift (most others) while dragging to select, as on the
+host. Copying *from* the sandbox (Claude Code's `/copy`, `pbcopy`, `xclip`,
+`wl-copy` or `xsel` in a script) is turned into an OSC 52 sequence the host
+terminal applies to its clipboard: iTerm2 needs *Settings > General >
+Selection > Applications in terminal may access clipboard*; kitty, WezTerm,
+Ghostty, Alacritty and Windows Terminal support it; Terminal.app does not.
+Reading the host clipboard from inside (`pbpaste`, `wl-paste`, `xclip -o`)
+is not possible through a terminal and fails with a message; pasted text
+arrives as keystrokes (Cmd/Ctrl+V) anyway, only a clipboard image has no way
+in: save it into the workspace and give the CLI its path. The terminal's
+identity (`TERM_PROGRAM`, `COLORTERM` and friends) is forwarded, so the CLIs
+pick the right keyboard protocol (Shift+Enter), print clickable hyperlinks
+(Cmd/Ctrl+click opens them on the host) and name the right selection
+modifier.
 
 ## Commands
 
@@ -194,8 +227,8 @@ passed through.
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude version` | Show version, toolchain, tools and build metadata |
 | `sclaude shell [bash args]` | Bash in the sandbox with the same mounts and volumes: attaches to the sandbox running for the current workspace, otherwise starts a fresh one (apt installs last until it exits; npm, pip, cargo, go and home-directory changes persist) |
-| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, volumes, workspace |
-| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, git state, wrapper up to date; exits 1 on any FAIL |
+| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, git identity and gh logins to sync, volumes, workspace |
+| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, gh login, git identity, git state, wrapper up to date; exits 1 on any FAIL |
 | `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
 | `sclaude config` | Show effective settings and their source; `config set KEY VALUE`, `config unset KEY`, `config get KEY`, `config path` edit the config file with validation |
 | `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
@@ -226,7 +259,7 @@ Data survives across runs via Docker volumes:
 |--------|----------|
 | `sclaude-config` | Claude credentials, config |
 | `scodex-config` | Codex auth and config |
-| `sagent-rootfs` | Shared home directory: shell state, `gh` auth, Go module cache, cargo registry, Maven/Gradle caches |
+| `sagent-rootfs` | Shared home directory: shell state, synced git config and `gh` login, Go module cache, cargo registry, Maven/Gradle caches |
 | `sagent-npm` | Shared npm global packages (cache; cleared on a Node major change) |
 | `sagent-pip` | Shared pip user packages and uv-managed Pythons (cache; cleared on a Python minor change) |
 | `sagent-apt-cache` | Shared apt package cache (cache; cleared on an Ubuntu change) |
