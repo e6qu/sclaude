@@ -50,7 +50,7 @@ HOST_GID=$(id -g)
 # Environment variables and command-line flags take precedence over the file.
 # Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
 # variables, so `for x in $list` would see one item.
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -113,6 +113,10 @@ validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' '
 # Unset means the protocol the host's gh is configured with.
 if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
     validate_version_setting SAGENT_GIT_PROTOCOL "$SAGENT_GIT_PROTOCOL" '^(ssh|https)$' 'ssh or https'
+fi
+# SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
+if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
+    validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
 fi
 
 # Optional tooling baked into the image, all at their latest release as of
@@ -201,6 +205,9 @@ fi
 
 TEMP_FILES=()
 cleanup_temp() {
+    if [ -n "${CLIPBOARD_BRIDGE_PID:-}" ]; then
+        kill "$CLIPBOARD_BRIDGE_PID" 2>/dev/null || true
+    fi
     for f in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
         rm -rf "$f"
     done
@@ -614,38 +621,91 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/host-open; \
     ln -s host-open /usr/local/bin/xdg-open
 
-# Clipboard shims: the sandbox has no display, but the terminal on the host
-# owns a clipboard. Copying (pbcopy, wl-copy, xclip, xsel: what the Claude
-# and Codex CLIs and everyday scripts call) writes the text to the
-# controlling terminal as an OSC 52 sequence, which the host terminal turns
-# into a clipboard write (iTerm2 needs "Applications in terminal may access
-# clipboard" enabled; Terminal.app has no OSC 52). Reading (pbpaste,
-# wl-paste, xclip -o, xsel -o) cannot work: nothing lets a program pull the
-# host's clipboard through a pty, so those fail with a message. Text pastes
-# through the terminal as keystrokes anyway (Cmd/Ctrl+V), which is how the
-# CLIs receive pasted text; only clipboard *images* have no path in.
+# Clipboard shims: pbcopy, pbpaste, wl-copy, wl-paste, xclip and xsel (what
+# the Claude and Codex CLIs and everyday scripts call) are one script that
+# talks to the wrapper's clipboard agent on the host through the bridge
+# directory mounted at /run/sagent/clipboard: copy, read as text, list the
+# available targets, read a PNG. The host agent runs pbcopy/pbpaste/osascript
+# (macOS) or wl-copy/wl-paste or xclip (Linux). Without the bridge (the image
+# run on its own) a copy goes to the controlling terminal as OSC 52 and reads
+# fail with a message.
 RUN set -eux; \
     printf '%s\n' \
         '#!/bin/sh' \
-        '# sagent host-clipboard: OSC 52 copy to the host terminal; no read path.' \
+        '# sagent host-clipboard: the sandbox'"'"'s clipboard commands, served by the host.' \
+        '# With the wrapper'"'"'s bridge mounted, requests go to the host clipboard agent' \
+        '# through /run/sagent/clipboard (copy, text, target list, PNG). Without it' \
+        '# (the image run on its own), copy goes out as OSC 52 and reads fail.' \
+        'bridge=/run/sagent/clipboard' \
         'name=$(basename "$0")' \
         'mode=copy' \
-        'case "$name" in' \
-        '    pbpaste|wl-paste) mode=paste ;;' \
-        '    xclip) for a in "$@"; do case "$a" in -o|-ou|-out) mode=paste ;; esac; done ;;' \
-        '    xsel) for a in "$@"; do case "$a" in -o|--output) mode=paste ;; esac; done ;;' \
-        'esac' \
-        'if [ "$mode" = paste ]; then' \
-        '    echo "[sagent] $name: the host clipboard is not readable from inside the sandbox. Paste text with Cmd/Ctrl+V; for an image, save it into the workspace and give its path." >&2' \
-        '    exit 1' \
+        'target=text' \
+        'prev=""' \
+        'for a in "$@"; do' \
+        '    case "$prev" in' \
+        '        -t|-ta|-tar|-targ|-targe|-target|--type)' \
+        '            case "$a" in' \
+        '                TARGETS) target=targets ;;' \
+        '                image/png) target=image/png ;;' \
+        '                text/plain*|UTF8_STRING|STRING|text) target=text ;;' \
+        '                *) target="unsupported:$a" ;;' \
+        '            esac' \
+        '            ;;' \
+        '    esac' \
+        '    case "$a" in' \
+        '        -o|-ou|-out|--output) mode="paste" ;;' \
+        '        -l|--list-types) mode="paste"; target=targets ;;' \
+        '    esac' \
+        '    prev="$a"' \
+        'done' \
+        'case "$name" in pbpaste|wl-paste) mode="paste" ;; esac' \
+        '' \
+        'fail() { echo "[sagent] $name: $1" >&2; exit 1; }' \
+        'wait_gone() {' \
+        '    i=0' \
+        '    while [ -e "$1" ]; do' \
+        '        i=$((i + 1))' \
+        '        [ "$i" -le 100 ] || fail "the host clipboard agent did not answer in 10s (it runs alongside the wrapper; not available from a plain docker exec of an older session)"' \
+        '        sleep 0.1' \
+        '    done' \
+        '}' \
+        '' \
+        'if [ "$mode" = copy ]; then' \
+        '    if [ -d "$bridge" ]; then' \
+        '        id="$$-$(od -An -N4 -tu4 /dev/urandom | tr -d '"'"' '"'"')"' \
+        '        cat > "$bridge/req-$id.tmp"' \
+        '        mv "$bridge/req-$id.tmp" "$bridge/req-$id.copy"' \
+        '        wait_gone "$bridge/req-$id.copy"' \
+        '        exit 0' \
+        '    fi' \
+        '    data=$(base64 -w0)' \
+        '    if ( exec > /dev/tty ) 2>/dev/null; then' \
+        '        exec > /dev/tty' \
+        '    else' \
+        '        exec >&2' \
+        '    fi' \
+        '    printf '"'"'\033]52;c;%s\033\\'"'"' "$data"' \
+        '    exit 0' \
         'fi' \
-        'data=$(base64 -w0)' \
-        'if ( exec > /dev/tty ) 2>/dev/null; then' \
-        '    exec > /dev/tty' \
-        'else' \
-        '    exec >&2' \
+        '' \
+        '[ -d "$bridge" ] || fail "the host clipboard is not readable here (no clipboard bridge: the image is running without the wrapper). Paste text with Cmd/Ctrl+V."' \
+        'case "$target" in unsupported:*) fail "unsupported clipboard target ${target#unsupported:}" ;; esac' \
+        'id="$$-$(od -An -N4 -tu4 /dev/urandom | tr -d '"'"' '"'"')"' \
+        'printf '"'"'%s\n'"'"' "$target" > "$bridge/req-$id.tmp"' \
+        'mv "$bridge/req-$id.tmp" "$bridge/req-$id.paste"' \
+        'i=0' \
+        'while [ ! -e "$bridge/res-$id.ok" ] && [ ! -e "$bridge/res-$id.fail" ]; do' \
+        '    i=$((i + 1))' \
+        '    [ "$i" -le 100 ] || { rm -f "$bridge/req-$id.paste"; fail "the host clipboard agent did not answer in 10s"; }' \
+        '    sleep 0.1' \
+        'done' \
+        'if [ -e "$bridge/res-$id.ok" ]; then' \
+        '    cat "$bridge/res-$id.ok"' \
+        '    rm -f "$bridge/res-$id.ok"' \
+        '    exit 0' \
         'fi' \
-        'printf '"'"'\033]52;c;%s\033\\'"'"' "$data"' \
+        'rm -f "$bridge/res-$id.fail"' \
+        'fail "the host clipboard has no $target"' \
         > /usr/local/bin/host-clipboard; \
     chmod 0755 /usr/local/bin/host-clipboard; \
     for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do ln -s host-clipboard "/usr/local/bin/$n"; done
@@ -1041,6 +1101,7 @@ config_validate() {
         SAGENT_DOCKER) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
+        SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
@@ -1203,6 +1264,18 @@ host_git_identity_line() {
     if [ -n "$id" ]; then printf '%s' "$id"; else printf 'no identity in the host global config'; fi
 }
 
+clipboard_bridge_line() {
+    local kind
+    kind=$(host_clipboard_kind)
+    if [ "${SAGENT_CLIPBOARD:-1}" = "0" ]; then
+        printf 'bridge off (SAGENT_CLIPBOARD=0): copies go out as OSC 52, reads fail'
+    elif [ -n "$kind" ]; then
+        printf 'bridged both ways through the host (%s), text and images' "$kind"
+    else
+        printf 'no clipboard on this host (no DISPLAY or WAYLAND_DISPLAY): copies go out as OSC 52, reads fail'
+    fi
+}
+
 git_protocol_line() {
     local proto
     proto=$(git_protocol)
@@ -1288,6 +1361,7 @@ status_command() {
     printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
     printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
     printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line); protocol: $(git_protocol_line) (synced into the sandbox each run)"
+    printf '%-13s %s\n' "Clipboard:" "$(clipboard_bridge_line)"
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
@@ -1600,6 +1674,13 @@ EOF
         doctor_report PASS auth:gh "GH_TOKEN set on the host; forwarded into the sandbox"
     else
         doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
+    fi
+    if [ "${SAGENT_CLIPBOARD:-1}" = "0" ]; then
+        doctor_report PASS clipboard "bridge off (SAGENT_CLIPBOARD=0): the sandbox copies through the terminal (OSC 52) and cannot read the host clipboard"
+    elif [ -n "$(host_clipboard_kind)" ]; then
+        doctor_report PASS clipboard "host clipboard bridged into the sandbox ($(host_clipboard_kind)); the agent inside can read and set it, SAGENT_CLIPBOARD=0 turns that off"
+    else
+        doctor_report WARN clipboard "no clipboard on this host (no DISPLAY or WAYLAND_DISPLAY, or no wl-copy/xclip): the sandbox copies through the terminal (OSC 52) and cannot paste from the host"
     fi
     if [ "$(git_protocol)" = ssh ]; then
         if [ "$(host_ssh_key_count)" -gt 0 ]; then
@@ -2446,6 +2527,155 @@ open_shell() {
     YOLO=false
 }
 
+# ---- Clipboard bridge: the host's clipboard for the sandbox ----
+
+# What the host can do with its clipboard: pbcopy/pbpaste/osascript on
+# macOS; wl-copy/wl-paste on a Wayland session, xclip on an X session, on
+# Linux. Empty means no clipboard here (a headless Linux host): the sandbox
+# then copies through the terminal (OSC 52) and cannot paste.
+host_clipboard_kind() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        printf 'macos'
+    elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1 && command -v wl-paste >/dev/null 2>&1; then
+        printf 'wayland'
+    elif [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null 2>&1; then
+        printf 'x11'
+    fi
+}
+
+host_clipboard_copy() {   # stdin -> host clipboard
+    case "$(host_clipboard_kind)" in
+        macos) pbcopy ;;
+        wayland) wl-copy ;;
+        x11) xclip -selection clipboard ;;
+    esac
+}
+
+# host_clipboard_paste TARGET OUTFILE: text, targets (one MIME type per
+# line: text/plain, image/png), or image/png. Non-zero when the clipboard
+# holds nothing of that kind.
+host_clipboard_paste() {
+    local target="$1" out="$2" info
+    case "$(host_clipboard_kind)" in
+        macos)
+            case "$target" in
+                text) pbpaste > "$out" ;;
+                targets)
+                    info=$(osascript -e 'clipboard info' 2>/dev/null || true)
+                    : > "$out"
+                    case "$info" in *PNGf* | *TIFF*) echo image/png >> "$out" ;; esac
+                    case "$info" in *string* | *utf8* | *ut16*) echo text/plain >> "$out" ;; esac
+                    [ -s "$out" ]
+                    ;;
+                image/png)
+                    osascript \
+                        -e 'set f to open for access POSIX file "'"$out"'" with write permission' \
+                        -e 'try' \
+                        -e '    write (the clipboard as «class PNGf») to f' \
+                        -e 'on error' \
+                        -e '    close access f' \
+                        -e '    error "no image"' \
+                        -e 'end try' \
+                        -e 'close access f' >/dev/null 2>&1
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        wayland)
+            case "$target" in
+                text) wl-paste --no-newline > "$out" ;;
+                targets) wl-paste -l > "$out" ;;
+                image/png) wl-paste --type image/png > "$out" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        x11)
+            case "$target" in
+                text) xclip -selection clipboard -o > "$out" ;;
+                targets) xclip -selection clipboard -t TARGETS -o > "$out" ;;
+                image/png) xclip -selection clipboard -t image/png -o > "$out" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# The clipboard agent: serves requests the sandbox's clipboard shims drop
+# into the bridge directory (req-ID.copy holds text to copy; req-ID.paste
+# names a target and is answered with res-ID.ok or res-ID.fail). Files land
+# by rename, so a request is complete when it is visible. Runs until killed.
+clipboard_bridge_serve() {
+    local dir="$1" parent=$$ f id target
+    # $$ is the wrapper's pid even in this background subshell: stop with it
+    # if it goes away without running its exit trap (SIGKILL, terminal gone).
+    while kill -0 "$parent" 2>/dev/null; do
+        for f in "$dir"/req-*.copy; do
+            [ -e "$f" ] || continue
+            host_clipboard_copy < "$f" || true
+            rm -f "$f"
+        done
+        for f in "$dir"/req-*.paste; do
+            [ -e "$f" ] || continue
+            id=${f##*/req-}; id=${id%.paste}
+            target=$(cat "$f")
+            if host_clipboard_paste "$target" "$dir/res-$id.tmp" 2>/dev/null; then
+                mv -f "$dir/res-$id.tmp" "$dir/res-$id.ok"
+            else
+                rm -f "$dir/res-$id.tmp"
+                : > "$dir/res-$id.fail"
+            fi
+            rm -f "$f"
+        done
+        sleep 0.1
+    done
+}
+
+# Start the agent for this run and set the mount and environment the
+# sandbox needs to use it. The bridge directory lives under the cache
+# directory (in the home directory, which VM-backed engines share), 700, and
+# is removed with the run. WAYLAND_DISPLAY names no compositor; it is what
+# makes the Claude CLI use the wl-copy/wl-paste shims instead of relying on
+# OSC 52 alone. SAGENT_CLIPBOARD=0 leaves all of this out.
+CLIPBOARD_BRIDGE_PID=""
+CLIPBOARD_BRIDGE_ARGS=()
+start_clipboard_bridge() {
+    local dir base stale pid
+    if [ "${SAGENT_CLIPBOARD:-1}" = "0" ] || [ -z "$(host_clipboard_kind)" ]; then
+        return 0
+    fi
+    base="${XDG_CACHE_HOME:-$HOME/.cache}/sagent"
+    mkdir -p "$base"
+    # A run that died without its exit trap leaves its directory; its agent
+    # is gone (it watches the wrapper's pid), so sweep those by the pid file.
+    for stale in "$base"/clipboard.*; do
+        [ -d "$stale" ] || continue
+        pid=$(cat "$stale/.agent-pid" 2>/dev/null || true)
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            rm -rf "$stale"
+        fi
+    done
+    # Physical path: VM-backed engines resolve mounts against their shares
+    # (the home directory), and a symlinked cache directory would mount empty.
+    dir=$(cd "$(mktemp -d "$base/clipboard.XXXXXX")" && pwd -P)
+    chmod 700 "$dir"
+    TEMP_FILES+=("$dir")
+    clipboard_bridge_serve "$dir" &
+    CLIPBOARD_BRIDGE_PID=$!
+    printf '%s\n' "$CLIPBOARD_BRIDGE_PID" > "$dir/.agent-pid"
+    CLIPBOARD_BRIDGE_ARGS=(-v "$dir:/run/sagent/clipboard:rw" -e WAYLAND_DISPLAY=sagent-clipboard)
+}
+
+stop_clipboard_bridge() {
+    if [ -n "$CLIPBOARD_BRIDGE_PID" ]; then
+        kill "$CLIPBOARD_BRIDGE_PID" 2>/dev/null || true
+        wait "$CLIPBOARD_BRIDGE_PID" 2>/dev/null || true
+        CLIPBOARD_BRIDGE_PID=""
+    fi
+}
+
+# ---- End clipboard bridge ----
+
 run_tool() {
     local tool_args=()
     local nested_args=()
@@ -2477,6 +2707,8 @@ run_tool() {
         pids_limit="$PIDS_LIMIT_NESTED"
     fi
 
+    start_clipboard_bridge
+
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
     # workspace bind mount is otherwise unreadable without relabeling host files.
     # The terminal identity variables (which emulator, its version, color
@@ -2485,7 +2717,10 @@ run_tool() {
     # modifier for text selection while their mouse tracking is on (Option in
     # iTerm2). Docker passes a bare -e only when the variable exists on the
     # host. LANG is not forwarded: the image sets C.UTF-8, which it has.
-    exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
+    # Not exec'd: the clipboard agent runs alongside and stops with the run.
+    local rc=0
+    "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
+        "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
@@ -2538,7 +2773,9 @@ run_tool() {
         -e TERMINAL_EMULATOR \
         -e ZED_TERM \
         "$IMAGE_NAME" \
-        "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}"
+        "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}" || rc=$?
+    stop_clipboard_bridge
+    return "$rc"
 }
 
 parse_args "$@"

@@ -63,6 +63,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `/home/agent/.gitconfig` - Sandbox-only git settings (`git config --global` inside the sandbox writes here); read after the synced file, so it wins
 - `/home/agent/.config/gh/hosts.yml` - gh login carried over from the host (token per host, `git_protocol` as in effect), rewritten on every run the host has a login; a login made inside the sandbox stays otherwise
 - `/home/agent/.ssh/` - with `SAGENT_GIT_PROTOCOL=ssh`, the regular files of the host's `~/.ssh` (700/600), listed in `.sagent-synced` so the next run removes exactly them before syncing again; files made inside the sandbox are not listed and stay
+- `/run/sagent/clipboard/` - per-run bind mount of `~/.cache/sagent/clipboard.*` on the host: the clipboard bridge's request/response spool (see [Security Architecture](security.md)), removed when the run ends
 - `/etc/gitconfig` (image) - `gh auth git-credential` as the credential helper for github.com, git-lfs filters; the SSH-to-HTTPS rewrite for `https` runs lives in the synced git config
 
 ### Package Management

@@ -215,22 +215,28 @@ sclaude config set SAGENT_GIT_PROTOCOL https   # keep SSH keys out of the sandbo
 sclaude config set SAGENT_GIT_PROTOCOL ssh     # sync ~/.ssh, keep SSH remotes
 ```
 
-**Clipboard.** Selecting and pasting text is the terminal's business and
-works unchanged; with Claude Code's mouse tracking on, hold Option (iTerm2),
-Fn (Terminal.app) or Shift (most others) while dragging to select, as on the
-host. Copying *from* the sandbox (Claude Code's `/copy`, `pbcopy`, `xclip`,
-`wl-copy` or `xsel` in a script) is turned into an OSC 52 sequence the host
-terminal applies to its clipboard: iTerm2 needs *Settings > General >
-Selection > Applications in terminal may access clipboard*; kitty, WezTerm,
-Ghostty, Alacritty and Windows Terminal support it; Terminal.app does not.
-Reading the host clipboard from inside (`pbpaste`, `wl-paste`, `xclip -o`)
-is not possible through a terminal and fails with a message; pasted text
-arrives as keystrokes (Cmd/Ctrl+V) anyway, only a clipboard image has no way
-in: save it into the workspace and give the CLI its path. The terminal's
-identity (`TERM_PROGRAM`, `COLORTERM` and friends) is forwarded, so the CLIs
-pick the right keyboard protocol (Shift+Enter), print clickable hyperlinks
-(Cmd/Ctrl+click opens them on the host) and name the right selection
-modifier.
+**Clipboard.** The sandbox uses the host's clipboard, both ways, text and
+images. For every run the wrapper starts a small clipboard agent on the
+host and mounts a bridge directory into the sandbox; there, `pbcopy`,
+`pbpaste`, `xclip`, `xsel`, `wl-copy` and `wl-paste` are one shim that
+hands requests to the agent, which runs the host's own `pbcopy`, `pbpaste`
+and `osascript` (macOS) or `wl-copy`/`wl-paste` or `xclip` (Linux). So
+selecting text in Claude Code's TUI copies it to your clipboard ("copied N
+chars"), `/copy` works, Ctrl+V pastes a screenshot from the host clipboard
+into the conversation, and a script's `pbpaste` reads what you copied on
+the host. Nothing is needed from the terminal: no OSC 52 setting, no
+special terminal. With Claude Code's mouse tracking on, plain drag-select is
+Claude Code's own selection (and copies); hold Option (iTerm2), Fn
+(Terminal.app) or Shift (most others) for the terminal's native selection.
+On a headless Linux host (no `DISPLAY`/`WAYLAND_DISPLAY`) there is no
+clipboard to bridge: copies then go out as OSC 52 to whatever terminal is
+attached, and reads fail with a message. The agent means the sandbox can
+read your clipboard at any time, passwords included; `SAGENT_CLIPBOARD=0`
+turns the bridge off (copies fall back to OSC 52, reads fail). The
+terminal's identity (`TERM_PROGRAM`, `COLORTERM` and friends) is forwarded,
+so the CLIs pick the right keyboard protocol (Shift+Enter), print clickable
+hyperlinks (Cmd/Ctrl+click opens them on the host) and name the right
+selection modifier.
 
 ## Commands
 
@@ -243,8 +249,8 @@ modifier.
 | `sclaude dockerfile` | Print the Dockerfile a build would use (with `SAGENT_IMAGE_UID`/`SAGENT_IMAGE_GID` for another user's image); the release workflow builds the published images from it |
 | `sclaude version` | Show version, toolchain, tools and build metadata |
 | `sclaude shell [bash args]` | Bash in the sandbox with the same mounts and volumes: attaches to the sandbox running for the current workspace, otherwise starts a fresh one (apt installs last until it exits; npm, pip, cargo, go and home-directory changes persist) |
-| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, git identity and gh logins to sync, volumes, workspace |
-| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, gh login, git identity, git state, wrapper up to date; exits 1 on any FAIL |
+| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, git identity and gh logins to sync, clipboard bridge, volumes, workspace |
+| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, gh login, git protocol and identity, clipboard, git state, wrapper up to date; exits 1 on any FAIL |
 | `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
 | `sclaude config` | Show effective settings and their source; `config set KEY VALUE`, `config unset KEY`, `config get KEY`, `config path` edit the config file with validation |
 | `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
@@ -299,6 +305,7 @@ SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
 SAGENT_CONTAINER_ENGINE=podman
 SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"  # Extra CA certs baked into the image
 SAGENT_GIT_PROTOCOL=ssh    # ssh (sync ~/.ssh) or https (gh token, SSH remotes rewritten); default: the host gh's setting
+SAGENT_CLIPBOARD=0         # Default: 1 — bridge the host clipboard into the sandbox (both ways, text and images)
 
 # Toolchain versions (defaults are the latest releases; all part of the image hash)
 SAGENT_UBUNTU_VERSION="26.04"   # Ubuntu base image tag
