@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.0](https://github.com/e6qu/sclaude/compare/v2.10.0...v2.11.0) (2026-09-07)
+
+
+### Features
+
+* host clipboard, terminal identity, git config and gh login inside the sandbox ([#42](https://github.com/e6qu/sclaude/issues/42)) ([bf8949a](https://github.com/e6qu/sclaude/commit/bf8949a5ddb56e42eb63ee535632737d10dd7045))
+
 ## [2.10.0](https://github.com/e6qu/sclaude/compare/v2.9.0...v2.10.0) (2026-09-06)
 
 
