@@ -240,6 +240,7 @@ modifier.
 | `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
 | `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
 | `sclaude cleanup` | Remove old image versions |
+| `sclaude dockerfile` | Print the Dockerfile a build would use (with `SAGENT_IMAGE_UID`/`SAGENT_IMAGE_GID` for another user's image); the release workflow builds the published images from it |
 | `sclaude version` | Show version, toolchain, tools and build metadata |
 | `sclaude shell [bash args]` | Bash in the sandbox with the same mounts and volumes: attaches to the sandbox running for the current workspace, otherwise starts a fresh one (apt installs last until it exits; npm, pip, cargo, go and home-directory changes persist) |
 | `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, git identity and gh logins to sync, volumes, workspace |
@@ -346,6 +347,27 @@ sclaude cleanup                        # Remove old shared image versions
 sclaude reset                          # Remove volumes
 docker images sagent-sandbox -q | xargs -r docker rmi # Remove all images
 sudo rm /usr/local/bin/sclaude /usr/local/bin/scodex
+```
+
+## Published images
+
+Every release also publishes the shared sandbox image to GitHub Container
+Registry, built natively for each architecture and joined under one tag:
+
+| Tag | Content |
+|-----|---------|
+| `ghcr.io/e6qu/sagent-sandbox:<version>` | Multi-arch manifest (linux/amd64 and linux/arm64) |
+| `ghcr.io/e6qu/sagent-sandbox:<version>-amd64` | The amd64 image |
+| `ghcr.io/e6qu/sagent-sandbox:<version>-arm64` | The arm64 image |
+
+`<version>` is the release without its `v` (`2.12.0`). There is no `latest`
+tag: pin a version. The images are built for uid/gid 1000 with the default
+toolchain and tools, and are meant for direct use (CI, a dev container's
+`image`, a plain `docker run`); the wrappers keep building locally for
+your own uid/gid, toolchain and CA bundle.
+
+```bash
+docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.12.0 claude
 ```
 
 ## Dev Containers

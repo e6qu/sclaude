@@ -115,3 +115,81 @@ jobs:
             bash -n "$downloaded"
             echo "$asset: shebang, SCRIPT_NAME, WRAPPER_VERSION=$expected_version, syntax OK"
           done
+
+  # The shared sandbox image, built natively per architecture from the
+  # released wrapper's own Dockerfile (so it is byte-for-byte what a wrapper
+  # run by uid/gid 1000 builds), then joined under one tag as a multi-arch
+  # manifest. Tags: <version>-amd64, <version>-arm64, <version>; never
+  # latest, so nothing moves under a user.
+  build-image:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      ARCH: ${{ matrix.arch }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/sagent-sandbox
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push ${{ matrix.arch }} image
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          ctx=$(mktemp -d)
+          SAGENT_IMAGE_UID=1000 SAGENT_IMAGE_GID=1000 SAGENT_SKIP_RELEASE_CHECK=1 \
+            ./sclaude dockerfile > "$ctx/Dockerfile"
+          [ "$(dpkg --print-architecture)" = "$ARCH" ]
+          docker build --load \
+            --build-arg USER_UID=1000 --build-arg USER_GID=1000 \
+            -t "$IMAGE:$version-$ARCH" -f "$ctx/Dockerfile" "$ctx"
+          docker run --rm "$IMAGE:$version-$ARCH" bash -ec '
+            claude --version >/dev/null
+            codex --version >/dev/null
+            gh --version >/dev/null
+            [ "$(id -u):$(id -g)" = 1000:1000 ]
+            cat /sagent-metadata.json
+          '
+          docker push "$IMAGE:$version-$ARCH"
+
+  publish-manifest:
+    needs: [release-please, build-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/sagent-sandbox
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the multi-arch manifest
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          docker buildx imagetools create -t "$IMAGE:$version" \
+            "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
+          docker buildx imagetools inspect "$IMAGE:$version" | tee inspect.txt
+          grep -q 'linux/amd64' inspect.txt
+          grep -q 'linux/arm64' inspect.txt
