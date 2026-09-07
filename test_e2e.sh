@@ -544,7 +544,7 @@ EOF
     chmod +x "$TMP/bin/gh"
     PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
-    "$ENGINE" run --rm -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         cfg=/h/.config/git/config
         [ \"\$(git config --file \$cfg --get user.name)\" = \"Sync Test\" ]
         [ \"\$(git config --file \$cfg --get alias.st)\" = \"status --short\" ]
@@ -566,7 +566,7 @@ EOF
     # The synced git files mirror the host: gone from the host, gone from the volume.
     PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/none" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
-    "$ENGINE" run --rm -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         ! git config --file /h/.config/git/config --get user.name
         [ ! -e /h/.config/git/ignore ]
     "
