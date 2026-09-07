@@ -492,13 +492,13 @@ for c in pbpaste wl-paste "xclip -selection clipboard -t TARGETS -o" "xsel --cli
     $c 2>&1 | grep -q "not readable from inside the sandbox"
 done
 [ "$(git config --system --get credential.https://github.com.helper)" = "!gh auth git-credential" ]
-git config --system --get-all url.https://github.com/.insteadof | grep -qx "git@github.com:"
+! git config --system --get-all url.https://github.com/.insteadof
 git lfs version | grep -q "^git-lfs/"
 [ "$(git config --system --get filter.lfs.required)" = true ]
 EOF
 ' _ "$SCLAUDE"
 
-# ── T20a: host git config and gh login sync ──────────────────────────
+# ── T20a: host git config, gh login and SSH sync ─────────────────────
 # The wrapper carries the host's global git config (minus host-only keys)
 # and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
 # GH_CONFIG_DIR point git and a fake gh at synthetic state; XDG_CONFIG_HOME
@@ -506,7 +506,7 @@ EOF
 # slims the image through it. The volume is inspected as root: on rootless
 # podman the image's user maps to a subordinate UID and cannot read the
 # 600-mode hosts.yml.
-run_test "T20a: host git config and gh login sync" bash -ec '
+run_test "T20a: host git config, gh login and SSH sync" bash -ec '
     TMP=$(mktemp -d)
     trap "rm -rf \"$TMP\"" EXIT
     mkdir -p "$TMP/bin" "$TMP/gh"
@@ -547,7 +547,7 @@ esac
 EOF
     chmod +x "$TMP/bin/gh"
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
-        SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
+        SAGENT_GIT_PROTOCOL=https SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         cfg=/h/.config/git/config
         [ \"\$(git config --file \$cfg --get user.name)\" = \"Sync Test\" ]
@@ -558,6 +558,8 @@ EOF
         done
         [ \"\$(git config --file \$cfg --get credential.https://ghe.example.com.helper)\" = \"!gh auth git-credential\" ]
         git config --file \$cfg --get-all url.https://ghe.example.com/.insteadof | grep -qx \"git@ghe.example.com:\"
+        git config --file \$cfg --get-all url.https://github.com/.insteadof | grep -qx \"ssh://git@github.com/\"
+        [ ! -e /h/.ssh/.sagent-synced ]
         grep -qx \"*.swp\" /h/.config/git/ignore
         [ -e /h/.gitconfig ]
         grep -q gho_synctest /h/.config/gh/hosts.yml
@@ -570,12 +572,36 @@ EOF
     # The synced git files mirror the host: gone from the host, gone from the
     # volume. An excludes file that no longer exists stands in for "none"
     # (the default ~/.config/git/ignore may exist on the machine running this).
+    # Unset, the protocol follows the host gh (ssh in this hosts.yml): no
+    # rewrite, and ~/.ssh is synced by manifest with a sandbox-made key left
+    # alone. Back on https the manifest'"'"'s files go and that key stays.
     printf "[core]\n\texcludesfile = %s\n" "$TMP/missing" > "$TMP/gitconfig2"
+    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+        mkdir -p /h/.ssh && echo sandbox-key > /h/.ssh/id_sandbox
+    "
+    # The sync mirrors ~/.ssh only when it exists; a CI runner may have none.
+    if [ ! -d ~/.ssh ]; then mkdir -m 700 ~/.ssh; fi
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         ! git config --file /h/.config/git/config --get user.name
         [ ! -e /h/.config/git/ignore ]
+        grep -q \"git_protocol: ssh\" /h/.config/gh/hosts.yml
+        ! git config --file /h/.config/git/config --get-all url.https://github.com/.insteadof
+        [ -f /h/.ssh/.sagent-synced ]
+        [ \"\$(stat -c %a /h/.ssh)\" = 700 ]
+        while IFS= read -r f; do
+            [ -f \"/h/.ssh/\$f\" ] && [ \"\$(stat -c %a \"/h/.ssh/\$f\")\" = 600 ] || { echo \"synced ssh file wrong: \$f\" >&2; exit 1; }
+        done < /h/.ssh/.sagent-synced
+        [ -f /h/.ssh/id_sandbox ]
+    "
+    PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
+        SAGENT_GIT_PROTOCOL=https SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
+    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+        [ ! -e /h/.ssh/.sagent-synced ]
+        [ -f /h/.ssh/id_sandbox ]
+        [ \"\$(ls -A /h/.ssh | wc -l)\" -eq 1 ]
+        rm -f /h/.ssh/id_sandbox
     "
 ' _ "$SCLAUDE"
 

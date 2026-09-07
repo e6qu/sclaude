@@ -228,10 +228,15 @@ forwarded into the sandbox when set: `ANTHROPIC_API_KEY`,
 `CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
 `CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. The host's `gh` login is
 synced into the home volume the same way the Claude and Codex credentials
-are, so the agent can act on GitHub as you (git over HTTPS included) without
-any setup. Anything the agent can read inside the sandbox it can also send
-out: log `gh` out on the host, or `gh auth login` with a fine-grained token,
-when the agent should not act on GitHub as you. The terminal identity
+are, so the agent can act on GitHub as you without any setup. With
+`SAGENT_GIT_PROTOCOL=ssh` (the default when the host's gh is set to ssh)
+the regular files of `~/.ssh` are synced too: private keys, `config`,
+`known_hosts`, everything else regular in that directory. Those keys are
+then readable by the agent and usable against every host they open, not
+only GitHub. Anything the agent can read inside the sandbox it can also send
+out: set `SAGENT_GIT_PROTOCOL=https` to keep keys out (git then uses the gh
+token), and log `gh` out on the host, or `gh auth login` with a fine-grained
+token, when the agent should not act on GitHub as you. The terminal identity
 variables (`TERM_PROGRAM`, `COLORTERM`, `ITERM_SESSION_ID` and the like) are
 forwarded too; they name the emulator, nothing more. Host paths never exist
 inside the sandbox, which is why CA-file variables such as `SSL_CERT_FILE`

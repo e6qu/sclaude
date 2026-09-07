@@ -50,7 +50,7 @@ HOST_GID=$(id -g)
 # Environment variables and command-line flags take precedence over the file.
 # Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
 # variables, so `for x in $list` would see one item.
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -108,6 +108,12 @@ validate_version_setting SAGENT_PYTHON_VERSION "$PYTHON_VERSION" '^3\.[0-9]+$' '
 validate_version_setting SAGENT_GO_VERSION "$GO_VERSION" '^(none|1\.[0-9]+(\.[0-9]+)?)$' '1.27, 1.27.1, or none'
 validate_version_setting SAGENT_RUST_VERSION "$RUST_VERSION" '^(none|stable|beta|nightly|[0-9]+\.[0-9]+(\.[0-9]+)?)$' 'stable, beta, nightly, 1.98.0, or none'
 validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' 'a major version like 26, or none'
+# How git and gh reach GitHub from inside the sandbox: ssh (the host's ~/.ssh
+# is synced in) or https (gh's token serves git, SSH remotes are rewritten).
+# Unset means the protocol the host's gh is configured with.
+if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
+    validate_version_setting SAGENT_GIT_PROTOCOL "$SAGENT_GIT_PROTOCOL" '^(ssh|https)$' 'ssh or https'
+fi
 
 # Optional tooling baked into the image, all at their latest release as of
 # the build. SAGENT_TOOLS selects by name or group (comma/space separated):
@@ -645,14 +651,13 @@ RUN set -eux; \
     for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do ln -s host-clipboard "/usr/local/bin/$n"; done
 
 # git on the host's behalf: gh serves the credentials it holds (synced from
-# the host's gh login, or GH_TOKEN) to git for GitHub over HTTPS, and SSH
-# remotes are rewritten to HTTPS because the sandbox has no SSH keys. The
-# host's own credential helpers and signing settings are not carried over.
+# the host's gh login, or GH_TOKEN) to git for GitHub over HTTPS. Whether
+# SSH remotes are rewritten to HTTPS is decided per run (SAGENT_GIT_PROTOCOL)
+# in the synced git config. The host's own credential helpers and signing
+# settings are not carried over.
 RUN set -eux; \
     git config --system credential.https://github.com.helper '!gh auth git-credential'; \
     git config --system credential.https://gist.github.com.helper '!gh auth git-credential'; \
-    git config --system url.https://github.com/.insteadOf git@github.com:; \
-    git config --system --add url.https://github.com/.insteadOf ssh://git@github.com/; \
     git lfs install --system --skip-repo
 
 RUN mkdir -p /workspace && chown agent /workspace
@@ -1012,6 +1017,7 @@ config_validate() {
         SAGENT_TOOLS) resolve_tools "$value" ;;
         SAGENT_DOCKER) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
+        SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
@@ -1174,6 +1180,16 @@ host_git_identity_line() {
     if [ -n "$id" ]; then printf '%s' "$id"; else printf 'no identity in the host global config'; fi
 }
 
+git_protocol_line() {
+    local proto
+    proto=$(git_protocol)
+    if [ "$proto" = ssh ]; then
+        printf 'ssh from %s, ~/.ssh synced: %s key(s)' "$(git_protocol_source)" "$(host_ssh_key_count)"
+    else
+        printf 'https from %s, SSH remotes rewritten, gh token serves git' "$(git_protocol_source)"
+    fi
+}
+
 host_gh_logins_line() {
     local line="" host user
     while read -r host user; do
@@ -1248,7 +1264,7 @@ status_command() {
     fi
     printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
     printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
-    printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line) (both synced into the sandbox each run)"
+    printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line); protocol: $(git_protocol_line) (synced into the sandbox each run)"
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
@@ -1561,6 +1577,15 @@ EOF
         doctor_report PASS auth:gh "GH_TOKEN set on the host; forwarded into the sandbox"
     else
         doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
+    fi
+    if [ "$(git_protocol)" = ssh ]; then
+        if [ "$(host_ssh_key_count)" -gt 0 ]; then
+            doctor_report PASS git:protocol "ssh ($(git_protocol_source)): $(host_ssh_key_count) key pair(s) and the config from ~/.ssh are synced into the sandbox; a passphrase-protected key cannot be unlocked there"
+        else
+            doctor_report WARN git:protocol "ssh ($(git_protocol_source)) but ~/.ssh holds no key pair, so git cannot reach GitHub over SSH from the sandbox; add a key here or \`$SCRIPT_NAME config set SAGENT_GIT_PROTOCOL https\`"
+        fi
+    else
+        doctor_report PASS git:protocol "https ($(git_protocol_source)): SSH remotes are rewritten to HTTPS and gh's token serves git; no SSH keys enter the sandbox"
     fi
     if [ -n "$(host_git_identity)" ]; then
         doctor_report PASS git:identity "commits in the sandbox are by $(host_git_identity) (host global git config, synced each run; signing settings are not carried over)"
@@ -2073,13 +2098,40 @@ $(awk '/^[^[:space:]#][^:]*:[[:space:]]*$/ {sub(/:[[:space:]]*$/, ""); print}' "
 EOF
 }
 
+# The git protocol in effect: SAGENT_GIT_PROTOCOL, else what the host's gh is
+# configured with for github.com, else gh's own default.
+git_protocol() {
+    local hosts_file proto=""
+    if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
+        printf '%s' "$SAGENT_GIT_PROTOCOL"
+        return 0
+    fi
+    hosts_file=$(gh_hosts_file)
+    if [ -f "$hosts_file" ]; then
+        proto=$(awk '$0 == "github.com:" {inb = 1; next} /^[^[:space:]]/ {inb = 0} inb && $1 == "git_protocol:" {print $2; exit}' "$hosts_file")
+    fi
+    case "$proto" in ssh | https) printf '%s' "$proto" ;; *) printf 'https' ;; esac
+}
+
+git_protocol_source() {
+    if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
+        printf 'SAGENT_GIT_PROTOCOL'
+    elif [ -f "$(gh_hosts_file)" ] && grep -q '^    git_protocol:' "$(gh_hosts_file)" 2>/dev/null; then
+        printf "the host's gh"
+    else
+        printf "gh's default"
+    fi
+}
+
 # Stage the host's gh logins for the sandbox home: a hosts.yml carrying the
-# token for each host gh is logged in to, with git_protocol https because
-# the sandbox has no SSH keys. github.com's git credential helper and
-# SSH-to-HTTPS rewrite are in the image; other hosts get theirs here.
+# token for each host gh is logged in to, with the git protocol in effect.
+# Every host gets git's gh credential helper (github.com has it in the image
+# too); with https, SSH remotes for the host are rewritten to HTTPS so the
+# token serves them.
 stage_host_gh_auth() {
-    local dir="$1" cfg host user token
+    local dir="$1" cfg host user token proto
     cfg="$dir/home/.config/git/config"
+    proto=$(git_protocol)
     while read -r host user; do
         [ -n "$host" ] || continue
         token=$(host_gh_token "$host") || continue
@@ -2089,16 +2141,55 @@ stage_host_gh_auth() {
             printf '%s:\n' "$host"
             printf '    oauth_token: %s\n' "$token"
             if [ -n "$user" ]; then printf '    user: %s\n' "$user"; fi
-            printf '    git_protocol: https\n'
+            printf '    git_protocol: %s\n' "$proto"
         } >> "$dir/home/.config/gh/hosts.yml"
-        if [ "$host" != github.com ] && command -v git >/dev/null 2>&1; then
+        command -v git >/dev/null 2>&1 || continue
+        if [ "$host" != github.com ]; then
             git config --file "$cfg" "credential.https://$host.helper" '!gh auth git-credential'
+        fi
+        if [ "$proto" = https ]; then
             git config --file "$cfg" --add "url.https://$host/.insteadOf" "git@$host:"
             git config --file "$cfg" --add "url.https://$host/.insteadOf" "ssh://git@$host/"
         fi
     done <<EOF
 $(host_gh_logins)
 EOF
+}
+
+# The host's SSH client files, for the ssh protocol: keys, config,
+# known_hosts and the rest of the regular files in ~/.ssh. config loses the
+# macOS-only UseKeychain option (Linux ssh rejects it) and absolute home
+# paths become ~ so IdentityFile lines resolve in the sandbox. A manifest of
+# what was synced lets the next run remove exactly these files again.
+host_ssh_dir() { printf '%s' "$HOME/.ssh"; }
+
+host_ssh_key_count() {
+    local n=0 f
+    for f in "$(host_ssh_dir)"/*.pub; do
+        [ -f "$f" ] && [ -f "${f%.pub}" ] && n=$((n + 1))
+    done
+    printf '%s' "$n"
+}
+
+stage_host_ssh() {
+    local dir="$1" src f name
+    src=$(host_ssh_dir)
+    [ "$(git_protocol)" = ssh ] || return 0
+    [ -d "$src" ] || return 0
+    mkdir -p "$dir/home/.ssh"
+    : > "$dir/home/.ssh/.sagent-synced"
+    for f in "$src"/* "$src"/.[!.]*; do
+        if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
+        name=$(basename "$f")
+        case "$name" in .sagent-synced) continue ;; esac
+        if [ "$name" = config ]; then
+            sed -e '/^[[:space:]]*[Uu][Ss][Ee][Kk][Ee][Yy][Cc][Hh][Aa][Ii][Nn][[:space:]]/d' \
+                -e "s#$HOME/#~/#g" "$f" > "$dir/home/.ssh/config"
+        else
+            cp "$f" "$dir/home/.ssh/$name"
+        fi
+        printf '%s\n' "$name" >> "$dir/home/.ssh/.sagent-synced"
+    done
 }
 
 # Container-side step of the sync, run as root with the home volume at
@@ -2127,6 +2218,24 @@ home_state_sync_script() {
                 chmod 700 /vol-rootfs/.config/gh
                 chmod 600 /vol-rootfs/.config/gh/hosts.yml
                 chown -R "$TARGET_UID:$TARGET_GID" /vol-rootfs/.config/gh
+            fi
+            # SSH files synced on an earlier run go first (the manifest names
+            # them; keys made inside the sandbox are not in it), then the
+            # current run's set, if the protocol is ssh.
+            if [ -f /vol-rootfs/.ssh/.sagent-synced ]; then
+                while IFS= read -r f; do
+                    [ -n "$f" ] && rm -f "/vol-rootfs/.ssh/$f"
+                done < /vol-rootfs/.ssh/.sagent-synced
+                rm -f /vol-rootfs/.ssh/.sagent-synced
+            fi
+            if [ -d /tmp/sync/home/.ssh ]; then
+                mkdir -p /vol-rootfs/.ssh
+                cp /tmp/sync/home/.ssh/.sagent-synced /vol-rootfs/.ssh/.sagent-synced
+                while IFS= read -r f; do
+                    [ -n "$f" ] && cp "/tmp/sync/home/.ssh/$f" "/vol-rootfs/.ssh/$f" && chmod 600 "/vol-rootfs/.ssh/$f"
+                done < /vol-rootfs/.ssh/.sagent-synced
+                chmod 700 /vol-rootfs/.ssh
+                chown -R "$TARGET_UID:$TARGET_GID" /vol-rootfs/.ssh
             fi
 EOF
 }
@@ -2163,6 +2272,7 @@ sync_state() {
     fi
     stage_host_git_config "$stage"
     stage_host_gh_auth "$stage"
+    stage_host_ssh "$stage"
 
     # bsdtar on macOS would otherwise record the files' provenance xattrs as
     # pax headers (GNU tar in the sandbox warns) or as AppleDouble ._ files.
