@@ -335,7 +335,7 @@ DOCKERFILE_HEAD
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    curl git python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
+    curl git git-lfs python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
     tree htop btop procps jq ripgrep fd-find bat vim nano wget zip rsync file lsof \
     dnsutils netcat-openbsd tmux sqlite3 \
@@ -608,6 +608,53 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/host-open; \
     ln -s host-open /usr/local/bin/xdg-open
 
+# Clipboard shims: the sandbox has no display, but the terminal on the host
+# owns a clipboard. Copying (pbcopy, wl-copy, xclip, xsel: what the Claude
+# and Codex CLIs and everyday scripts call) writes the text to the
+# controlling terminal as an OSC 52 sequence, which the host terminal turns
+# into a clipboard write (iTerm2 needs "Applications in terminal may access
+# clipboard" enabled; Terminal.app has no OSC 52). Reading (pbpaste,
+# wl-paste, xclip -o, xsel -o) cannot work: nothing lets a program pull the
+# host's clipboard through a pty, so those fail with a message. Text pastes
+# through the terminal as keystrokes anyway (Cmd/Ctrl+V), which is how the
+# CLIs receive pasted text; only clipboard *images* have no path in.
+RUN set -eux; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent host-clipboard: OSC 52 copy to the host terminal; no read path.' \
+        'name=$(basename "$0")' \
+        'mode=copy' \
+        'case "$name" in' \
+        '    pbpaste|wl-paste) mode=paste ;;' \
+        '    xclip) for a in "$@"; do case "$a" in -o|-ou|-out) mode=paste ;; esac; done ;;' \
+        '    xsel) for a in "$@"; do case "$a" in -o|--output) mode=paste ;; esac; done ;;' \
+        'esac' \
+        'if [ "$mode" = paste ]; then' \
+        '    echo "[sagent] $name: the host clipboard is not readable from inside the sandbox. Paste text with Cmd/Ctrl+V; for an image, save it into the workspace and give its path." >&2' \
+        '    exit 1' \
+        'fi' \
+        'data=$(base64 -w0)' \
+        'if ( exec > /dev/tty ) 2>/dev/null; then' \
+        '    exec > /dev/tty' \
+        'else' \
+        '    exec >&2' \
+        'fi' \
+        'printf '"'"'\033]52;c;%s\033\\'"'"' "$data"' \
+        > /usr/local/bin/host-clipboard; \
+    chmod 0755 /usr/local/bin/host-clipboard; \
+    for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do ln -s host-clipboard "/usr/local/bin/$n"; done
+
+# git on the host's behalf: gh serves the credentials it holds (synced from
+# the host's gh login, or GH_TOKEN) to git for GitHub over HTTPS, and SSH
+# remotes are rewritten to HTTPS because the sandbox has no SSH keys. The
+# host's own credential helpers and signing settings are not carried over.
+RUN set -eux; \
+    git config --system credential.https://github.com.helper '!gh auth git-credential'; \
+    git config --system credential.https://gist.github.com.helper '!gh auth git-credential'; \
+    git config --system url.https://github.com/.insteadOf git@github.com:; \
+    git config --system --add url.https://github.com/.insteadOf ssh://git@github.com/; \
+    git lfs install --system --skip-repo
+
 RUN mkdir -p /workspace && chown agent /workspace
 
 USER agent
@@ -615,6 +662,7 @@ ENV BROWSER=/usr/local/bin/host-open
 WORKDIR /workspace
 ENV HOME=/home/agent
 ENV TMPDIR=/tmp
+ENV LANG=C.UTF-8
 # uv's Python carries an externally-managed marker (PEP 668) that would block
 # even `pip install --user` into the dedicated pip volume. The sandbox is
 # disposable, so let pip install into the user site freely.
@@ -1120,6 +1168,23 @@ host_has_claude_credentials() {
 
 host_has_codex_auth() { [ -f "${CODEX_HOME:-${HOME}/.codex}/auth.json" ]; }
 
+host_git_identity_line() {
+    local id
+    id=$(host_git_identity)
+    if [ -n "$id" ]; then printf '%s' "$id"; else printf 'no identity in the host global config'; fi
+}
+
+host_gh_logins_line() {
+    local line="" host user
+    while read -r host user; do
+        [ -n "$host" ] || continue
+        line="$line${line:+, }$host${user:+ as $user}"
+    done <<EOF
+$(host_gh_logins)
+EOF
+    if [ -n "$line" ]; then printf '%s' "$line"; else printf 'not logged in on the host'; fi
+}
+
 # Read-only snapshot of what a run would use. Tolerates a missing engine.
 status_command() {
     local latest cache_file engine_line image_line git_line vol_count vol_total=0 v size bytes
@@ -1183,6 +1248,7 @@ status_command() {
     fi
     printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
     printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
+    printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line) (both synced into the sandbox each run)"
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
@@ -1488,6 +1554,18 @@ EOF
         doctor_report PASS auth:codex "Codex auth.json found on the host"
     else
         doctor_report WARN auth:codex "no Codex auth.json on the host; scodex users log in inside the sandbox (persisted in scodex-config)"
+    fi
+    if [ -n "$(host_gh_logins)" ]; then
+        doctor_report PASS auth:gh "gh logged in on the host ($(host_gh_logins_line)); synced into the sandbox each run, git uses it for GitHub over HTTPS"
+    elif [ -n "${GH_TOKEN:-}" ]; then
+        doctor_report PASS auth:gh "GH_TOKEN set on the host; forwarded into the sandbox"
+    else
+        doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
+    fi
+    if [ -n "$(host_git_identity)" ]; then
+        doctor_report PASS git:identity "commits in the sandbox are by $(host_git_identity) (host global git config, synced each run; signing settings are not carried over)"
+    else
+        doctor_report WARN git:identity "no user.name/user.email in the host's global git config; set them with \`git config --global\` here or inside the sandbox"
     fi
 
     echo "Summary: $DOCTOR_PASS passed, $DOCTOR_WARN warning(s), $DOCTOR_FAIL failed"
@@ -1908,6 +1986,151 @@ create_volumes() {
     done
 }
 
+# ---- Host state carried into the sandbox: git config, gh login ----
+
+# Keys of the host's global git config that must not reach the sandbox:
+# credential helpers, signing keys, editors, pagers, diff/merge tools and
+# daemons that exist on the host only, and settings that hold host paths.
+# Prefix match on the key git prints (section and name lowercased); a
+# trailing dot covers a whole section. Everything else (identity, aliases,
+# pull/push/rebase preferences, colors, LFS filters) is carried over.
+HOST_GIT_SKIP_KEYS="credential. gpg. commit.gpgsign tag.gpgsign user.signingkey core.editor core.pager core.sshcommand core.hookspath core.excludesfile core.attributesfile core.askpass core.fsmonitor sequence.editor merge.tool merge.guitool mergetool. diff.tool diff.guitool diff.external difftool. pager. interactive.difffilter http.sslcainfo http.sslcapath http.sslcert http.sslkey http.cookiefile maintenance. url. include. includeif. sendemail. gui. guitool."
+
+host_git_key_skipped() {
+    local key="$1" skip
+    for skip in $HOST_GIT_SKIP_KEYS; do
+        case "$key" in "$skip"*) return 0 ;; esac
+    done
+    return 1
+}
+
+# The host's global git identity, "Name <email>" or empty.
+host_git_identity() {
+    local name email
+    command -v git >/dev/null 2>&1 || return 0
+    name=$(git config --global --includes --get user.name 2>/dev/null || true)
+    email=$(git config --global --includes --get user.email 2>/dev/null || true)
+    if [ -n "$name" ] || [ -n "$email" ]; then
+        printf '%s <%s>' "$name" "$email"
+    fi
+}
+
+# Stage the host's global git config for the sandbox home as git's XDG-level
+# file, minus the host-only keys above; git writes it so quoting and
+# multi-valued keys survive. ~/.gitconfig in the sandbox is read after this
+# file and holds sandbox-only settings. The host's global excludes file goes
+# in as git's default ignore location.
+stage_host_git_config() {
+    local dir="$1" cfg entry key value excludes
+    cfg="$dir/home/.config/git/config"
+    mkdir -p "$dir/home/.config/git"
+    {
+        echo "# Synced from the host's global git config by $SCRIPT_NAME on every run; edits here are lost."
+        echo "# Host-only settings (credential helpers, signing, editor, pager, diff/merge tools) are left out."
+        echo "# Sandbox-only settings go in ~/.gitconfig, which git reads after this file."
+    } > "$cfg"
+    command -v git >/dev/null 2>&1 || return 0
+    { git config --global --includes --list --null 2>/dev/null || true; } | while IFS= read -r -d '' entry; do
+        case "$entry" in
+            *$'\n'*) key="${entry%%$'\n'*}"; value="${entry#*$'\n'}" ;;
+            *) key="$entry"; value="true" ;;
+        esac
+        [ -n "$key" ] || continue
+        host_git_key_skipped "$key" && continue
+        git config --file "$cfg" --add "$key" "$value" 2>/dev/null || true
+    done
+    excludes=$(git config --global --includes --get core.excludesfile 2>/dev/null || true)
+    case "$excludes" in "~"/*) excludes="$HOME/${excludes#*/}" ;; esac
+    [ -n "$excludes" ] || excludes="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
+    if [ -f "$excludes" ]; then
+        cp "$excludes" "$dir/home/.config/git/ignore"
+    fi
+}
+
+gh_hosts_file() { printf '%s' "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"; }
+
+# Token gh holds for a host (keyring or hosts.yml). Token environment
+# variables are masked: GH_TOKEN is forwarded to the sandbox as is and is
+# never written down.
+host_gh_token() {
+    env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN gh auth token --hostname "$1" 2>/dev/null
+}
+
+# Hosts the host's gh is logged in to, one "host user" per line (user may be
+# empty for logins gh recorded without one).
+host_gh_logins() {
+    local hosts_file host user
+    command -v gh >/dev/null 2>&1 || return 0
+    hosts_file=$(gh_hosts_file)
+    [ -f "$hosts_file" ] || return 0
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        host_gh_token "$host" >/dev/null || continue
+        user=$(awk -v h="$host:" '$0 == h {inb = 1; next} /^[^[:space:]]/ {inb = 0} inb && $1 == "user:" {print $2; exit}' "$hosts_file")
+        printf '%s %s\n' "$host" "$user"
+    done <<EOF
+$(awk '/^[^[:space:]#][^:]*:[[:space:]]*$/ {sub(/:[[:space:]]*$/, ""); print}' "$hosts_file")
+EOF
+}
+
+# Stage the host's gh logins for the sandbox home: a hosts.yml carrying the
+# token for each host gh is logged in to, with git_protocol https because
+# the sandbox has no SSH keys. github.com's git credential helper and
+# SSH-to-HTTPS rewrite are in the image; other hosts get theirs here.
+stage_host_gh_auth() {
+    local dir="$1" cfg host user token
+    cfg="$dir/home/.config/git/config"
+    while read -r host user; do
+        [ -n "$host" ] || continue
+        token=$(host_gh_token "$host") || continue
+        [ -n "$token" ] || continue
+        mkdir -p "$dir/home/.config/gh"
+        {
+            printf '%s:\n' "$host"
+            printf '    oauth_token: %s\n' "$token"
+            if [ -n "$user" ]; then printf '    user: %s\n' "$user"; fi
+            printf '    git_protocol: https\n'
+        } >> "$dir/home/.config/gh/hosts.yml"
+        if [ "$host" != github.com ] && command -v git >/dev/null 2>&1; then
+            git config --file "$cfg" "credential.https://$host.helper" '!gh auth git-credential'
+            git config --file "$cfg" --add "url.https://$host/.insteadOf" "git@$host:"
+            git config --file "$cfg" --add "url.https://$host/.insteadOf" "ssh://git@$host/"
+        fi
+    done <<EOF
+$(host_gh_logins)
+EOF
+}
+
+# Container-side step of the sync, run as root with the home volume at
+# /vol-rootfs and the staged tree at /tmp/sync. The synced git files mirror
+# the host on every run (a stale one is removed when the host no longer has
+# it); ~/.gitconfig is created so a sandbox-side `git config --global`
+# lands there and wins over the synced file. gh's hosts.yml is replaced
+# only when the host has a login, so a login made inside the sandbox
+# stays until there is one on the host.
+home_state_sync_script() {
+    cat <<'EOF'
+            mkdir -p /vol-rootfs/.config/git
+            rm -f /vol-rootfs/.config/git/config /vol-rootfs/.config/git/ignore
+            for f in config ignore; do
+                if [ -f "/tmp/sync/home/.config/git/$f" ]; then
+                    cp "/tmp/sync/home/.config/git/$f" "/vol-rootfs/.config/git/$f"
+                fi
+            done
+            [ -e /vol-rootfs/.gitconfig ] || : > /vol-rootfs/.gitconfig
+            chmod 644 /vol-rootfs/.config/git/* /vol-rootfs/.gitconfig 2>/dev/null || true
+            chown "$TARGET_UID:$TARGET_GID" /vol-rootfs/.config /vol-rootfs/.gitconfig
+            chown -R "$TARGET_UID:$TARGET_GID" /vol-rootfs/.config/git
+            if [ -f /tmp/sync/home/.config/gh/hosts.yml ]; then
+                mkdir -p /vol-rootfs/.config/gh
+                cp /tmp/sync/home/.config/gh/hosts.yml /vol-rootfs/.config/gh/hosts.yml
+                chmod 700 /vol-rootfs/.config/gh
+                chmod 600 /vol-rootfs/.config/gh/hosts.yml
+                chown -R "$TARGET_UID:$TARGET_GID" /vol-rootfs/.config/gh
+            fi
+EOF
+}
+
 read_credentials() {
     local codex_home
     local auth_path
@@ -1920,48 +2143,46 @@ read_credentials() {
     fi
 }
 
-sync_codex_config_files() {
-    local codex_home="${CODEX_HOME:-${HOME}/.codex}"
-    local -a files=()
-    local name
-
+# Codex config files next to auth.json on the host, into the config volume.
+stage_codex_config_files() {
+    local dir="$1" codex_home="${CODEX_HOME:-${HOME}/.codex}" name
     if [ ! -d "$codex_home" ] || [ -L "$codex_home" ]; then
         return 0
     fi
     for name in config.toml instructions.md AGENTS.md; do
         if [ -f "$codex_home/$name" ] && [ ! -L "$codex_home/$name" ]; then
-            files+=("$name")
+            cp "$codex_home/$name" "$dir/config/$name"
         fi
     done
-    if [ "${#files[@]}" -eq 0 ]; then
-        return 0
-    fi
-
-    # Stream the files over stdin the way the auth sync does: a host bind mount
-    # of CODEX_HOME is denied on SELinux-enforcing hosts (Fedora/RHEL + podman)
-    # and breaks on paths containing colons.
-    # shellcheck disable=SC2016
-    tar -C "$codex_home" -cf - "${files[@]}" | "$ENGINE_CMD" run --rm -i --user root "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
-        -v "$CONFIG_VOLUME":/vol-config \
-        "$IMAGE_NAME" \
-        bash -c '
-            TARGET_UID='"$HOST_UID"'
-            TARGET_GID='"$HOST_GID"'
-            tar -xf - -C /vol-config
-            for name in config.toml instructions.md AGENTS.md; do
-                if [ -f "/vol-config/$name" ]; then
-                    chown "$TARGET_UID:$TARGET_GID" "/vol-config/$name"
-                    chmod 600 "/vol-config/$name"
-                fi
-            done
-        ' || echo "[$SCRIPT_NAME] Warning: Codex config file sync failed (non-fatal)" >&2
 }
 
 sync_state() {
+    local stage
     read_credentials
 
+    # Everything the sandbox takes from the host goes over stdin as one tar
+    # of a staged tree (config/ for the tool's config volume, home/ for the
+    # shared home volume): a host bind mount is denied on SELinux-enforcing
+    # hosts (Fedora/RHEL + podman) and breaks on paths containing colons.
+    stage=$(mktemp -d)
+    TEMP_FILES+=("$stage")
+    mkdir -p "$stage/config" "$stage/home"
+    if [ -n "$CREDS" ]; then
+        (umask 077; printf '%s' "$CREDS" > "$stage/config/auth.json")
+    fi
+    stage_codex_config_files "$stage"
+    stage_host_git_config "$stage"
+    stage_host_gh_auth "$stage"
+
+    # bsdtar on macOS would otherwise record the files' provenance xattrs as
+    # pax headers (GNU tar in the sandbox warns) or as AppleDouble ._ files.
+    local -a tar_args=()
+    if [ "$(uname -s)" = "Darwin" ]; then
+        tar_args=(--no-xattrs --no-mac-metadata)
+    fi
+
     # shellcheck disable=SC2016
-    printf '%s' "$CREDS" | "$ENGINE_CMD" run --rm -i --user root "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
+    tar "${tar_args[@]+"${tar_args[@]}"}" -C "$stage" -cf - . | "$ENGINE_CMD" run --rm -i --user root "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME":/vol-config \
         -v "$ROOTFS_VOLUME":/vol-rootfs \
         -v "$NPM_VOLUME":/vol-npm \
@@ -2002,19 +2223,26 @@ sync_state() {
             mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial
             chown -R root:root /vol-apt-cache /vol-apt-lists
             chmod 755 /vol-apt-cache /vol-apt-cache/archives /vol-apt-lists
-            CREDS=$(cat)
-            if [ -n "$CREDS" ]; then
-                if printf "%s" "$CREDS" | python3 -m json.tool >/dev/null 2>&1; then
-                    printf "%s" "$CREDS" > /vol-config/auth.json
+            mkdir -p /tmp/sync && tar -xf - -C /tmp/sync
+            if [ -f /tmp/sync/config/auth.json ]; then
+                if python3 -m json.tool /tmp/sync/config/auth.json >/dev/null 2>&1; then
+                    cp /tmp/sync/config/auth.json /vol-config/auth.json
                     chown "$TARGET_UID:$TARGET_GID" /vol-config/auth.json
                     chmod 600 /vol-config/auth.json
                 else
                     echo "['"$SCRIPT_NAME"'] Warning: auth.json found but appears malformed, skipping sync" >&2
                 fi
             fi
-        ' || echo "[$SCRIPT_NAME] Warning: credential sync failed (non-fatal)" >&2
-
-    sync_codex_config_files
+            rm -f /vol-config/._*
+            for name in config.toml instructions.md AGENTS.md; do
+                if [ -f "/tmp/sync/config/$name" ]; then
+                    cp "/tmp/sync/config/$name" "/vol-config/$name"
+                    chown "$TARGET_UID:$TARGET_GID" "/vol-config/$name"
+                    chmod 600 "/vol-config/$name"
+                fi
+            done
+'"$(home_state_sync_script)"'
+        ' || echo "[$SCRIPT_NAME] Warning: host state sync failed (non-fatal)" >&2
 }
 
 validate_workspace() {
@@ -2151,6 +2379,12 @@ run_tool() {
 
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
     # workspace bind mount is otherwise unreadable without relabeling host files.
+    # The terminal identity variables (which emulator, its version, color
+    # depth) are forwarded when set: the CLIs use them to pick the keyboard
+    # protocol (Shift+Enter), emit clickable hyperlinks, and name the right
+    # modifier for text selection while their mouse tracking is on (Option in
+    # iTerm2). Docker passes a bare -e only when the variable exists on the
+    # host. LANG is not forwarded: the image sets C.UTF-8, which it has.
     exec "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
@@ -2189,6 +2423,21 @@ run_tool() {
         -e CODEX_ACCESS_TOKEN \
         -e GH_TOKEN \
         -e "TERM=${TERM:-xterm-256color}" \
+        -e TERM_PROGRAM \
+        -e TERM_PROGRAM_VERSION \
+        -e LC_TERMINAL \
+        -e LC_TERMINAL_VERSION \
+        -e COLORTERM \
+        -e COLORFGBG \
+        -e ITERM_SESSION_ID \
+        -e ITERM_PROFILE \
+        -e KITTY_WINDOW_ID \
+        -e GHOSTTY_RESOURCES_DIR \
+        -e WT_SESSION \
+        -e VTE_VERSION \
+        -e KONSOLE_VERSION \
+        -e TERMINAL_EMULATOR \
+        -e ZED_TERM \
         "$IMAGE_NAME" \
         "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}"
 }

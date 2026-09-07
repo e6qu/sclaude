@@ -59,6 +59,10 @@ run after a version change; `sclaude volumes` shows usage and
 
 ### User Files
 - `/home/agent/` - Shared user home directory (theme preferences, CLI state, etc.)
+- `/home/agent/.config/git/config` - The host's global git config minus host-only keys (credential helpers, signing, editor, pager, diff/merge tools, host paths), rewritten on every run; `/home/agent/.config/git/ignore` is the host's global excludes file
+- `/home/agent/.gitconfig` - Sandbox-only git settings (`git config --global` inside the sandbox writes here); read after the synced file, so it wins
+- `/home/agent/.config/gh/hosts.yml` - gh login carried over from the host (token per host, `git_protocol: https`), rewritten on every run the host has a login; a login made inside the sandbox stays otherwise
+- `/etc/gitconfig` (image) - `gh auth git-credential` as the credential helper for github.com, `git@github.com:` and `ssh://git@github.com/` rewritten to HTTPS, git-lfs filters
 
 ### Package Management
 - `/home/agent/.npm-global/` - npm global packages
@@ -69,23 +73,27 @@ run after a version change; `sclaude volumes` shows usage and
 - `/var/cache/apt/` - apt package cache
 - `/var/lib/apt/lists/` - apt package lists
 
-## Credential Sync Flow
+## Host State Sync Flow
 
-sclaude and scodex sync credentials from the host into Docker volumes on each run:
+sclaude and scodex carry credentials and host state into Docker volumes on each run:
 
 **macOS**: Extracts OAuth token from Keychain (`security find-generic-password`)
 **Linux**: Reads from `~/.claude/.credentials.json` or `$XDG_CONFIG_HOME/claude-code/credentials.json`
 **Codex**: Reads from `${CODEX_HOME:-$HOME/.codex}/auth.json` and common config files
+**git**: `git config --global --includes --list` on the host, filtered (see above), plus the global excludes file
+**gh**: `gh auth token --hostname H` for every host in the host's `hosts.yml` (keyring or file; `GH_TOKEN` is masked for the lookup and forwarded separately)
 
-1. Reads credentials from host (Keychain on macOS, file on Linux)
-2. Validates JSON integrity inside the container
-3. Writes to the tool-specific config volume and copies Codex config files when present
-4. Sets `CLAUDE_CONFIG_DIR=/sclaude-config` or `CODEX_HOME=/scodex-config`
-5. Credentials persist in the Docker volume across container restarts
+1. Stages everything as one tree in a temporary directory on the host (`config/` for the tool's config volume, `home/` for the home volume)
+2. Streams it over stdin as a tar into a root helper container (no host bind mount: denied on SELinux hosts, breaks on paths with colons)
+3. Validates JSON integrity of the credentials inside the container
+4. Writes to the tool-specific config volume (Codex config files too) and the home volume with the user's UID and 600 permissions on secrets
+5. Sets `CLAUDE_CONFIG_DIR=/sclaude-config` or `CODEX_HOME=/scodex-config`
+6. Everything persists in the Docker volumes across container restarts
 
-These config volumes contain secrets. Treat `sclaude-config` and
-`scodex-config` as sensitive; `scodex-config/auth.json` is password-equivalent,
-and `config.toml` can contain private provider or endpoint details.
+These volumes contain secrets. Treat `sclaude-config`, `scodex-config` and
+`sagent-rootfs` as sensitive; `scodex-config/auth.json` and the gh token in
+`sagent-rootfs` are password-equivalent, and `config.toml` can contain
+private provider or endpoint details.
 
 ## Why This Design?
 

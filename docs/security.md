@@ -226,12 +226,28 @@ forwarded into the sandbox when set: `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
 `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` for `sclaude`; `OPENAI_API_KEY`,
 `CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
-`CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. Anything the agent can read
-inside the sandbox it can also send out, so unset `GH_TOKEN` on the host (or
-use a fine-grained token) when the agent should not act on GitHub as you.
-Host paths never exist inside the sandbox, which is why CA-file variables such
-as `SSL_CERT_FILE` are not forwarded; extra trust anchors go through
-`SAGENT_CA_BUNDLE` instead.
+`CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. The host's `gh` login is
+synced into the home volume the same way the Claude and Codex credentials
+are, so the agent can act on GitHub as you (git over HTTPS included) without
+any setup. Anything the agent can read inside the sandbox it can also send
+out: log `gh` out on the host, or `gh auth login` with a fine-grained token,
+when the agent should not act on GitHub as you. The terminal identity
+variables (`TERM_PROGRAM`, `COLORTERM`, `ITERM_SESSION_ID` and the like) are
+forwarded too; they name the emulator, nothing more. Host paths never exist
+inside the sandbox, which is why CA-file variables such as `SSL_CERT_FILE`
+are not forwarded; extra trust anchors go through `SAGENT_CA_BUNDLE`
+instead.
+
+#### Clipboard (OSC 52)
+
+The clipboard shims in the image (`pbcopy`, `xclip`, `wl-copy`, `xsel`)
+write to the host clipboard by emitting an OSC 52 escape sequence on the
+sandbox's terminal, which the host terminal applies when its settings allow
+(iTerm2: *Applications in terminal may access clipboard*). This is a
+write-only channel: an agent can overwrite your clipboard with text of its
+choosing, which is the same power any program in the terminal has, and the
+terminal setting turns it off. Reading the host clipboard is not possible
+from inside; the read shims fail.
 
 #### Extra trust anchors (`SAGENT_CA_BUNDLE`)
 

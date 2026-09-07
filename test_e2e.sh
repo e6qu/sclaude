@@ -473,6 +473,105 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
     "
 ' _ "$SCLAUDE"
 
+# ── T19b: clipboard shims, git defaults and locale in the image ──────
+run_test "T19b: image clipboard shims, git defaults, locale" bash -ec '
+    "$ENGINE" run --rm -i "$SUITE_IMG" bash -s <<"EOF"
+set -e
+[ "$LANG" = C.UTF-8 ]
+for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do
+    [ "$(readlink -f "$(command -v $n)")" = /usr/local/bin/host-clipboard ] || { echo "$n is not the clipboard shim" >&2; exit 1; }
+done
+# Copy emits OSC 52 with the base64 payload, ESC-backslash terminated (to stderr without a tty).
+out=$(printf hello | pbcopy 2>&1)
+[ "$out" = "$(printf "\033]52;c;aGVsbG8=\033\\\\")" ]
+printf hello | xclip -selection clipboard 2>&1 | grep -q "52;c;aGVsbG8="
+# Reads fail loudly and print nothing on stdout.
+for c in pbpaste wl-paste "xclip -selection clipboard -t TARGETS -o" "xsel --clipboard --output"; do
+    out=$($c 2>/dev/null) && { echo "$c should fail" >&2; exit 1; }
+    [ -z "$out" ]
+    $c 2>&1 | grep -q "not readable from inside the sandbox"
+done
+[ "$(git config --system --get credential.https://github.com.helper)" = "!gh auth git-credential" ]
+git config --system --get-all url.https://github.com/.insteadof | grep -qx "git@github.com:"
+git lfs version | grep -q "^git-lfs/"
+[ "$(git config --system --get filter.lfs.required)" = true ]
+EOF
+' _ "$SCLAUDE"
+
+# ── T20a: host git config and gh login sync ──────────────────────────
+# The wrapper carries the host'"'"'s global git config (minus host-only keys)
+# and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
+# GH_CONFIG_DIR point git and a fake gh at synthetic state.
+run_test "T20a: host git config and gh login sync" bash -ec '
+    TMP=$(mktemp -d)
+    trap "rm -rf \"$TMP\"" EXIT
+    mkdir -p "$TMP/bin" "$TMP/gh"
+    printf "*.swp\n" > "$TMP/ignore"
+    cat > "$TMP/gitconfig" <<EOF
+[user]
+	name = Sync Test
+	email = sync@example.com
+	signingkey = ABCDEF
+[commit]
+	gpgsign = true
+[credential]
+	helper = osxkeychain
+[core]
+	editor = code --wait
+	excludesfile = $TMP/ignore
+[alias]
+	st = status --short
+[safe]
+	directory = /a
+	directory = /b
+EOF
+    cat > "$TMP/gh/hosts.yml" <<EOF
+github.com:
+    git_protocol: ssh
+    user: alice
+ghe.example.com:
+    user: bob
+EOF
+    cat > "$TMP/bin/gh" <<EOF
+#!/bin/sh
+[ -n "\${GH_TOKEN:-}" ] && { echo LEAKED_ENV_TOKEN; exit 0; }
+case "\$4" in
+    github.com) echo gho_synctest ;;
+    ghe.example.com) echo ghp_ghetoken ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "$TMP/bin/gh"
+    PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
+        SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
+    "$ENGINE" run --rm -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+        cfg=/h/.config/git/config
+        [ \"\$(git config --file \$cfg --get user.name)\" = \"Sync Test\" ]
+        [ \"\$(git config --file \$cfg --get alias.st)\" = \"status --short\" ]
+        [ \"\$(git config --file \$cfg --get-all safe.directory | wc -l)\" -eq 2 ]
+        for k in user.signingkey commit.gpgsign credential.helper core.editor core.excludesfile; do
+            if git config --file \$cfg --get \$k >/dev/null; then echo \"host-only key synced: \$k\" >&2; exit 1; fi
+        done
+        [ \"\$(git config --file \$cfg --get credential.https://ghe.example.com.helper)\" = \"!gh auth git-credential\" ]
+        git config --file \$cfg --get-all url.https://ghe.example.com/.insteadof | grep -qx \"git@ghe.example.com:\"
+        grep -qx \"*.swp\" /h/.config/git/ignore
+        [ -e /h/.gitconfig ]
+        grep -q gho_synctest /h/.config/gh/hosts.yml
+        grep -q ghp_ghetoken /h/.config/gh/hosts.yml
+        grep -q \"user: alice\" /h/.config/gh/hosts.yml
+        grep -q \"git_protocol: https\" /h/.config/gh/hosts.yml
+        ! grep -q LEAKED_ENV_TOKEN /h/.config/gh/hosts.yml
+        [ \"\$(stat -c %a /h/.config/gh/hosts.yml)\" = 600 ]
+    "
+    # The synced git files mirror the host: gone from the host, gone from the volume.
+    PATH="$TMP/bin:$PATH" XDG_CONFIG_HOME="$TMP/xdg" GIT_CONFIG_GLOBAL="$TMP/none" GH_CONFIG_DIR="$TMP/gh" \
+        SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
+    "$ENGINE" run --rm -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+        ! git config --file /h/.config/git/config --get user.name
+        [ ! -e /h/.config/git/ignore ]
+    "
+' _ "$SCLAUDE"
+
 # ── T20: Codex config sync ───────────────────────────────────────────
 run_test "T20: scodex config sync" bash -ec '
     TMP_CODEX_HOME=$(mktemp -d)
@@ -512,7 +611,7 @@ run_test "T23: explicit engine selection" bash -ec '
 run_test "T24: wrapper shared functions identical" bash -ec '
     tmpdir=$(mktemp -d)
     trap "rm -rf \"$tmpdir\"" EXIT
-    divergent="read_credentials sync_state sync_codex_config_files run_tool"
+    divergent="read_credentials sync_state run_tool"
     rc=0
     for fn in $(grep -oE "^[a-z_0-9]+\(\)" "$1" | tr -d "()"); do
         case " $divergent " in *" $fn "*) continue ;; esac

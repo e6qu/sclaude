@@ -38,6 +38,8 @@ Linux, against Docker or Podman.
 | T18: sudo apt works in sandbox | Package installation support | #33, #36 |
 | T18b: pip install --user works | PEP 668 override lands packages in `sagent-pip` | #51 |
 | T19: Image contents | Claude, Codex and GitHub CLIs plus the configured Node, Python/pip/uv, Go, Rust (rustfmt, clippy), Java and podman/pasta at the versions the wrapper reports; every selected tool (TypeScript, tsx, bun, corepack with yarn/pnpm, create-next-app, create-vite, shadcn, Maven, Gradle, Quarkus CLI, Spring Boot CLI) present and every unselected one absent | #40 |
+| T19b: Clipboard shims, git defaults, locale | `pbcopy`/`xclip`/`wl-copy`/`xsel` emit OSC 52 and the read shims fail with a message; `/etc/gitconfig` has the gh credential helper, the SSH-to-HTTPS rewrite and LFS filters; `LANG=C.UTF-8` | -- |
+| T20a: Host git config and gh login sync | Host global git config lands in the home volume minus host-only keys (signing, credential helpers, editor, host paths), multi-valued keys and the excludes file intact; gh tokens per host (env token masked), `git_protocol: https`, GHE hosts get a credential helper and rewrite; `~/.gitconfig` exists; synced files mirror the host on the next run | -- |
 | T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config` | #40 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
