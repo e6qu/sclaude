@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.1](https://github.com/e6qu/sclaude/compare/v2.14.0...v2.14.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* no tar warnings from the host state sync ([#51](https://github.com/e6qu/sclaude/issues/51)) ([012a5b4](https://github.com/e6qu/sclaude/commit/012a5b4ad8e5fe7c78455025b584ee83c7db0d60))
+
 ## [2.14.0](https://github.com/e6qu/sclaude/compare/v2.13.0...v2.14.0) (2026-09-07)
 
 
