@@ -2437,7 +2437,11 @@ sync_state() {
             mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial
             chown -R root:root /vol-apt-cache /vol-apt-lists
             chmod 755 /vol-apt-cache /vol-apt-cache/archives /vol-apt-lists
-            mkdir -p /tmp/sync && tar -xf - -C /tmp/sync
+            # -m: do not restore mtimes. The staged files are copies remade
+            # on every run, and a host clock a fraction of a second ahead of
+            # the VM the engine runs in made GNU tar warn that every one of
+            # them had a time stamp in the future.
+            mkdir -p /tmp/sync && tar -xmf - -C /tmp/sync
             if [ -f /tmp/sync/config/auth.json ]; then
                 if python3 -m json.tool /tmp/sync/config/auth.json >/dev/null 2>&1; then
                     cp /tmp/sync/config/auth.json /vol-config/auth.json
