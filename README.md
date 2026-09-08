@@ -1,406 +1,223 @@
-# sclaude / scodex - Sandboxed Agent CLIs
+# sclaude / scodex
 
-Run [Claude Code](https://claude.ai/code) or OpenAI Codex CLI in a Docker sandbox.
-Same CLI, isolated filesystem.
+Run [Claude Code](https://claude.ai/code) or OpenAI Codex CLI in a Docker
+sandbox. Same CLI, isolated filesystem. Only the current directory is shared.
 
 ## Requirements
 
+- macOS or Linux, bash (zsh works too)
 - Docker or Podman: Docker Engine, Docker Desktop, Rancher Desktop (dockerd
-  engine), colima, or a podman machine; rootless podman works through the
-  podman CLI (the wrapper maps your user in with `--userns=keep-id`). Rootless
-  Docker, and the docker CLI on a rootless podman socket, are refused because
-  the docker CLI cannot request that mapping and the workspace would be
-  unusable inside the sandbox
-- macOS or Linux
-- bash (zsh also works)
+  engine, not containerd), colima, or a podman machine. Rootless podman works
+  with the podman CLI. Rootless Docker is not supported.
 
-**Rancher Desktop**: select *Preferences > Container Engine > dockerd (moby)*
-and let it put `~/.rd/bin` on your PATH. The containerd engine (`nerdctl`) is
-not supported. Rancher Desktop shares only `/Users/$USER` (and
-`/tmp/rancher-desktop`) with its VM, and colima likewise shares only your
-home directory and `/tmp/colima`, so the wrappers refuse a workspace outside
-those paths (it would mount empty); run from under your home directory, or
-set `SAGENT_SKIP_SHARE_CHECK=1` if you added the path to the tool's shared
-mounts (Rancher Desktop's lima `override.yaml`, colima's `mounts`). Nested
-container tooling works in Rancher Desktop's VM; CI runs the full suite
-against Rancher Desktop on macOS.
+Rancher Desktop and colima share only your home directory with their VM, so
+run from under your home directory (or set `SAGENT_SKIP_SHARE_CHECK=1` if you
+added more shares).
 
-**Something off?** `sclaude doctor` checks the environment end to end (engine,
-workspace, config, image, TLS from inside the sandbox, credentials) and names
-the fix for anything it flags; `sclaude status` shows what a run would use.
+TLS-inspecting proxies are handled automatically: the wrapper takes the
+proxy's CA from the host trust store and bakes it into the image. If the host
+does not trust the CA either, get it as PEM and run
+`sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem`.
 
-**Corporate networks (TLS-inspecting proxies)**: handled automatically.
-Before every image build, the wrapper runs the fetch a build step would run
-inside the plain base image. If the network re-signs HTTPS with a CA that
-Ubuntu does not know, it takes that CA from the host's own trust store (the
-macOS System and login keychains, or the Linux system bundle), verifies it
-fixes the fetch, saves it as `~/.config/sagent/ca-bundle.pem`, writes
-`SAGENT_CA_BUNDLE` to the config file, and bakes it into the image for curl,
-apt, git, Python, pip, Node/npm, the Claude and Codex CLIs, `gh`, and nested
-podman. `sclaude status` shows the bundle in effect, `sclaude doctor` names
-the CA the proxy presents. The only case that stops with a message is a
-proxy CA the host itself does not trust; then obtain it as PEM and point
-`SAGENT_CA_BUNDLE` at it:
-
-```bash
-sclaude config set SAGENT_CA_BUNDLE /path/to/proxy-ca.pem
-sclaude --build
-```
-
-The bundle's content is part of the image hash, so changing it triggers a
-rebuild.
+Something off? `sclaude doctor` checks everything and names the fix.
+`sclaude status` shows what a run would use.
 
 ## Install
 
 ```bash
-# From latest release
+# Release
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
-chmod +x sclaude
-sudo mv sclaude /usr/local/bin/sclaude
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
-chmod +x scodex
-sudo mv scodex /usr/local/bin/scodex
-
-# Or from source
-git clone https://github.com/e6qu/sclaude.git
-cd sclaude
 chmod +x sclaude scodex
-sudo ln -s "$(pwd)/sclaude" /usr/local/bin/sclaude
-sudo ln -s "$(pwd)/scodex" /usr/local/bin/scodex
+sudo mv sclaude scodex /usr/local/bin/
+
+# Source
+git clone https://github.com/e6qu/sclaude.git && cd sclaude
+sudo ln -s "$(pwd)/sclaude" "$(pwd)/scodex" /usr/local/bin/
 ```
 
-## Update
-
-```bash
-sclaude update                 # Self-update both wrappers and rebuild the shared image with latest CLIs
-scodex update                  # Same — self-updates wrappers and rebuilds the shared image
-sclaude check-update           # Check (don't install) whether newer wrapper scripts are available
-
-# Update sclaude itself (from source; `update` detects a git checkout and
-# skips the wrapper self-download so it never clobbers your working tree)
-git pull && sclaude --build
-
-# Or re-download latest release manually
-curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
-chmod +x /usr/local/bin/sclaude
-curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o /usr/local/bin/scodex
-chmod +x /usr/local/bin/scodex
-```
+Update with `sclaude update` (wrappers and image). From source: `git pull &&
+sclaude --build`.
 
 ## Usage
 
 ```bash
-sclaude                      # Interactive mode (yolo by default)
+sclaude                      # Interactive (yolo by default)
 sclaude "fix the bug"        # Direct prompt
 sclaude --resume             # Resume last session
-sclaude -p "query"           # Print mode (headless/CI, no TTY needed)
-sclaude --no-yolo            # Disable default yolo mode
-sclaude --no-docker          # Disable docker/podman inside the sandbox
-sclaude shell                # Bash in the sandbox: attaches to the one running for this
-                             # workspace, else starts a fresh one (args go to bash)
+sclaude -p "query"           # Print mode, no TTY needed
+sclaude --no-yolo            # Ask for permissions
+sclaude --no-docker          # No docker/podman inside the sandbox
+sclaude shell                # Bash in the running sandbox for this directory
 
-scodex                       # Interactive Codex mode
-scodex "fix the bug"         # Direct prompt
-scodex exec "query"          # Non-interactive Codex mode
-scodex --no-yolo             # Disable Docker-boundary yolo mode
+scodex                       # Same for Codex
+scodex exec "query"          # Non-interactive Codex
 ```
 
-Container tooling inside the sandbox is **on by default**: the agent can run
-`docker`/`podman` commands via nested rootless podman with a docker CLI shim —
-build, run, and pull all work, and nested images persist in the
-`sagent-containers` volume. The host engine socket is never mounted and
-capabilities stay dropped; the mode does relax the seccomp filter and passes
-the fuse/tun devices. Disable it per run with `--no-docker`, or persistently
-with `SAGENT_DOCKER=0` (env or config file). See
-[Security Architecture](docs/security.md) for the exact tradeoff.
+All native CLI flags pass through. Yolo maps to
+`--dangerously-skip-permissions` (Claude) and
+`--dangerously-bypass-approvals-and-sandbox` (Codex); Docker is the sandbox.
 
-The wrappers autodetect the real engine on both ends: a `docker` command that
-is podman's CLI shim, and a real docker CLI talking to a podman server through
-the docker-compat socket, are both recognized and get the right build/export
-behavior (`sclaude version` shows the detected CLI and server flavors).
+**Shell in a running session**: from a second terminal, in the same
+directory, `sclaude shell`. Inside the TUI, `!command` runs one command.
 
-Signing in from inside the sandbox works without a browser in it:
-`xdg-open`/`$BROWSER` render each URL as a clickable terminal hyperlink, so
-Cmd/Ctrl+click opens it in your host browser. A browser can never call back
-into the sandbox, so each CLI takes its callback-free path: Claude Code's
-sign-in link is rewritten to the manual-code page, and you paste the code it
-shows at the "Paste code here" prompt; `scodex login` uses device-code
-sign-in (enable it in ChatGPT's security settings if Codex refuses it);
-`gh auth login` uses its device code as usual. Credentials you already have
-on the host are synced in automatically anyway (Claude keychain or
-credentials file, Codex `auth.json`), so signing in on the host first also
-works.
+**Sign-in** works without a browser in the sandbox: URLs print as clickable
+links, Claude Code uses its paste-a-code flow, Codex uses device-code
+sign-in. Host credentials (Claude keychain or credentials file, Codex
+`auth.json`) are synced in anyway.
 
-The shared image is Ubuntu 26.04 with the Claude Code and Codex CLIs, the
-GitHub CLI (`gh`) with `git-lfs`, and full toolchains for Node.js 26, Python 3.14 (with pip
-and `uv`), Go 1.27, Rust stable (rustup with rustfmt and clippy), and Java 26
-(Eclipse Temurin), plus git, build-essential, rootless podman with a
-`docker` shim, and everyday utilities: tree, htop, btop, top, jq, ripgrep,
-fd, bat, vim, nano, less, wget, zip/unzip, rsync, ssh, file, lsof, ip, dig,
-nc, tmux, sqlite3. Every version is a setting (see [Configuration](#configuration))
-and the defaults follow the latest releases; `sclaude version` prints the
-toolchain in effect.
+**Container tooling** inside the sandbox is on by default: `docker`/`podman`
+run through nested rootless podman, no host socket. Turn off with
+`--no-docker` or `SAGENT_DOCKER=0`. See [security](docs/security.md).
 
-On top of the languages, the image carries the everyday tooling at its latest
-release as of the build: TypeScript (`tsc`), `tsx`, `bun`, `yarn` and `pnpm`
-(through corepack, so a project's `packageManager` field picks the version),
-and the `create-next-app`, `create-vite` and `shadcn` scaffolding CLIs; for
-Java, Maven, Gradle, the Quarkus CLI and the Spring Boot CLI. Frameworks such
-as React, Next.js, htmx, shadcn components, Spring Boot and Quarkus are
-project dependencies that this tooling installs into the workspace; their
-package caches persist in the home volume. Expect the image to be about
-4.3 GB with everything on. Trim it by leaving out toolchains
-(`SAGENT_GO_VERSION=none` and friends) or tools:
+## What's in the image
+
+Ubuntu 26.04 with Claude Code, Codex, `gh`, git, git-lfs, build-essential
+and toolchains: Node.js 26, Python 3.14 (pip, uv), Go 1.27, Rust stable, Java
+26 (Temurin). Tooling: TypeScript, tsx, bun, yarn and pnpm (corepack),
+create-next-app, create-vite, shadcn, Maven, Gradle, Quarkus CLI, Spring
+Boot CLI. Utilities: tree, htop, btop, jq, ripgrep, fd, bat, vim, nano, wget,
+zip, rsync, ssh, lsof, dig, nc, tmux, sqlite3.
+
+About 4.3 GB. Every version and tool is a setting:
 
 ```bash
-sclaude tools                      # what is included, and why not
-sclaude tools disable bun gradle   # writes SAGENT_TOOLS to the config file
-sclaude tools enable java          # names or the groups all, none, js, java
-sclaude config set SAGENT_NODE_VERSION 24   # any setting, validated, written to the config file
-sclaude config                     # effective settings and where each comes from
+sclaude tools                          # what is in and why not
+sclaude tools disable bun gradle
+sclaude config set SAGENT_GO_VERSION none
 ```
 
-A changed selection or version is a new image that builds on the next run.
-Upgrades never need anything from you: cache volumes that were filled for the old
-toolchain (pip packages are per Python minor, npm globals per Node major, apt
-and nested-container state per Ubuntu release) are cleared automatically
-with a warning. Go, Rust and Java caches live in the home directory and are
-version-independent, so they survive.
-
-Yolo mode is on by default since Docker is the outer sandbox. `sclaude` maps it
-to `--dangerously-skip-permissions`; `scodex` maps it to
-`--dangerously-bypass-approvals-and-sandbox`. Pass `--no-yolo` to disable.
-
-All native CLI flags are passed through unchanged. Note that `-p` means Claude
-print mode for `sclaude`, but Codex profile selection for `scodex`; use native
-Codex syntax such as `scodex exec "query"` for non-interactive Codex runs.
-
-Claude OAuth credentials auto-sync from the host (macOS Keychain or
-`~/.claude/.credentials.json` on Linux). Codex auth auto-syncs
-`${CODEX_HOME:-$HOME/.codex}/auth.json`; API key environment variables are also
-passed through. See [Host state inside the sandbox](#host-state-inside-the-sandbox)
-for git, gh and the clipboard.
+Changing any of them builds a new image on the next run. Caches that belong
+to an old toolchain are cleared automatically.
 
 ## Host state inside the sandbox
 
-**git and gh work as on the host.** Before every run the wrapper carries
-over your global git config (identity, aliases, pull/push/rebase
-preferences, the global excludes file) and your `gh` login (the token gh
-holds in its keyring or `hosts.yml`, for every host you are logged in to),
-so `git push`, `gh pr create` and friends just work. Left out on purpose:
-credential helpers, signing settings (no signing keys in the sandbox, so
-commits there are unsigned), editor, pager, diff/merge tools and anything
-naming a host path or daemon. The synced config is git's XDG-level file;
-`git config --global` inside the sandbox writes `~/.gitconfig`, which wins
-over it and persists in `sagent-rootfs`. A `gh auth login` made inside the
-sandbox stays until the host has a login, which then takes over. `GH_TOKEN`
-set on the host is forwarded as is and never written down.
+**git and gh.** Your global git config (identity, aliases, preferences,
+excludes file) and your `gh` login are synced in on every run. Not synced:
+credential helpers, signing (commits in the sandbox are unsigned), editor,
+pager, diff/merge tools, host paths. `git config --global` inside the sandbox
+writes `~/.gitconfig`, which wins and persists.
 
-**SSH or HTTPS** for GitHub is `SAGENT_GIT_PROTOCOL`; unset, it follows
-the protocol your host `gh` is configured with (`gh config get
-git_protocol`, https when never set). With `ssh` the regular files of your
-`~/.ssh` (keys, `config` with its `Host` aliases, `known_hosts`) are synced
-into the sandbox home, `config` minus the macOS-only `UseKeychain` line and
-with `$HOME` paths rewritten to `~`; remotes stay as they are. The sandbox
-cannot unlock a passphrase-protected key (no agent, no prompt), so use an
-unprotected key for GitHub or switch to https. With `https` no key enters
-the sandbox: git serves the gh token through `gh auth git-credential` and
-`git@github.com:` remotes are rewritten to HTTPS. Switching removes what
-the other mode synced; keys made inside the sandbox are left alone.
-`sclaude status` shows the protocol, its source and what will be synced;
-`sclaude doctor` flags a missing identity, login or key.
+**SSH or HTTPS** for GitHub follows your host `gh` setting, or
+`SAGENT_GIT_PROTOCOL`:
 
-```bash
-sclaude config set SAGENT_GIT_PROTOCOL https   # keep SSH keys out of the sandbox
-sclaude config set SAGENT_GIT_PROTOCOL ssh     # sync ~/.ssh, keep SSH remotes
-```
+- `ssh`: `~/.ssh` (keys, config, known_hosts) is synced in. Passphrase-
+  protected keys cannot be unlocked there.
+- `https`: no keys go in; git uses the gh token and `git@github.com:`
+  remotes are rewritten to HTTPS.
 
-**Clipboard.** The sandbox uses the host's clipboard, both ways, text and
-images. For every run the wrapper starts a small clipboard agent on the
-host and mounts a bridge directory into the sandbox; there, `pbcopy`,
-`pbpaste`, `xclip`, `xsel`, `wl-copy` and `wl-paste` are one shim that
-hands requests to the agent, which runs the host's own `pbcopy`, `pbpaste`
-and `osascript` (macOS) or `wl-copy`/`wl-paste` or `xclip` (Linux). So
-selecting text in Claude Code's TUI copies it to your clipboard ("copied N
-chars"), `/copy` works, Ctrl+V pastes a screenshot from the host clipboard
-into the conversation, and a script's `pbpaste` reads what you copied on
-the host. Nothing is needed from the terminal: no OSC 52 setting, no
-special terminal. With Claude Code's mouse tracking on, plain drag-select is
-Claude Code's own selection (and copies); hold Option (iTerm2), Fn
-(Terminal.app) or Shift (most others) for the terminal's native selection.
-On a headless Linux host (no `DISPLAY`/`WAYLAND_DISPLAY`) there is no
-clipboard to bridge: copies then go out as OSC 52 to whatever terminal is
-attached, and reads fail with a message. The agent means the sandbox can
-read your clipboard at any time, passwords included; `SAGENT_CLIPBOARD=0`
-turns the bridge off (copies fall back to OSC 52, reads fail). The
-terminal's identity (`TERM_PROGRAM`, `COLORTERM` and friends) is forwarded,
-so the CLIs pick the right keyboard protocol (Shift+Enter), print clickable
-hyperlinks (Cmd/Ctrl+click opens them on the host) and name the right
-selection modifier.
+**Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
+`xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
+clipboard through the wrapper. Selecting in Claude Code's TUI copies to your
+clipboard; Ctrl+V pastes a host screenshot. Works on macOS and Linux
+desktops; a headless Linux host has no clipboard to share. The sandbox can
+read your clipboard at any time; `SAGENT_CLIPBOARD=0` turns this off.
+
+Terminal identity (`TERM_PROGRAM` etc.) is forwarded, so Shift+Enter,
+clickable links and the selection hint work as on the host. With Claude
+Code's mouse tracking on, hold Option (iTerm2) or Shift for native terminal
+selection.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `sclaude update` / `scodex update` | Self-update both wrapper scripts to the latest release, then rebuild the shared image with the latest Claude and Codex CLIs (use `SAGENT_SKIP_SELF_UPDATE=1` to skip the wrapper download) |
-| `sclaude check-update` / `scodex check-update` | Check whether newer wrapper scripts are available without installing them |
-| `sclaude --build` | Build the shared sandbox image without running a CLI (`--force-rebuild` is only accepted with `update`) |
+| `sclaude update` | Update both wrappers, rebuild the image with the latest CLIs |
+| `sclaude check-update` | Check for a newer wrapper |
+| `sclaude --build` | Build the image without running |
 | `sclaude cleanup` | Remove old image versions |
-| `sclaude dockerfile` | Print the Dockerfile a build would use (with `SAGENT_IMAGE_UID`/`SAGENT_IMAGE_GID` for another user's image); the release workflow builds the published images from it |
-| `sclaude version` | Show version, toolchain, tools and build metadata |
-| `sclaude shell [bash args]` | Bash in the sandbox with the same mounts and volumes: attaches to the sandbox running for the current workspace, otherwise starts a fresh one (apt installs last until it exits; npm, pip, cargo, go and home-directory changes persist) |
-| `sclaude status` | One-screen snapshot of what a run would use: wrapper and latest release, config and where settings come from, engine and flavors, image state, toolchain and tools, CA bundle, nested mode, limits, credentials found on the host, git identity and gh logins to sync, clipboard bridge, volumes, workspace |
-| `sclaude doctor` | Diagnostics with a fix per finding: engine reachable and usable, workspace mountable, config valid, image built and the CLIs run, TLS from inside the sandbox, nested-container devices, cache stamps, old images, credentials, gh login, git protocol and identity, clipboard, git state, wrapper up to date; exits 1 on any FAIL |
-| `sclaude tools` | List the tools available for the image with their status; `tools enable NAME...` / `tools disable NAME...` update `SAGENT_TOOLS` in the config file |
-| `sclaude config` | Show effective settings and their source; `config set KEY VALUE`, `config unset KEY`, `config get KEY`, `config path` edit the config file with validation |
-| `sclaude volumes` | Disk usage report: image sizes, every volume with its purpose and size, caches total |
-| `sclaude reset-caches` | Clear the cache volumes (npm, pip, apt, nested container images); keeps credentials, config and the home directory |
+| `sclaude dockerfile` | Print the Dockerfile a build would use |
+| `sclaude version` | Version, toolchain, tools, build metadata |
+| `sclaude shell [args]` | Bash in the sandbox (attach to the running one, or start one) |
+| `sclaude status` | What a run would use |
+| `sclaude doctor` | Diagnostics with a fix per finding |
+| `sclaude tools` | List, `enable`, `disable` tools |
+| `sclaude config` | Show, `set`, `unset`, `get` settings; `path` |
+| `sclaude volumes` | Disk usage per image and volume |
+| `sclaude reset-caches` | Clear cache volumes, keep credentials and home |
 | `sclaude reset` | Delete all persistent data |
 
-## How It Works
-
-```
-sclaude [args]  -->  Docker container  -->  claude [args]
-scodex [args]   -->  Docker container  -->  codex [args]
-                     - Workspace mounted at $(pwd)
-                     - Non-root user (your UID/GID)
-                     - Shared image with both CLIs
-                     - 4GB RAM / 2 CPUs / 100 PIDs (512 with container tooling)
-                     - Limited capabilities for sudo apt package installs
-                     - Nested docker/podman via rootless podman (no host socket)
-                     - Credentials from tool-specific Docker volumes
-```
-
-Workspace is the only host directory accessible. Everything else is isolated.
+Every `sclaude` command exists for `scodex` too.
 
 ## Persistence
 
-Data survives across runs via Docker volumes:
-
 | Volume | Contents |
 |--------|----------|
-| `sclaude-config` | Claude credentials, config |
+| `sclaude-config` | Claude credentials, config, sessions |
 | `scodex-config` | Codex auth and config |
-| `sagent-rootfs` | Shared home directory: shell state, synced git config and `gh` login, Go module cache, cargo registry, Maven/Gradle caches |
-| `sagent-npm` | Shared npm global packages (cache; cleared on a Node major change) |
-| `sagent-pip` | Shared pip user packages and uv-managed Pythons (cache; cleared on a Python minor change) |
-| `sagent-apt-cache` | Shared apt package cache (cache; cleared on an Ubuntu change) |
-| `sagent-apt-lists` | Shared apt package lists (cache; cleared on an Ubuntu change) |
-| `sagent-containers` | Nested container images/state (cache; cleared on an Ubuntu change) |
-
-`sclaude volumes` shows what each one takes up; `sclaude reset-caches`
-clears the ones marked cache.
+| `sagent-rootfs` | Home directory: shell state, git/gh/ssh sync, Go, cargo, Maven, Gradle caches |
+| `sagent-npm` | npm globals (cache) |
+| `sagent-pip` | pip packages, uv Pythons (cache) |
+| `sagent-apt-cache`, `sagent-apt-lists` | apt (cache) |
+| `sagent-containers` | Nested container images (cache) |
 
 ## Configuration
 
-Create `${XDG_CONFIG_HOME:-~/.config}/sagent/config` (plain bash, sourced by
-both wrappers; environment variables and flags take precedence):
+`~/.config/sagent/config`, plain bash. Environment variables and flags win.
+`sclaude config set KEY VALUE` writes it for you.
 
 ```bash
-MEMORY_LIMIT="8g"          # Default: 4g
-CPU_LIMIT="4"              # Default: 2
-PIDS_LIMIT="200"           # Default: 100
-PIDS_LIMIT_NESTED="1024"   # Default: 512 (used when container tooling is on)
-SAGENT_DOCKER=0            # Default: 1 — container tooling inside the sandbox
-SAGENT_CONTAINER_ENGINE=podman
-SAGENT_CA_BUNDLE="$HOME/.config/sagent/ca-bundle.pem"  # Extra CA certs baked into the image
-SAGENT_GIT_PROTOCOL=ssh    # ssh (sync ~/.ssh) or https (gh token, SSH remotes rewritten); default: the host gh's setting
-SAGENT_CLIPBOARD=0         # Default: 1 — bridge the host clipboard into the sandbox (both ways, text and images)
+MEMORY_LIMIT="8g"               # default 4g
+CPU_LIMIT="4"                   # default 2
+PIDS_LIMIT="200"                # default 100 (512 with container tooling)
+SAGENT_DOCKER=0                 # container tooling inside the sandbox, default 1
+SAGENT_CONTAINER_ENGINE=podman  # default: docker, then podman
+SAGENT_CA_BUNDLE=/path/ca.pem   # extra CA certificates
+SAGENT_GIT_PROTOCOL=ssh         # ssh or https, default: your gh setting
+SAGENT_CLIPBOARD=0              # host clipboard in the sandbox, default 1
 
-# Toolchain versions (defaults are the latest releases; all part of the image hash)
-SAGENT_UBUNTU_VERSION="26.04"   # Ubuntu base image tag
-SAGENT_NODE_VERSION="26"        # Node.js major, official tarball (latest patch)
-SAGENT_PYTHON_VERSION="3.14"    # CPython minor via uv (latest patch)
-SAGENT_GO_VERSION="1.27"        # Go: major.minor (latest patch), exact version, or none
-SAGENT_RUST_VERSION="stable"    # Rust: stable, beta, nightly, exact version, or none
-SAGENT_JAVA_VERSION="26"        # Java: Temurin JDK major, or none
-
-# Tooling to include (default all): names or groups, comma or space separated.
-# js:   typescript tsx bun corepack create-next-app create-vite shadcn
-# java: maven gradle quarkus spring (need a JDK; dropped from all/java when SAGENT_JAVA_VERSION=none)
-SAGENT_TOOLS="all"              # e.g. "js" or "typescript,bun,maven" or "none"
+SAGENT_UBUNTU_VERSION="26.04"
+SAGENT_NODE_VERSION="26"
+SAGENT_PYTHON_VERSION="3.14"
+SAGENT_GO_VERSION="1.27"        # or none
+SAGENT_RUST_VERSION="stable"    # or none
+SAGENT_JAVA_VERSION="26"        # or none
+SAGENT_TOOLS="all"              # all, none, js, java, or names
 ```
 
-`sclaude config set` and `sclaude tools enable|disable` write these lines for
-you; `sclaude config` shows the effective value of every setting and whether
-it came from the environment, the file, or the default.
+`SAGENT_CONFIG_FILE` points at a different file.
 
-`SAGENT_CONFIG_FILE=/path/to/config` points both wrappers at a different file.
+## Published images
 
-Container engine selection:
+Each release publishes `ghcr.io/e6qu/sagent-sandbox:<version>` (multi-arch),
+`<version>-amd64` and `<version>-arm64`. No `latest`. Built for uid/gid 1000
+with the default toolchain, for direct use in CI or dev containers; the
+wrappers build locally for your own uid and settings.
 
 ```bash
-SAGENT_CONTAINER_ENGINE=docker sclaude version
-SAGENT_CONTAINER_ENGINE=podman scodex version
+docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.14.0 claude
 ```
 
-If `SAGENT_CONTAINER_ENGINE` is unset, the scripts try `docker` first and then
-`podman`. Engine health checks are bounded; tune with
-`SAGENT_ENGINE_TIMEOUT_SECONDS`.
-
-## Best Practice
+## Best practice
 
 ```bash
-git commit -am "before sclaude"   # Save state
-sclaude "fix all bugs"            # Run (yolo by default)
-git diff                          # Review
-git commit                        # or: git reset --hard
+git commit -am "before sclaude"
+sclaude "fix all bugs"
+git diff                          # review, then commit or reset --hard
 ```
 
 ## Uninstall
 
 ```bash
-sclaude cleanup                        # Remove old shared image versions
-sclaude reset                          # Remove volumes
-docker images sagent-sandbox -q | xargs -r docker rmi # Remove all images
+sclaude reset
+docker images sagent-sandbox -q | xargs -r docker rmi
 sudo rm /usr/local/bin/sclaude /usr/local/bin/scodex
 ```
 
-## Published images
-
-Every release also publishes the shared sandbox image to GitHub Container
-Registry, built natively for each architecture and joined under one tag:
-
-| Tag | Content |
-|-----|---------|
-| `ghcr.io/e6qu/sagent-sandbox:<version>` | Multi-arch manifest (linux/amd64 and linux/arm64) |
-| `ghcr.io/e6qu/sagent-sandbox:<version>-amd64` | The amd64 image |
-| `ghcr.io/e6qu/sagent-sandbox:<version>-arm64` | The arm64 image |
-
-`<version>` is the release without its `v` (`2.12.0`). There is no `latest`
-tag: pin a version. The images are built for uid/gid 1000 with the default
-toolchain and tools, and are meant for direct use (CI, a dev container's
-`image`, a plain `docker run`); the wrappers keep building locally for
-your own uid/gid, toolchain and CA bundle.
-
-```bash
-docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.12.0 claude
-```
-
-## Dev Containers
-
-Use the dev container for sclaude development, or copy an example into your own project:
+## Dev containers
 
 | Config | Purpose |
 |--------|---------|
-| [`.devcontainer/`](.devcontainer/) | Develop sclaude itself (Docker-in-Docker, shellcheck, zsh) |
-| [`examples/devcontainer-claude/`](examples/devcontainer-claude/) | Use Claude Code directly in any project |
-| [`examples/devcontainer-sclaude/`](examples/devcontainer-sclaude/) | Use Claude Code via sclaude (sandboxed) in any project |
-
-```bash
-# Test all devcontainers locally
-npm install -g @devcontainers/cli
-bash test_devcontainers.sh
-```
+| [`.devcontainer/`](.devcontainer/) | Develop sclaude itself |
+| [`examples/devcontainer-claude/`](examples/devcontainer-claude/) | Claude Code directly in a project |
+| [`examples/devcontainer-sclaude/`](examples/devcontainer-sclaude/) | Claude Code via sclaude in a project |
 
 ## Docs
 
-- [Security Architecture](docs/security.md) - Threat model, attack scenarios, hardening
-- [Storage Layout](docs/storage-layout.md) - Volume architecture and credential sync
-- [E2E Testing](docs/e2e-testing.md) - Test matrix and cross-platform CI topologies
-- [Bug Tracker](BUGS.md) - Known issues and fix history
-- [Changelog](CHANGELOG.md) - Release history
-- [Contributing](CONTRIBUTING.md)
+- [Security](docs/security.md)
+- [Storage layout](docs/storage-layout.md)
+- [E2E testing](docs/e2e-testing.md)
+- [Bugs](BUGS.md), [Changelog](CHANGELOG.md), [Contributing](CONTRIBUTING.md)
 
 ## License
 
