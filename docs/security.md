@@ -221,44 +221,34 @@ hosts.
 
 #### Host secrets passed through on purpose
 
-Besides the synced auth files, a fixed list of host environment variables is
-forwarded into the sandbox when set: `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
-`CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` for `sclaude`; `OPENAI_API_KEY`,
-`CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
-`CODEX_ACCESS_TOKEN` and `GH_TOKEN` for `scodex`. The host's `gh` login is
-synced into the home volume the same way the Claude and Codex credentials
-are, so the agent can act on GitHub as you without any setup. With
-`SAGENT_GIT_PROTOCOL=ssh` (the default when the host's gh is set to ssh)
-the regular files of `~/.ssh` are synced too: private keys, `config`,
-`known_hosts`, everything else regular in that directory. Those keys are
-then readable by the agent and usable against every host they open, not
-only GitHub. Anything the agent can read inside the sandbox it can also send
-out: set `SAGENT_GIT_PROTOCOL=https` to keep keys out (git then uses the gh
-token), and log `gh` out on the host, or `gh auth login` with a fine-grained
-token, when the agent should not act on GitHub as you. The terminal identity
-variables (`TERM_PROGRAM`, `COLORTERM`, `ITERM_SESSION_ID` and the like) are
-forwarded too; they name the emulator, nothing more. Host paths never exist
-inside the sandbox, which is why CA-file variables such as `SSL_CERT_FILE`
-are not forwarded; extra trust anchors go through `SAGENT_CA_BUNDLE`
-instead.
+Forwarded when set: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`
+(sclaude); `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENAI_BASE_URL`,
+`OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `CODEX_ACCESS_TOKEN`, `GH_TOKEN`
+(scodex); terminal identity (`TERM_PROGRAM` and the like).
+
+Synced in: Claude and Codex credentials, your `gh` login, your global git
+config. With `SAGENT_GIT_PROTOCOL=ssh` (default when your gh uses ssh) also
+`~/.ssh`, private keys included; they open every host they open on your
+machine, not only GitHub. Whatever the agent can read it can send out. To
+limit that: `SAGENT_GIT_PROTOCOL=https` keeps keys out; log `gh` out on the
+host or use a fine-grained token.
+
+Host paths do not exist in the sandbox, so `SSL_CERT_FILE` and similar are
+not forwarded; use `SAGENT_CA_BUNDLE`.
 
 #### Clipboard bridge
 
-For every run the wrapper starts a clipboard agent on the host and mounts a
-per-run directory (`~/.cache/sagent/clipboard.*`, mode 700, removed with
-the run) into the sandbox at `/run/sagent/clipboard`. The sandbox's
-`pbcopy`/`pbpaste`/`xclip`/`xsel`/`wl-copy`/`wl-paste` shims drop request
-files there; the agent answers them with the host's own clipboard tools.
-That gives the agent inside the sandbox two powers: it can set your
-clipboard to text of its choosing, and it can read whatever is on it at any
-time, including a password you just copied. The channel is only the host's
-clipboard: the agent runs fixed commands (`pbcopy`, `pbpaste`, an
-`osascript` that reads the clipboard as PNG, or their Linux equivalents) on
-data from the request files, never the data as commands, and the directory
-is writable to the sandbox user only. Set `SAGENT_CLIPBOARD=0` to leave the
-bridge out; copies then go out as OSC 52 through the terminal (a write-only
-channel the terminal's settings govern) and reads fail.
+The wrapper runs a clipboard agent on the host per run and mounts a
+per-run directory (`~/.cache/sagent/clipboard.*`, mode 700, removed
+afterwards) at `/run/sagent/clipboard`. The sandbox's clipboard commands
+drop request files there; the agent answers with the host's `pbcopy`,
+`pbpaste` and `osascript` (or `wl-copy`/`wl-paste`/`xclip`). Request data is
+only ever clipboard content, never a command.
+
+This means the agent can read your clipboard at any time (a password you
+just copied) and set it to anything. `SAGENT_CLIPBOARD=0` turns the bridge
+off; copies then go out as OSC 52 through the terminal and reads fail.
 
 #### Extra trust anchors (`SAGENT_CA_BUNDLE`)
 

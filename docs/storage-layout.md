@@ -59,12 +59,12 @@ run after a version change; `sclaude volumes` shows usage and
 
 ### User Files
 - `/home/agent/` - Shared user home directory (theme preferences, CLI state, etc.)
-- `/home/agent/.config/git/config` - The host's global git config minus host-only keys (credential helpers, signing, editor, pager, diff/merge tools, host paths), rewritten on every run; `/home/agent/.config/git/ignore` is the host's global excludes file
-- `/home/agent/.gitconfig` - Sandbox-only git settings (`git config --global` inside the sandbox writes here); read after the synced file, so it wins
-- `/home/agent/.config/gh/hosts.yml` - gh login carried over from the host (token per host, `git_protocol` as in effect), rewritten on every run the host has a login; a login made inside the sandbox stays otherwise
-- `/home/agent/.ssh/` - with `SAGENT_GIT_PROTOCOL=ssh`, the regular files of the host's `~/.ssh` (700/600), listed in `.sagent-synced` so the next run removes exactly them before syncing again; files made inside the sandbox are not listed and stay
-- `/run/sagent/clipboard/` - per-run bind mount of `~/.cache/sagent/clipboard.*` on the host: the clipboard bridge's request/response spool (see [Security Architecture](security.md)), removed when the run ends
-- `/etc/gitconfig` (image) - `gh auth git-credential` as the credential helper for github.com, git-lfs filters; the SSH-to-HTTPS rewrite for `https` runs lives in the synced git config
+- `/home/agent/.config/git/config` - host global git config minus host-only keys, rewritten every run; `ignore` next to it is the host's excludes file
+- `/home/agent/.gitconfig` - sandbox-only git settings; read after the synced file, so it wins
+- `/home/agent/.config/gh/hosts.yml` - gh token per host, rewritten every run the host has a login
+- `/home/agent/.ssh/` - with `SAGENT_GIT_PROTOCOL=ssh`, the host's `~/.ssh` files (700/600); `.sagent-synced` lists them so the next run replaces exactly those
+- `/run/sagent/clipboard/` - per-run clipboard bridge spool, mounted from `~/.cache/sagent/clipboard.*`
+- `/etc/gitconfig` (image) - gh as git's credential helper for github.com, git-lfs filters
 
 ### Package Management
 - `/home/agent/.npm-global/` - npm global packages
@@ -82,21 +82,17 @@ sclaude and scodex carry credentials and host state into Docker volumes on each 
 **macOS**: Extracts OAuth token from Keychain (`security find-generic-password`)
 **Linux**: Reads from `~/.claude/.credentials.json` or `$XDG_CONFIG_HOME/claude-code/credentials.json`
 **Codex**: Reads from `${CODEX_HOME:-$HOME/.codex}/auth.json` and common config files
-**git**: `git config --global --includes --list` on the host, filtered (see above), plus the global excludes file
-**gh**: `gh auth token --hostname H` for every host in the host's `hosts.yml` (keyring or file; `GH_TOKEN` is masked for the lookup and forwarded separately)
-**ssh**: with `SAGENT_GIT_PROTOCOL=ssh`, the regular files of `~/.ssh`; `config` loses `UseKeychain` lines and gets `$HOME` rewritten to `~`
+**git**: `git config --global --includes --list`, filtered, plus the excludes file
+**gh**: `gh auth token --hostname H` per host in `hosts.yml` (`GH_TOKEN` masked for the lookup)
+**ssh**: with `SAGENT_GIT_PROTOCOL=ssh`, `~/.ssh`; `config` loses `UseKeychain`, `$HOME` becomes `~`
 
-1. Stages everything as one tree in a temporary directory on the host (`config/` for the tool's config volume, `home/` for the home volume)
-2. Streams it over stdin as a tar into a root helper container (no host bind mount: denied on SELinux hosts, breaks on paths with colons)
-3. Validates JSON integrity of the credentials inside the container
-4. Writes to the tool-specific config volume (Codex config files too) and the home volume with the user's UID and 600 permissions on secrets
-5. Sets `CLAUDE_CONFIG_DIR=/sclaude-config` or `CODEX_HOME=/scodex-config`
-6. Everything persists in the Docker volumes across container restarts
+1. Stage everything in a temporary directory on the host
+2. Stream it as a tar over stdin into a root helper container (no host bind mount: SELinux, colons in paths)
+3. Validate the credentials are JSON
+4. Write to the config volume and the home volume, owned by your UID, secrets 600
 
-These volumes contain secrets. Treat `sclaude-config`, `scodex-config` and
-`sagent-rootfs` as sensitive; `scodex-config/auth.json` and the gh token in
-`sagent-rootfs` are password-equivalent, and `config.toml` can contain
-private provider or endpoint details.
+`sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
+credentials, the gh token, with ssh your private keys.
 
 ## Why This Design?
 
