@@ -675,6 +675,31 @@ EOF
     "
 ' _ "$SCLAUDE"
 
+# ── T20b: the sync tar is quiet when the host clock is ahead ─────────
+# A host clock a fraction of a second ahead of the VM the engine runs in made
+# GNU tar warn about every extracted file. The extraction command is read out
+# of the wrapper, so dropping the flag fails here.
+run_test "T20b: sync tar quiet on clock skew" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t20b.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    mkdir -p "$TMP/stage/home"
+    echo x > "$TMP/stage/home/f"
+    future=$(date -v+1H +%Y%m%d%H%M.%S 2>/dev/null || date -d "+1 hour" +%Y%m%d%H%M.%S)
+    touch -t "$future" "$TMP/stage/home/f" "$TMP/stage/home" "$TMP/stage"
+    cmd=$(grep -oE "tar -x[a-z]*f - -C /tmp/sync" "$1" | head -1)
+    [ -n "$cmd" ]
+    tar_args=""
+    if [ "$(uname -s)" = Darwin ]; then tar_args="--no-xattrs --no-mac-metadata"; fi
+    # shellcheck disable=SC2086
+    tar $tar_args -C "$TMP/stage" -cf - . \
+        | "$ENGINE" run --rm -i "$SUITE_IMG" bash -c "mkdir -p /tmp/sync && $cmd" 2>"$TMP/err"
+    if [ -s "$TMP/err" ]; then
+        echo "extraction was not quiet:" >&2
+        cat "$TMP/err" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
 # ── T20: Codex config sync ───────────────────────────────────────────
 run_test "T20: scodex config sync" bash -ec '
     TMP_CODEX_HOME=$(mktemp -d)
