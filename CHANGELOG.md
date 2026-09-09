@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.4](https://github.com/e6qu/sclaude/compare/v2.14.3...v2.14.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* carry over the identity git actually uses in the workspace ([#56](https://github.com/e6qu/sclaude/issues/56)) ([efc8c45](https://github.com/e6qu/sclaude/commit/efc8c456452e2ada640d90bff0461ae4c625dc36))
+
 ## [2.14.3](https://github.com/e6qu/sclaude/compare/v2.14.2...v2.14.3) (2026-09-09)
 
 
