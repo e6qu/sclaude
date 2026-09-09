@@ -1506,7 +1506,8 @@ export_host_trust_store() {
 # Before any build: detect TLS interception on this network and fix it from
 # the host's own trust store, so install and update need nothing from the
 # user (#77). Facts drive every branch: the probe's result and what the host
-# trust store contains; nothing is retried or degraded silently.
+# trust store contains. Nothing degrades silently; the one retry (a mirror
+# that dropped a connection) says so and still fails loudly the second time.
 ensure_build_tls() {
     local result status issuer candidate count bundle_dir free
     echo "[$SCRIPT_NAME] Checking that build steps can fetch over HTTPS from this network..." >&2
@@ -1520,14 +1521,27 @@ ensure_build_tls() {
     case "$status" in
         TLS-OK) return 0 ;;
         APT-FAILED)
-            if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
-                echo "[$SCRIPT_NAME] ERROR: a build container cannot install packages: the engine is out of disk." >&2
-                print_disk_guidance "$free"
-            else
-                echo "[$SCRIPT_NAME] ERROR: a build container cannot reach Ubuntu's apt mirrors, so containers on this engine have no network (or a proxy blocks them). The probe said:" >&2
-                printf '%s\n' "$result" | sed -n '4,$p' | sed "s/^/  /" >&2
-            fi
-            exit 1
+            # A mirror that drops one connection is common on a loaded CI
+            # runner and says nothing about this network; probe once more
+            # before blaming it.
+            echo "[$SCRIPT_NAME] The probe could not install its own tools; retrying once..." >&2
+            sleep 5
+            result=$(build_tls_probe "${CA_BUNDLE_PATH:-/dev/null}")
+            status=$(printf '%s\n' "$result" | sed -n 1p); issuer=$(printf '%s\n' "$result" | sed -n 2p)
+            case "$status" in
+                TLS-OK) return 0 ;;
+                TLS-FAIL) ;;
+                *)
+                    if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
+                        echo "[$SCRIPT_NAME] ERROR: a build container cannot install packages: the engine is out of disk." >&2
+                        print_disk_guidance "$free"
+                    else
+                        echo "[$SCRIPT_NAME] ERROR: a build container cannot reach Ubuntu's apt mirrors twice in a row, so containers on this engine have no network (or a proxy blocks them). The probe said:" >&2
+                        printf '%s\n' "$result" | sed -n '4,$p' | sed "s/^/  /" >&2
+                    fi
+                    exit 1
+                    ;;
+            esac
             ;;
         PROBE-FAILED)
             echo "[$SCRIPT_NAME] ERROR: could not start the probe container from ubuntu:${UBUNTU_VERSION} (is the engine able to pull images?)." >&2
