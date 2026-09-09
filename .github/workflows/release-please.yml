@@ -18,13 +18,12 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # Creating a release needs these two once immutable releases are on for the
-  # repository: the release carries an attestation, which the job signs with
-  # an OIDC token. Without them GitHub refuses the create call with
-  # "Resource not accessible by integration" even though contents is write,
-  # which is how v2.15.1 failed twice.
-  attestations: write
-  id-token: write
+  # Tagging a release also relabels its pull request (autorelease: pending ->
+  # tagged), and labels go through the issues API. Without this the action
+  # reports the failure against the release endpoint it was working on, which
+  # is how v2.15.1 failed three times while the token could create releases
+  # perfectly well (checked with a throwaway release from a workflow).
+  issues: write
 
 # Serialize runs: two quick merges to main must not race each other's
 # release PR updates or asset uploads.
