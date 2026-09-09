@@ -165,8 +165,11 @@ jobs:
             codex --version >/dev/null
             gh --version >/dev/null
             [ "$(id -u):$(id -g)" = 1000:1000 ]
-            cat /sagent-metadata.json
           '
+          # Build metadata lives in labels, not a file in the image.
+          docker image inspect "$IMAGE:$version-$ARCH" \
+            --format '{{index .Config.Labels "sagent.version"}} {{index .Config.Labels "sagent.build_timestamp"}}' \
+            | tee /dev/stderr | grep -qE '^[0-9a-f]{8} [0-9]{4}-'
           docker push "$IMAGE:$version-$ARCH"
 
   publish-manifest:
