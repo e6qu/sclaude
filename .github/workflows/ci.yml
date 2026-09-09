@@ -5,6 +5,14 @@ on:
   push:
     branches: [main]
 
+# No CI on the release PR. It is opened by github-actions[bot], and GitHub
+# holds workflow runs on bot-authored PRs for manual approval, so no job
+# ever starts and the check ends red for good. Releasing itself is
+# untouched: the Release Please workflow runs on push to main, and merging
+# that PR still cuts the release, uploads the wrappers and publishes the
+# images. The commit is tested on main right after the merge, and the
+# release workflow re-verifies the published wrappers.
+
 # Cancel in-progress runs for the same PR or branch
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,7 +27,7 @@ env:
 
 jobs:
   commit-lint:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title is conventional
@@ -37,7 +45,7 @@ jobs:
   # Lint via pre-commit so CI enforces exactly the hook set contributors run
   # locally (shellcheck, actionlint, zsh/bash syntax, forbidden-trigger ban).
   lint:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +55,7 @@ jobs:
         run: pipx run pre-commit run --all-files --show-diff-on-failure
 
   lint-macos:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -59,8 +67,9 @@ jobs:
   test-linux:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -70,8 +79,9 @@ jobs:
   test-linux-podman:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -88,8 +98,9 @@ jobs:
   # covered by T34 with a stub).
   test-linux-docker-cli-podman:
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -114,8 +125,9 @@ jobs:
   # arrangement), exercised via a podman symlink named docker on PATH.
   test-linux-podman-shim:
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -135,8 +147,9 @@ jobs:
     # so the VM cannot start there. T27 inside adds the third nesting level
     # (mac host -> VM -> sandbox container -> nested podman container).
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
@@ -211,8 +224,9 @@ jobs:
   # and T12b (a /tmp workspace) is skipped along with the two full-build tests.
   test-macos-rancher:
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
     timeout-minutes: 120
     env:
@@ -316,8 +330,9 @@ jobs:
   test-devcontainers:
     # Trusted contexts only: push to main, or PRs from same repo (not forks).
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
