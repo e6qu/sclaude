@@ -36,8 +36,11 @@ git clone https://github.com/e6qu/sclaude.git && cd sclaude
 sudo ln -s "$(pwd)/sclaude" "$(pwd)/scodex" /usr/local/bin/
 ```
 
-Update with `sclaude update` (wrappers and image). From source: `git pull &&
-sclaude --build`.
+Update with `sclaude update`: it updates both wrappers and, when the Claude
+or Codex CLI has a new release, reinstalls them in the image. That is the
+last layer, so it takes a minute rather than a full rebuild;
+`sclaude update --force-rebuild` rebuilds everything from scratch (new base
+image, OS packages, toolchains). From source: `git pull && sclaude --build`.
 
 ## Usage
 
@@ -90,6 +93,17 @@ sclaude config set SAGENT_GO_VERSION none
 Changing any of them builds a new image on the next run. Caches that belong
 to an old toolchain are cleared automatically.
 
+Layers are ordered by how often they change: base image, OS packages and
+toolchains first, then the user and shims, and the two agent CLIs alone at
+the end. A CLI release therefore rebuilds one layer; the build metadata is
+an image label rather than a file, so a rebuild with nothing to do is a
+no-op instead of a full image export.
+
+A build needs about 8 GB free where the engine stores images. `sclaude
+doctor` reports what is left and `sclaude cleanup` reclaims it; on a
+VM-backed engine the freed space returns to the host only after the VM is
+trimmed (`podman machine ssh sudo fstrim -av`) or restarted.
+
 ## Host state inside the sandbox
 
 **git and gh.** Your global git config (identity, aliases, preferences,
@@ -122,7 +136,7 @@ selection.
 
 | Command | Description |
 |---------|-------------|
-| `sclaude update` | Update both wrappers, rebuild the image with the latest CLIs |
+| `sclaude update` | Update both wrappers; reinstall the agent CLIs in the image when they have a new release (`--force-rebuild` rebuilds everything) |
 | `sclaude check-update` | Check for a newer wrapper |
 | `sclaude --build` | Build the image without running |
 | `sclaude cleanup` | Remove old image versions |

@@ -526,19 +526,22 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 DOCKERFILE_END
 
-    # Agent CLIs plus the selected JavaScript/TypeScript tooling, each at its
-    # latest release. React, Next.js, htmx and shadcn components are project
-    # dependencies these scaffolders pull in. yarn and pnpm come through
-    # corepack, which serves whatever version a project's packageManager field
-    # declares (Node no longer bundles corepack).
+    # The selected JavaScript/TypeScript tooling, each at its latest release.
+    # React, Next.js, htmx and shadcn components are project dependencies
+    # these scaffolders pull in. yarn and pnpm come through corepack, which
+    # serves whatever version a project's packageManager field declares (Node
+    # no longer bundles corepack). The two agent CLIs are deliberately not
+    # here: they release almost daily and go in the last layer instead.
     local -a npm_tools=()
     local tool
     for tool in typescript tsx bun corepack create-next-app create-vite shadcn; do
         if tool_selected "$tool"; then npm_tools+=("$tool"); fi
     done
-    printf '\n# Agent CLIs and JavaScript/TypeScript tooling.\nRUN npm install -g @anthropic-ai/claude-code @openai/codex'
-    if [ "${#npm_tools[@]}" -gt 0 ]; then printf ' %s' "${npm_tools[@]}"; fi
-    printf '\n'
+    if [ "${#npm_tools[@]}" -gt 0 ]; then
+        printf '\n# JavaScript/TypeScript tooling.\nRUN npm install -g'
+        printf ' %s' "${npm_tools[@]}"
+        printf '\n'
+    fi
     if tool_selected corepack; then
         printf 'RUN corepack enable --install-directory /usr/local/bin\nENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n'
     fi
@@ -736,6 +739,18 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
 # Persistent, user-writable install locations first (npm globals, pip user
 # scripts, cargo install, go install), then the system-wide toolchains.
 ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/go/bin:/usr/local/go/bin:/opt/rust/cargo/bin:/opt/java/bin:/opt/maven/bin:/opt/gradle/bin:/opt/spring/bin:${PATH}"
+
+# The agent CLIs come last, and alone: they release almost daily, while
+# everything above them changes a few times a year. AGENT_CLI_REFRESH is not
+# part of the image hash; `update` passes the new version pair to rebuild
+# this one layer from a cached image instead of the whole thing.
+USER root
+ARG AGENT_CLI_REFRESH=initial
+# NPM_CONFIG_PREFIX is set above for the agent's runtime npm (a volume at
+# /home/agent/.npm-global): install into the system prefix instead, or the
+# CLIs would land where that volume later hides them.
+RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex
+USER agent
 DOCKERFILE_END
 }
 
@@ -757,17 +772,24 @@ get_version_hash() {
 VERSION_HASH=$(get_version_hash)
 IMAGE_NAME="${IMAGE_REPO}:${VERSION_HASH}"
 
-# The trailing Dockerfile lines that stamp the image with its version hash
-# and build time (`version` and `doctor` read them back).
+# The build metadata (version hash and build time) that `version` and
+# `doctor` read back. Labels, not a file: a RUN writing a file is a new
+# filesystem layer on every build, and one new layer costs a full image
+# export and unpack (minutes on a VM-backed engine) even when every other
+# layer was cached.
 dockerfile_metadata_block() {
     local build_timestamp
     build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     cat <<EOF
 
-USER root
-RUN echo '{"version": "$VERSION_HASH", "build_timestamp": "$build_timestamp"}' > /sagent-metadata.json
-USER agent
+LABEL sagent.version="$VERSION_HASH" sagent.build_timestamp="$build_timestamp"
 EOF
+}
+
+# The metadata of a built image, as JSON, from its labels.
+image_metadata() {
+    "$ENGINE_CMD" image inspect "$IMAGE_NAME" \
+        --format '{"version": "{{index .Config.Labels "sagent.version"}}", "build_timestamp": "{{index .Config.Labels "sagent.build_timestamp"}}"}' 2>/dev/null || true
 }
 
 # `dockerfile`: print the Dockerfile a build would use, for building the
@@ -785,6 +807,10 @@ dockerfile_command() {
     get_dockerfile_content
     dockerfile_metadata_block
 }
+
+# Extra `--build-arg` pairs for the next build (set by `update` to refresh
+# only the agent-CLI layer).
+BUILD_EXTRA_ARGS=()
 
 build_image() {
     local no_cache="${1:-}"
@@ -840,6 +866,7 @@ build_image() {
     dockerfile_metadata_block >> "$temp_dockerfile"
 
     if ! "${build_env[@]+"${build_env[@]}"}" "$ENGINE_CMD" build "${build_args[@]+"${build_args[@]}"}" \
+        "${BUILD_EXTRA_ARGS[@]+"${BUILD_EXTRA_ARGS[@]}"}" \
         --build-arg USER_UID="$HOST_UID" \
         --build-arg USER_GID="$HOST_GID" \
         -t "$IMAGE_NAME" \
@@ -872,8 +899,35 @@ stage_ca_bundle() {
     echo "[$SCRIPT_NAME] Baking $CA_BUNDLE_CERT_COUNT CA certificate(s) from $CA_BUNDLE_PATH into the image" >&2
 }
 
+# Free space in the engine's storage, in GiB (empty when it cannot be read).
+# Measured inside a container: on a VM-backed engine the pool that fills up is
+# the VM disk, which the host cannot see.
+engine_disk_free_gb() {
+    "$ENGINE_CMD" run --rm "ubuntu:${UBUNTU_VERSION}" \
+        sh -c "df -Pk / | awk 'NR==2 {print int(\$4/1048576)}'" </dev/null 2>/dev/null | tr -cd '0-9'
+}
+
+# The image needs roughly this much free space in the engine to build.
+DISK_FREE_GB_MIN=8
+
+print_disk_guidance() {
+    local free="$1"
+    echo "[$SCRIPT_NAME] The engine has ${free} GiB free where it stores images; a build needs about $DISK_FREE_GB_MIN GiB." >&2
+    echo "[$SCRIPT_NAME] Reclaim space: \`$SCRIPT_NAME cleanup\` (old sandbox images), \`$SCRIPT_NAME reset-caches\`, \`$ENGINE_CMD image prune -f\`, \`$ENGINE_CMD system df\` to see what is left." >&2
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "[$SCRIPT_NAME] On a VM-backed engine the space freed inside the VM reaches the host only after a trim: \`podman machine ssh sudo fstrim -av\` (podman), or restart the VM (colima, Rancher Desktop, Docker Desktop)." >&2
+    fi
+}
+
 print_build_failure_guidance() {
+    local free
     echo "[$SCRIPT_NAME] ERROR: sandbox image build failed (engine output above)." >&2
+    free=$(engine_disk_free_gb)
+    if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
+        echo "[$SCRIPT_NAME] The engine is out of disk, which is the likely cause (a \"no space left on device\" error above confirms it)." >&2
+        print_disk_guidance "$free"
+        return 0
+    fi
     echo "[$SCRIPT_NAME] TLS interception was checked before the build$([ -n "$CA_BUNDLE_PATH" ] && echo " with SAGENT_CA_BUNDLE=$CA_BUNDLE_PATH ($CA_BUNDLE_CERT_COUNT certificate(s))"), so a TLS error above means a host this build fetches from is handled differently by the proxy; \`$SCRIPT_NAME doctor\` reports the CA the network presents." >&2
     echo "[$SCRIPT_NAME] Any other error above is from the build step itself; rerun with \`$SCRIPT_NAME --build\` after fixing what it names." >&2
 }
@@ -906,7 +960,7 @@ show_version() {
         tool_version=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" "$TOOL_BIN" --version 2>/dev/null || echo "unknown")
         echo "$TOOL_NAME CLI: $tool_version"
         echo "Container metadata:"
-        meta=$("$ENGINE_CMD" run --rm "$IMAGE_NAME" cat /sagent-metadata.json 2>/dev/null || true)
+        meta=$(image_metadata)
         if [ -n "$meta" ]; then
             if command -v python3 >/dev/null 2>&1; then
                 printf '%s' "$meta" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$meta"
@@ -1399,13 +1453,16 @@ DOCTOR_PASS=0; DOCTOR_WARN=0; DOCTOR_FAIL=0
 # it (/dev/null for none). Prints a status line (TLS-OK, TLS-FAIL, APT-FAILED,
 # PROBE-FAILED) and, on TLS-FAIL, the issuer of the chain the network presents.
 build_tls_probe() {
-    local bundle_in="$1" out status issuer
+    local bundle_in="$1" out status issuer free
     # shellcheck disable=SC2016
     out=$("$ENGINE_CMD" run --rm -i "ubuntu:${UBUNTU_VERSION}" sh -c '
         cat > /tmp/bundle.pem
         export DEBIAN_FRONTEND=noninteractive
-        if ! (apt-get update && apt-get install -y curl ca-certificates) >/dev/null 2>&1; then
-            echo APT-FAILED; exit 0
+        df -Pk / | awk "NR==2 {print \"FREE:\" int(\$4/1048576)}"
+        if ! (apt-get update && apt-get install -y curl ca-certificates) >/tmp/apt.log 2>&1; then
+            echo APT-FAILED
+            tail -5 /tmp/apt.log
+            exit 0
         fi
         if [ -s /tmp/bundle.pem ]; then
             mkdir -p /usr/local/share/ca-certificates/sagent
@@ -1422,7 +1479,11 @@ build_tls_probe() {
     ' < "$bundle_in" 2>&1) || true
     status=$(printf '%s\n' "$out" | grep -E '^(TLS-OK|TLS-FAIL|APT-FAILED)$' | head -1)
     issuer=$(printf '%s\n' "$out" | sed -n 's/^\* *issuer: *//Ip' | head -1)
-    printf '%s\n%s\n' "${status:-PROBE-FAILED}" "${issuer:-unknown}"
+    free=$(printf '%s\n' "$out" | sed -n 's/^FREE://p' | head -1)
+    # status, issuer, free GiB in the engine, then whatever detail the probe
+    # captured (the apt error when it could not install its own tools).
+    printf '%s\n%s\n%s\n' "${status:-PROBE-FAILED}" "${issuer:-unknown}" "${free:-}"
+    { printf '%s\n' "$out" | grep -vE '^(TLS-OK|TLS-FAIL|APT-FAILED|FREE:)' | grep -v '^\* *issuer:' | sed '/^$/d'; } || true
 }
 
 # Every certificate the host itself trusts beyond the public roots: the macOS
@@ -1445,17 +1506,42 @@ export_host_trust_store() {
 # Before any build: detect TLS interception on this network and fix it from
 # the host's own trust store, so install and update need nothing from the
 # user (#77). Facts drive every branch: the probe's result and what the host
-# trust store contains; nothing is retried or degraded silently.
+# trust store contains. Nothing degrades silently; the one retry (a mirror
+# that dropped a connection) says so and still fails loudly the second time.
 ensure_build_tls() {
-    local result status issuer candidate count bundle_dir
+    local result status issuer candidate count bundle_dir free
     echo "[$SCRIPT_NAME] Checking that build steps can fetch over HTTPS from this network..." >&2
     result=$(build_tls_probe "${CA_BUNDLE_PATH:-/dev/null}")
     status=$(printf '%s\n' "$result" | sed -n 1p); issuer=$(printf '%s\n' "$result" | sed -n 2p)
+    free=$(printf '%s\n' "$result" | sed -n 3p)
+    if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
+        echo "[$SCRIPT_NAME] WARNING: the engine has only ${free} GiB free where it stores images; this build may run out of disk." >&2
+        print_disk_guidance "$free"
+    fi
     case "$status" in
         TLS-OK) return 0 ;;
         APT-FAILED)
-            echo "[$SCRIPT_NAME] ERROR: a build container cannot reach Ubuntu's apt mirrors: containers on this engine have no network." >&2
-            exit 1
+            # A mirror that drops one connection is common on a loaded CI
+            # runner and says nothing about this network; probe once more
+            # before blaming it.
+            echo "[$SCRIPT_NAME] The probe could not install its own tools; retrying once..." >&2
+            sleep 5
+            result=$(build_tls_probe "${CA_BUNDLE_PATH:-/dev/null}")
+            status=$(printf '%s\n' "$result" | sed -n 1p); issuer=$(printf '%s\n' "$result" | sed -n 2p)
+            case "$status" in
+                TLS-OK) return 0 ;;
+                TLS-FAIL) ;;
+                *)
+                    if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
+                        echo "[$SCRIPT_NAME] ERROR: a build container cannot install packages: the engine is out of disk." >&2
+                        print_disk_guidance "$free"
+                    else
+                        echo "[$SCRIPT_NAME] ERROR: a build container cannot reach Ubuntu's apt mirrors twice in a row, so containers on this engine have no network (or a proxy blocks them). The probe said:" >&2
+                        printf '%s\n' "$result" | sed -n '4,$p' | sed "s/^/  /" >&2
+                    fi
+                    exit 1
+                    ;;
+            esac
             ;;
         PROBE-FAILED)
             echo "[$SCRIPT_NAME] ERROR: could not start the probe container from ubuntu:${UBUNTU_VERSION} (is the engine able to pull images?)." >&2
@@ -1543,7 +1629,7 @@ doctor_report() {
 # any check fails. Only reads state; the one container it may start runs
 # `true`/`curl` inside the already-built image.
 doctor_command() {
-    local msg latest out rc v stamp expected stale="" old_images key unknown=""
+    local msg latest out rc v stamp expected stale="" old_images key unknown="" free
     echo "[$SCRIPT_NAME] doctor"
 
     # wrapper
@@ -1674,6 +1760,14 @@ EOF
         doctor_report PASS auth:gh "GH_TOKEN set on the host; forwarded into the sandbox"
     else
         doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
+    fi
+    free=$(engine_disk_free_gb)
+    if [ -z "$free" ]; then
+        doctor_report WARN disk "could not read how much space the engine has for images"
+    elif [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
+        doctor_report FAIL disk "the engine has ${free} GiB free where it stores images; a build needs about $DISK_FREE_GB_MIN GiB. \`$SCRIPT_NAME cleanup\` and \`$ENGINE_CMD image prune -f\` reclaim it (a VM-backed engine needs a trim or a restart afterwards to hand the space back to the host)"
+    else
+        doctor_report PASS disk "${free} GiB free in the engine for images"
     fi
     if [ "${SAGENT_CLIPBOARD:-1}" = "0" ]; then
         doctor_report PASS clipboard "bridge off (SAGENT_CLIPBOARD=0): the sandbox copies through the terminal (OSC 52) and cannot read the host clipboard"
@@ -1953,6 +2047,10 @@ needs_image_rebuild() {
     if [ -z "$image_claude" ] || [ -z "$image_codex" ] || [ -z "$npm_claude" ] || [ -z "$npm_codex" ]; then
         return 0
     fi
+
+    # Only the CLIs are behind: rebuild that one layer from the cached image
+    # instead of the whole thing (a full rebuild is `update --force-rebuild`).
+    BUILD_EXTRA_ARGS=(--build-arg "AGENT_CLI_REFRESH=claude-$npm_claude+codex-$npm_codex")
 
     if [ "$image_claude" = "$npm_claude" ] && [ "$image_codex" = "$npm_codex" ]; then
         echo "[$SCRIPT_NAME] Image already at latest: Claude $image_claude, Codex $image_codex" >&2
@@ -2854,8 +2952,13 @@ case "$WRAPPER_COMMAND" in
             echo "[$SCRIPT_NAME] ERROR: wrapper self-update failed; not rebuilding image." >&2
             exit 1
         fi
-        if [ "$FORCE_REBUILD" = true ] || needs_image_rebuild; then
+        if [ "$FORCE_REBUILD" = true ]; then
+            BUILD_EXTRA_ARGS=()
             build_image --no-cache
+        elif needs_image_rebuild; then
+            # Cached build: everything above the agent-CLI layer is reused, so
+            # a CLI bump takes a minute instead of a full rebuild.
+            build_image
         fi
         verify_image_built
         exit 0

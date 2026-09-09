@@ -212,6 +212,30 @@ run_test "T10: update (forced no-cache rebuild)" bash -ec '
     fi
 ' _ "$SCLAUDE"
 
+# ── T10b: a CLI release rebuilds one layer, not the image ────────────
+# The agent CLIs are the last layer, behind AGENT_CLI_REFRESH, so `update`
+# reinstalls them from a cached image. A stubbed registry lookup makes the
+# CLIs look outdated; the run must take the cached path (not the no-cache
+# rebuild that --force-rebuild asks for) and still leave working CLIs.
+run_test "T10b: update refreshes the CLIs from cache" bash -ec '
+    tmpdir=$(mktemp -d)
+    trap "rm -rf $tmpdir" EXIT
+    sed "s|^fetch_npm_latest() {|fetch_npm_latest() { printf 9.9.9; return 0; }\nfetch_npm_latest_unused() {|" "$1" > "$tmpdir/sclaude"
+    chmod +x "$tmpdir/sclaude"
+    rc=0
+    output=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_SKIP_SELF_UPDATE=1 "$tmpdir/sclaude" update 2>&1) || rc=$?
+    echo "$output"
+    [ "$rc" -eq 0 ]
+    echo "$output" | grep -q "\-> 9.9.9"
+    echo "$output" | grep -q "Building shared sandbox image"
+    if echo "$output" | grep -q "Updating shared sandbox image"; then
+        echo "T10b: took the no-cache path for a CLI-only refresh" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm "$SUITE_IMG" claude --version >/dev/null
+    "$ENGINE" run --rm "$SUITE_IMG" codex --version >/dev/null
+' _ "$SCLAUDE"
+
 # ── T11: PID resource limit ──────────────────────────────────────────
 run_test "T11: PID limit (fork bomb)" bash -ec '
     TIMEOUT_CMD=""
@@ -1021,16 +1045,24 @@ STUB
         exit 1
     fi
     grep -q "^ARG GO_VERSION=none\$" "$tmp/Dockerfile"
-    # SAGENT_TOOLS=none: only the agent CLIs are installed.
+    # SAGENT_TOOLS=none: only the agent CLIs are installed, in their own
+    # last layer; no JS tooling layer at all.
     SAGENT_TOOLS=none "$1" --build >/dev/null 2>&1 || true
-    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    grep -q "npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    if grep -qE "^RUN npm install -g " "$tmp/Dockerfile"; then
+        echo "a JS tooling layer was emitted despite SAGENT_TOOLS=none" >&2
+        exit 1
+    fi
     if grep -qE "corepack enable|apache-maven|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
         echo "tooling emitted despite SAGENT_TOOLS=none" >&2
         exit 1
     fi
     # A subset: named tools and nothing else.
     SAGENT_TOOLS="bun,maven" "$1" --build >/dev/null 2>&1 || true
-    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex bun\$" "$tmp/Dockerfile"
+    # The selected JS tooling is its own layer; the agent CLIs are the last
+    # one, so a CLI release does not rebuild everything after them.
+    grep -q "^RUN npm install -g bun\$" "$tmp/Dockerfile"
+    grep -q "npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
     grep -q "apache-maven" "$tmp/Dockerfile"
     if grep -qE "corepack enable|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
         echo "unselected tooling emitted" >&2
@@ -1070,10 +1102,23 @@ run_test "T32b: dockerfile command" bash -ec '
     "$1" dockerfile > "$tmp/Dockerfile"
     head -1 "$tmp/Dockerfile" | grep -q "^FROM ubuntu:"
     hash=$("$1" version | sed -n "s/^Image hash: //p")
-    grep -q "\"version\": \"$hash\"" "$tmp/Dockerfile"
-    tail -1 "$tmp/Dockerfile" | grep -qx "USER agent"
+    grep -q "^LABEL sagent.version=\"$hash\"" "$tmp/Dockerfile"
+    tail -1 "$tmp/Dockerfile" | grep -q "^LABEL sagent.version="
+    # The metadata is a label, not a layer: a RUN that writes a file would
+    # make every build export and unpack the whole image again.
+    ! grep -q "sagent-metadata.json" "$tmp/Dockerfile"
+    # The agent CLIs are the last thing built, behind the refresh arg, so a
+    # CLI release rebuilds one layer instead of everything after it.
+    grep -q "^ARG AGENT_CLI_REFRESH=" "$tmp/Dockerfile"
+    last_run=$(grep -n "^RUN " "$tmp/Dockerfile" | tail -1)
+    case "$last_run" in *"npm install -g @anthropic-ai/claude-code @openai/codex"*) ;;
+        *) echo "the agent CLI install is not the last RUN: $last_run" >&2; exit 1 ;;
+    esac
+    case "$last_run" in *"AGENT_CLI_REFRESH"*) ;;
+        *) echo "the agent CLI layer does not use AGENT_CLI_REFRESH" >&2; exit 1 ;;
+    esac
     # Another uid/gid is another image: the stamp follows.
-    other=$(SAGENT_IMAGE_UID=4242 SAGENT_IMAGE_GID=4242 "$1" dockerfile | sed -n "s/.*\"version\": \"\([0-9a-f]*\)\".*/\1/p")
+    other=$(SAGENT_IMAGE_UID=4242 SAGENT_IMAGE_GID=4242 "$1" dockerfile | sed -n "s/^LABEL sagent.version=\"\([0-9a-f]*\)\".*/\1/p")
     [ -n "$other" ] && [ "$other" != "$hash" ]
     # Same for both wrappers (one shared image).
     diff <(grep -v build_timestamp "$tmp/Dockerfile") <("$2" dockerfile | grep -v build_timestamp)
