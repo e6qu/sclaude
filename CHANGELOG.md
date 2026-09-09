@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.3](https://github.com/e6qu/sclaude/compare/v2.14.2...v2.14.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* publish smoke test reads the image labels, not the metadata file ([#55](https://github.com/e6qu/sclaude/issues/55)) ([193d6a4](https://github.com/e6qu/sclaude/commit/193d6a45c1b1bfc540795d1c07ce8ca45f18086f))
+
 ## [2.14.2](https://github.com/e6qu/sclaude/compare/v2.14.1...v2.14.2) (2026-09-09)
 
 
