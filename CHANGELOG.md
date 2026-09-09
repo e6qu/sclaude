@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.15.1](https://github.com/e6qu/sclaude/compare/v2.15.0...v2.15.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* let a half-published release be finished ([#62](https://github.com/e6qu/sclaude/issues/62)) ([b42ecb7](https://github.com/e6qu/sclaude/commit/b42ecb7b7424149a8537530290cce7888827ce10))
+
 ## [2.15.0](https://github.com/e6qu/sclaude/compare/v2.14.4...v2.15.0) (2026-09-09)
 
 
