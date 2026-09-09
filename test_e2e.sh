@@ -1045,16 +1045,24 @@ STUB
         exit 1
     fi
     grep -q "^ARG GO_VERSION=none\$" "$tmp/Dockerfile"
-    # SAGENT_TOOLS=none: only the agent CLIs are installed.
+    # SAGENT_TOOLS=none: only the agent CLIs are installed, in their own
+    # last layer; no JS tooling layer at all.
     SAGENT_TOOLS=none "$1" --build >/dev/null 2>&1 || true
-    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    grep -q "npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
+    if grep -qE "^RUN npm install -g " "$tmp/Dockerfile"; then
+        echo "a JS tooling layer was emitted despite SAGENT_TOOLS=none" >&2
+        exit 1
+    fi
     if grep -qE "corepack enable|apache-maven|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
         echo "tooling emitted despite SAGENT_TOOLS=none" >&2
         exit 1
     fi
     # A subset: named tools and nothing else.
     SAGENT_TOOLS="bun,maven" "$1" --build >/dev/null 2>&1 || true
-    grep -q "^RUN npm install -g @anthropic-ai/claude-code @openai/codex bun\$" "$tmp/Dockerfile"
+    # The selected JS tooling is its own layer; the agent CLIs are the last
+    # one, so a CLI release does not rebuild everything after them.
+    grep -q "^RUN npm install -g bun\$" "$tmp/Dockerfile"
+    grep -q "npm install -g @anthropic-ai/claude-code @openai/codex\$" "$tmp/Dockerfile"
     grep -q "apache-maven" "$tmp/Dockerfile"
     if grep -qE "corepack enable|gradle.zip|quarkus-cli|spring-boot-cli" "$tmp/Dockerfile"; then
         echo "unselected tooling emitted" >&2

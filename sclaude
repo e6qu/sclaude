@@ -746,7 +746,10 @@ ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:/home/agent/.cargo/
 # this one layer from a cached image instead of the whole thing.
 USER root
 ARG AGENT_CLI_REFRESH=initial
-RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && npm install -g @anthropic-ai/claude-code @openai/codex
+# NPM_CONFIG_PREFIX is set above for the agent's runtime npm (a volume at
+# /home/agent/.npm-global): install into the system prefix instead, or the
+# CLIs would land where that volume later hides them.
+RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex
 USER agent
 DOCKERFILE_END
 }
@@ -901,7 +904,7 @@ stage_ca_bundle() {
 # the VM disk, which the host cannot see.
 engine_disk_free_gb() {
     "$ENGINE_CMD" run --rm "ubuntu:${UBUNTU_VERSION}" \
-        sh -c "df -Pk / | awk 'NR==2 {print int(\$4/1048576)}'" 2>/dev/null | tr -cd '0-9'
+        sh -c "df -Pk / | awk 'NR==2 {print int(\$4/1048576)}'" </dev/null 2>/dev/null | tr -cd '0-9'
 }
 
 # The image needs roughly this much free space in the engine to build.
