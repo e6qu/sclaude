@@ -78,10 +78,10 @@ jobs:
 
   upload-assets:
     needs: tag
-    # Without this, a manual run skips here: release-please is skipped on
-    # that path, and GitHub carries a skipped ancestor down the graph even
-    # though `tag` itself succeeded.
-    if: needs.tag.result == 'success'
+    # always(), not just the result check: on a manual run release-please is
+    # skipped, and GitHub carries that skip past `tag` (which survives it with
+    # always()) to everything below unless each job opts out the same way.
+    if: always() && needs.tag.result == 'success'
     runs-on: ubuntu-latest
     steps:
       # Check out the TAG, not github.sha: when merges land back-to-back, the
@@ -172,7 +172,7 @@ jobs:
   # latest, so nothing moves under a user.
   build-image:
     needs: tag
-    if: needs.tag.result == 'success'
+    if: always() && needs.tag.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -223,7 +223,7 @@ jobs:
 
   publish-manifest:
     needs: [tag, build-image]
-    if: needs.tag.result == 'success' && needs.build-image.result == 'success'
+    if: always() && needs.tag.result == 'success' && needs.build-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
