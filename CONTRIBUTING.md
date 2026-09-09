@@ -119,7 +119,25 @@ git commit -m "docs: update security notes for new capabilities"
 
 When a PR with conventional commits merges to `main`, release-please automatically:
 1. Opens a release PR with updated CHANGELOG.md and version bump
-2. When the release PR merges, creates a GitHub release with the `sclaude` and `scodex` scripts attached
+2. When the release PR merges, creates a GitHub release with the `sclaude` and `scodex` scripts attached, then builds and publishes the per-architecture images and their manifest
+
+### When a release does not finish
+
+Releasing has several steps, and a failure part way leaves a release that
+exists but has no wrappers attached, or wrappers but no images. Run the
+Release Please workflow by hand with the tag to publish what is missing:
+
+```bash
+gh workflow run release-please.yml -f tag=v2.15.1
+```
+
+That path skips release-please itself and runs the publishing jobs only, so
+it is safe to repeat and cannot cut a release by accident.
+
+If release-please stops before creating the release at all, its pull request
+keeps the `autorelease: pending` label and every later run retries that same
+version instead of moving on. After publishing that version, swap the label
+for `autorelease: tagged` so the next merge releases what comes after it.
 
 ## Adding a Bug Fix
 
