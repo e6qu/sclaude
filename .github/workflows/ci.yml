@@ -165,15 +165,17 @@ jobs:
           colima status
           exit 1
       - name: Trim the sandbox image for this VM job
-        # This job's coverage is the mac-host/VM topology; the Linux jobs build
-        # the full image. Without the optional tooling and Rust the cold build
-        # on the Intel runner stays well inside the job limit (the full image
-        # took 60 minutes on colima). Written to the config file, not the
-        # environment, so tests that set their own SAGENT_CONFIG_FILE or
-        # environment (T32, T35, T38) still see the defaults they expect.
+        # This job's coverage is the mac-host/VM topology, not image content:
+        # every Linux job builds the full image. The toolchains left out here
+        # are the bulk of the bytes, and on a VM-backed engine the image size
+        # drives the build twice over (download, then export and unpack).
+        # Written to the config file, not the environment, so tests that set
+        # their own SAGENT_CONFIG_FILE or environment (T32, T35, T38) still
+        # see the defaults they expect.
         run: |
           mkdir -p ~/.config/sagent
-          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' > ~/.config/sagent/config
+          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
+            'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
       - name: Prime the image build cache
         # The cold build takes 10-20+ minutes depending on the runner instance
         # and would trip the per-test timeout inside the suite; built here, T02
@@ -189,7 +191,10 @@ jobs:
         # home directory and T12b (a /tmp workspace) is skipped.
         env:
           TEST_TIMEOUT_SECONDS: "1200"
-          SAGENT_TEST_SKIP: "T10 T31 T12b"
+          # T02 is the build the "Prime the image build cache" step above
+          # already ran; repeating it costs another full image export and
+          # unpack on these VM engines for no extra coverage.
+          SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           # The engine probe (docker info) can stall for more than the 10s
           # default while the Lima VM is under build/test load; one such stall
           # failed T04 with "engine not responding" on an otherwise green run.
@@ -283,21 +288,26 @@ jobs:
           docker context show
           docker version
       - name: Trim the sandbox image for this VM job
-        # This job's coverage is the mac-host/VM topology; the Linux jobs build
-        # the full image. Without the optional tooling and Rust the cold build
-        # on the Intel runner stays well inside the job limit (the full image
-        # took 60 minutes on colima). Written to the config file, not the
-        # environment, so tests that set their own SAGENT_CONFIG_FILE or
-        # environment (T32, T35, T38) still see the defaults they expect.
+        # This job's coverage is the mac-host/VM topology, not image content:
+        # every Linux job builds the full image. The toolchains left out here
+        # are the bulk of the bytes, and on a VM-backed engine the image size
+        # drives the build twice over (download, then export and unpack).
+        # Written to the config file, not the environment, so tests that set
+        # their own SAGENT_CONFIG_FILE or environment (T32, T35, T38) still
+        # see the defaults they expect.
         run: |
           mkdir -p ~/.config/sagent
-          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' > ~/.config/sagent/config
+          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
+            'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
       - name: Prime the image build cache
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
         env:
           TEST_TIMEOUT_SECONDS: "1200"
-          SAGENT_TEST_SKIP: "T10 T31 T12b"
+          # T02 is the build the "Prime the image build cache" step above
+          # already ran; repeating it costs another full image export and
+          # unpack on these VM engines for no extra coverage.
+          SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |
           mkdir -p "$HOME/sagent-test"
