@@ -5,12 +5,13 @@ on:
   push:
     branches: [main]
 
-# Release PRs are opened by github-actions[bot], and GitHub holds workflow
-# runs on bot-authored PRs for manual approval: no job ever starts and the
-# check ends red for good. Those PRs only bump the version and the
-# changelog, the same commit is tested on main right after the merge, and
-# the release workflow re-verifies the published wrappers. So skip them
-# here instead of leaving a check that never runs.
+# No CI on the release PR. It is opened by github-actions[bot], and GitHub
+# holds workflow runs on bot-authored PRs for manual approval, so no job
+# ever starts and the check ends red for good. Releasing itself is
+# untouched: the Release Please workflow runs on push to main, and merging
+# that PR still cuts the release, uploads the wrappers and publishes the
+# images. The commit is tested on main right after the merge, and the
+# release workflow re-verifies the published wrappers.
 
 # Cancel in-progress runs for the same PR or branch
 concurrency:
