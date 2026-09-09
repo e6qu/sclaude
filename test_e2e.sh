@@ -106,7 +106,7 @@ fi
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -ec '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
     IMG="$SUITE_IMG"
@@ -157,7 +157,7 @@ run_test "T08: cleanup" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1'
 # ── T09: reset command (non-interactive) ──────────────────────────────
 run_test "T09: reset (auto-confirm)" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
             exit 1
@@ -302,7 +302,7 @@ run_test "T13: volumes report (no literal -e)" bash -ec '
     # The disk usage report lists the current image, every volume with a
     # size or state, and the caches total.
     echo "$OUTPUT" | grep -q "^  ${SUITE_IMG#*:} .* current"
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
         echo "$OUTPUT" | grep -qE "^  $vol +([0-9.]+[kMGT]?B|n/a|\(not created\))"
     done
     echo "$OUTPUT" | grep -q "^Volumes total: .*; caches: "
@@ -1290,7 +1290,7 @@ run_test "T36: stale toolchain caches cleared automatically" bash -ec '
 
 # ── T37: reset-caches keeps credentials, config and home ─────────────
 run_test "T37: reset-caches clears only cache volumes" bash -ec '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset-caches
@@ -1300,9 +1300,52 @@ run_test "T37: reset-caches clears only cache volumes" bash -ec '
             exit 1
         fi
     done
-    for vol in sclaude-config scodex-config sagent-rootfs; do
+    # sagent-share holds tools someone installed (uv), not a cache.
+    for vol in sclaude-config scodex-config sagent-rootfs sagent-share; do
         "$ENGINE" volume inspect "$vol" >/dev/null
     done
+' _ "$SCLAUDE"
+
+# ── T37b: ~/.local/share is its own volume, migrated in place ────────
+# uv installs tools and its managed Pythons under ~/.local/share, which used
+# to sit in the pip volume and was wiped whenever the image Python changed.
+# An existing install must not have to do anything but run again.
+run_test "T37b: share volume, migrated from the pip volume" bash -ec '
+    # Its own workspace: `shell` attaches to a sandbox already running for a
+    # directory, and an attached shell runs no sync, so the migration under
+    # test would never happen.
+    WS=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t37b.XXXXXX")
+    trap "rm -rf \"$WS\"" EXIT
+    cd "$WS"
+    "$ENGINE" volume rm sagent-share >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-pip >/dev/null 2>&1 || true
+    "$ENGINE" run --rm --user root -v sagent-pip:/p "$SUITE_IMG" bash -ec "
+        mkdir -p /p/share/uv/tools/marker && echo carried > /p/share/uv/tools/marker/f
+    "
+    rc=0
+    out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" shell -c "cat ~/.local/share/uv/tools/marker/f" 2>&1) || rc=$?
+    if ! echo "$out" | grep -q "^carried$" || ! echo "$out" | grep -q "Moving ~/.local/share"; then
+        echo "the marker staged in the pip volume did not move into the share volume (run exited $rc); the run said:" >&2
+        echo "$out" >&2
+        echo "volumes:" >&2
+        "$ENGINE" volume ls --format "{{.Name}}" | grep -E "^sagent-|^sclaude-" >&2 || true
+        exit 1
+    fi
+    # The volume mounts on a directory the image owns, so the sandbox user
+    # can write there even when nothing repaired the ownership.
+    "$ENGINE" run --rm "$SUITE_IMG" bash -ec "
+        [ \"\$(stat -c %U /home/agent/.local/share)\" = agent ]
+        [ \"\$(stat -c %U /home/agent/.local/bin)\" = agent ]
+        [ \"\$(stat -c %U /home/agent/.npm-global)\" = agent ]
+    "
+    # A tool installed with uv is there on the next run. --force so a leftover
+    # executable from an earlier run is replaced instead of refused.
+    if ! install=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" shell -c "uv tool install --force --quiet cowsay" 2>&1); then
+        echo "uv tool install failed:" >&2
+        echo "$install" >&2
+        exit 1
+    fi
+    SAGENT_SKIP_RELEASE_CHECK=1 "$1" shell -c "uv tool list" 2>/dev/null | grep -q cowsay
 ' _ "$SCLAUDE"
 
 # ── T38: tools and config commands edit the text config ──────────────

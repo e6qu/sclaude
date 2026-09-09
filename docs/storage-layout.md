@@ -16,7 +16,8 @@ sclaude-config          →  /sclaude-config/                  Claude Code confi
 scodex-config           →  /scodex-config/                   Codex auth and config
 sagent-rootfs           →  /home/agent/                      Shared home directory & preferences; Go, cargo, Maven/Gradle caches
 sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages
-sagent-pip              →  /home/agent/.local/               Shared pip user packages, uv-managed Pythons, pip scripts
+sagent-pip              →  /home/agent/.local/                Shared pip user packages and pip scripts
+sagent-share            →  /home/agent/.local/share/          uv tools, uv-managed Pythons, other XDG data (not a cache)
 sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
 sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
@@ -68,7 +69,8 @@ run after a version change; `sclaude volumes` shows usage and
 
 ### Package Management
 - `/home/agent/.npm-global/` - npm global packages
-- `/home/agent/.local/` - pip user packages, uv-managed Pythons (`uv python install` as the agent)
+- `/home/agent/.local/` - pip user packages and scripts
+- `/home/agent/.local/share/` - what `uv tool install` installs and the Pythons uv manages, in their own volume: the pip volume around it is cleared when the image Python changes, and neither belongs to that Python. Content left in the old location moves here on the next run
 - `/home/agent/go/` - Go module cache and `go install` binaries
 - `/home/agent/.cargo/` - cargo registry and `cargo install` binaries
 - `/home/agent/.m2/`, `/home/agent/.gradle/` - Maven and Gradle caches (projects' `mvnw`/`gradlew` wrappers download into them)

@@ -40,6 +40,11 @@ PIP_VOLUME="sagent-pip"
 APT_CACHE_VOLUME="sagent-apt-cache"
 APT_LISTS_VOLUME="sagent-apt-lists"
 CONTAINERS_VOLUME="sagent-containers"
+# XDG data: what `uv tool install` installs, the Pythons uv manages, and
+# anything else a tool keeps in ~/.local/share. Its own volume because the
+# pip volume around it is cleared on a Python change, and none of this
+# belongs to the image's Python.
+SHARE_VOLUME="sagent-share"
 
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
@@ -723,7 +728,16 @@ RUN set -eux; \
     git config --system credential.https://gist.github.com.helper '!gh auth git-credential'; \
     git lfs install --system --skip-repo
 
-RUN mkdir -p /workspace && chown agent /workspace
+# Every path a volume mounts on exists here, owned by agent. An engine that
+# has to create a missing mount point makes it root-owned, and the sandbox
+# user cannot write to its own home directory; a fresh volume mounted on an
+# existing directory takes that directory's ownership instead.
+RUN set -eux; \
+    mkdir -p /workspace \
+        /home/agent/.npm-global \
+        /home/agent/.local/bin \
+        /home/agent/.local/share/containers; \
+    chown -R agent /workspace /home/agent
 
 USER agent
 ENV BROWSER=/usr/local/bin/host-open
@@ -1052,7 +1066,8 @@ sclaude-config|Claude credentials, config, sessions|
 scodex-config|Codex auth and config|
 $ROOTFS_VOLUME|home directory: shell state, gh auth, Go/Rust/Java caches|
 $NPM_VOLUME|npm global packages|cache
-$PIP_VOLUME|pip user packages and uv-managed Pythons|cache
+$PIP_VOLUME|pip user packages|cache
+$SHARE_VOLUME|uv tools and uv-managed Pythons, other XDG data|
 $APT_CACHE_VOLUME|apt package downloads|cache
 $APT_LISTS_VOLUME|apt package indexes|cache
 $CONTAINERS_VOLUME|nested container images and state|cache
@@ -1419,7 +1434,7 @@ status_command() {
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
-        for v in sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
+        for v in sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
             if "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1; then vol_count=$((vol_count + 1)); fi
         done
         while read -r v size; do
@@ -1427,7 +1442,7 @@ status_command() {
         done <<EOF
 $("$ENGINE_CMD" system df -v 2>/dev/null | awk '/^VOLUME NAME/ {t = 1; next} t && NF == 0 {t = 0} t && ($1 ~ /^(sagent-|sclaude-|scodex-)/) {print $1, $NF}')
 EOF
-        printf '%-13s %s\n' "Volumes:" "$vol_count of 8 present, $(bytes_to_size "$vol_total") (\`$SCRIPT_NAME volumes\` for the breakdown)"
+        printf '%-13s %s\n' "Volumes:" "$vol_count of 9 present, $(bytes_to_size "$vol_total") (\`$SCRIPT_NAME volumes\` for the breakdown)"
     fi
 
     if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -2152,7 +2167,7 @@ reset_volumes() {
     # them first so the volume removal can succeed. Running containers are left
     # alone and keep their volumes pinned (reported by remove_volumes).
     remove_stale_sandbox_containers
-    remove_volumes sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
+    remove_volumes sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
     echo "[$SCRIPT_NAME] Reset complete. Volumes will be recreated on next run." >&2
 }
 
@@ -2206,7 +2221,7 @@ parse_args() {
 create_volumes() {
     local existing v
     existing=$("$ENGINE_CMD" volume ls --format '{{.Name}}' 2>/dev/null || true)
-    for v in "$CONFIG_VOLUME" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
+    for v in "$CONFIG_VOLUME" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
         if ! printf '%s\n' "$existing" | grep -qFx "$v"; then
             "$ENGINE_CMD" volume create "$v" >/dev/null 2>&1 || true
         fi
@@ -2506,6 +2521,7 @@ sync_state() {
         -v "$ROOTFS_VOLUME":/vol-rootfs \
         -v "$NPM_VOLUME":/vol-npm \
         -v "$PIP_VOLUME":/vol-pip \
+        -v "$SHARE_VOLUME":/vol-share \
         -v "$APT_CACHE_VOLUME":/vol-apt-cache \
         -v "$APT_LISTS_VOLUME":/vol-apt-lists \
         -v "$CONTAINERS_VOLUME":/vol-containers \
@@ -2529,12 +2545,25 @@ sync_state() {
                     printf "%s\n" "$expected" > "$dir/.sagent-stamp"
                 fi
             }
+            # ~/.local/share used to sit inside the pip volume, which is
+            # cleared whenever the image Python changes. Move what is there
+            # into its own volume the first time that volume is mounted, so
+            # `update` is all an existing install needs.
+            if [ -d /vol-pip/share ] && [ -z "$(ls -A /vol-share 2>/dev/null)" ] && [ -n "$(ls -A /vol-pip/share 2>/dev/null)" ]; then
+                echo "['"$SCRIPT_NAME"'] Moving ~/.local/share (uv tools and uv-managed Pythons) into the sagent-share volume, where a Python change no longer clears it" >&2
+                if (cd /vol-pip/share && tar -cf - .) | (cd /vol-share && tar -xf -); then
+                    rm -rf /vol-pip/share
+                    chown -R "$TARGET_UID:$TARGET_GID" /vol-share
+                else
+                    echo "['"$SCRIPT_NAME"'] Warning: could not move ~/.local/share; it stays in the pip volume" >&2
+                fi
+            fi
             stamp_volume /vol-pip "python='"$PYTHON_VERSION"'" "Sandbox Python"
             stamp_volume /vol-npm "node='"$NODE_VERSION"'" "Sandbox Node.js"
             stamp_volume /vol-apt-cache "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
             stamp_volume /vol-apt-lists "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
             stamp_volume /vol-containers "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
-            for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-containers; do
+            for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-share /vol-containers; do
                 if [ "$(stat -c %u "$d" 2>/dev/null)" != "$TARGET_UID" ]; then
                     chown -R "$TARGET_UID:$TARGET_GID" "$d"
                 fi
@@ -2845,6 +2874,7 @@ run_tool() {
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \
         -v "$PIP_VOLUME:/home/agent/.local:rw" \
+        -v "$SHARE_VOLUME:/home/agent/.local/share:rw" \
         -v "$CONTAINERS_VOLUME:/home/agent/.local/share/containers:rw" \
         -v "$APT_CACHE_VOLUME:/var/cache/apt:rw" \
         -v "$APT_LISTS_VOLUME:/var/lib/apt/lists:rw" \

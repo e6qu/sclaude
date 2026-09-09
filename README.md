@@ -161,7 +161,8 @@ Every `sclaude` command exists for `scodex` too.
 | `scodex-config` | Codex auth and config |
 | `sagent-rootfs` | Home directory: shell state, git/gh/ssh sync, Go, cargo, Maven, Gradle caches |
 | `sagent-npm` | npm globals (cache) |
-| `sagent-pip` | pip packages, uv Pythons (cache) |
+| `sagent-pip` | pip packages (cache) |
+| `sagent-share` | `~/.local/share`: uv tools and uv-managed Pythons |
 | `sagent-apt-cache`, `sagent-apt-lists` | apt (cache) |
 | `sagent-containers` | Nested container images (cache) |
 
