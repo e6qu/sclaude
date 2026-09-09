@@ -1786,9 +1786,9 @@ EOF
         doctor_report PASS git:protocol "https ($(git_protocol_source)): SSH remotes are rewritten to HTTPS and gh's token serves git; no SSH keys enter the sandbox"
     fi
     if [ -n "$(host_git_identity)" ]; then
-        doctor_report PASS git:identity "commits in the sandbox are by $(host_git_identity) (host global git config, synced each run; signing settings are not carried over)"
+        doctor_report PASS git:identity "commits in the sandbox are by $(host_git_identity) (the identity git uses in this directory, synced each run; signing settings are not carried over)"
     else
-        doctor_report WARN git:identity "no user.name/user.email in the host's global git config; set them with \`git config --global\` here or inside the sandbox"
+        doctor_report WARN git:identity "git has no user.name/user.email here, so commits in the sandbox would have none either; set them with \`git config --global\`"
     fi
 
     echo "Summary: $DOCTOR_PASS passed, $DOCTOR_WARN warning(s), $DOCTOR_FAIL failed"
@@ -2231,12 +2231,16 @@ host_git_key_skipped() {
     return 1
 }
 
-# The host's global git identity, "Name <email>" or empty.
+# The identity git uses in the workspace, "Name <email>" or empty. Read in
+# the workspace, not from the global config alone: a conditional include
+# (the usual work/personal split) or a repo-local value is what git actually
+# commits as, and a global read outside the repo never sees either.
 host_git_identity() {
-    local name email
+    local dir name email
     command -v git >/dev/null 2>&1 || return 0
-    name=$(git config --global --includes --get user.name 2>/dev/null || true)
-    email=$(git config --global --includes --get user.email 2>/dev/null || true)
+    dir="${WORKSPACE_PATH:-$PWD}"
+    name=$(git -C "$dir" config --get user.name 2>/dev/null || true)
+    email=$(git -C "$dir" config --get user.email 2>/dev/null || true)
     if [ -n "$name" ] || [ -n "$email" ]; then
         printf '%s <%s>' "$name" "$email"
     fi
@@ -2248,7 +2252,7 @@ host_git_identity() {
 # file and holds sandbox-only settings. The host's global excludes file goes
 # in as git's default ignore location.
 stage_host_git_config() {
-    local dir="$1" cfg entry key value excludes
+    local dir="$1" cfg entry key value excludes name email
     cfg="$dir/home/.config/git/config"
     mkdir -p "$dir/home/.config/git"
     {
@@ -2266,6 +2270,19 @@ stage_host_git_config() {
         host_git_key_skipped "$key" && continue
         git config --file "$cfg" --add "$key" "$value" 2>/dev/null || true
     done
+    # An identity that only a conditional include or the repo itself
+    # provides is not in the lines above (include.* and includeIf.* are
+    # host-only keys, and the sandbox has no such paths), but it is what git
+    # commits as here, so carry it over. A repo-local value still wins
+    # inside the sandbox: the workspace's .git/config is mounted with it.
+    if ! git config --file "$cfg" --get user.name >/dev/null 2>&1; then
+        name=$(git -C "${WORKSPACE_PATH:-$PWD}" config --get user.name 2>/dev/null || true)
+        [ -n "$name" ] && git config --file "$cfg" user.name "$name"
+    fi
+    if ! git config --file "$cfg" --get user.email >/dev/null 2>&1; then
+        email=$(git -C "${WORKSPACE_PATH:-$PWD}" config --get user.email 2>/dev/null || true)
+        [ -n "$email" ] && git config --file "$cfg" user.email "$email"
+    fi
     excludes=$(git config --global --includes --get core.excludesfile 2>/dev/null || true)
     case "$excludes" in "~"/*) excludes="$HOME/${excludes#*/}" ;; esac
     [ -n "$excludes" ] || excludes="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"

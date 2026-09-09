@@ -699,6 +699,31 @@ EOF
     "
 ' _ "$SCLAUDE"
 
+# ── T20c: an identity git only has in the workspace is synced ────────
+# A repo-local identity (or one from a conditional include) is what git
+# commits as here, but a read of the global config alone never sees it, and
+# without it commits in the sandbox have no author.
+run_test "T20c: workspace git identity syncs" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t20c.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    mkdir -p "$TMP/ws"
+    printf "[push]\n\tautosetupremote = true\n" > "$TMP/gitconfig"
+    git -C "$TMP/ws" init -q .
+    git -C "$TMP/ws" config user.name "Repo Identity"
+    git -C "$TMP/ws" config user.email repo@example.com
+    # The global config alone has no identity, so this is the case the sync
+    # used to miss.
+    [ -z "$(GIT_CONFIG_GLOBAL="$TMP/gitconfig" git config --global --includes --get user.name || true)" ]
+    (
+        cd "$TMP/ws"
+        GIT_CONFIG_GLOBAL="$TMP/gitconfig" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
+    )
+    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+        [ \"\$(git config --file /h/.config/git/config --get user.name)\" = \"Repo Identity\" ]
+        [ \"\$(git config --file /h/.config/git/config --get user.email)\" = repo@example.com ]
+    "
+' _ "$SCLAUDE"
+
 # ── T20b: the sync tar is quiet when the host clock is ahead ─────────
 # A host clock a fraction of a second ahead of the VM the engine runs in made
 # GNU tar warn about every extracted file. The extraction command is read out
