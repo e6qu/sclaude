@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.2](https://github.com/e6qu/sclaude/compare/v2.14.1...v2.14.2) (2026-09-09)
+
+
+### Performance Improvements
+
+* rebuild one layer for a CLI release, and stop rebuilding what is cached ([#53](https://github.com/e6qu/sclaude/issues/53)) ([c8d9ebc](https://github.com/e6qu/sclaude/commit/c8d9ebce962d881cc9d595239eaab7d1e0112d90))
+
 ## [2.14.1](https://github.com/e6qu/sclaude/compare/v2.14.0...v2.14.1) (2026-09-08)
 
 
