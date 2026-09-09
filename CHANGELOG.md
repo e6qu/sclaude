@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.15.0](https://github.com/e6qu/sclaude/compare/v2.14.4...v2.15.0) (2026-09-09)
+
+
+### Features
+
+* ~/.local/share gets its own volume, so uv tools survive ([#60](https://github.com/e6qu/sclaude/issues/60)) ([df249db](https://github.com/e6qu/sclaude/commit/df249dbd63f61ed96618c82df07caa2761811467))
+
 ## [2.14.4](https://github.com/e6qu/sclaude/compare/v2.14.3...v2.14.4) (2026-09-09)
 
 
