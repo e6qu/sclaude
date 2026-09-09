@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.15.2](https://github.com/e6qu/sclaude/compare/v2.15.1...v2.15.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* publish jobs opt out of the inherited skip ([#66](https://github.com/e6qu/sclaude/issues/66)) ([9d537e4](https://github.com/e6qu/sclaude/commit/9d537e4e1f439381600cb0ee8c6172627d06d3ef))
+* publish jobs run on a manual release finish ([#64](https://github.com/e6qu/sclaude/issues/64)) ([50a3d55](https://github.com/e6qu/sclaude/commit/50a3d55a3ff7fecfeb9636dd3b24c92ad76cdf5a))
+* release creation needs attestation permissions ([#65](https://github.com/e6qu/sclaude/issues/65)) ([7fb1f2c](https://github.com/e6qu/sclaude/commit/7fb1f2c39df6648c8dd88e2091a849cfcfd4d8af))
+* release-please needs issues write for its release labels ([#67](https://github.com/e6qu/sclaude/issues/67)) ([a192b77](https://github.com/e6qu/sclaude/commit/a192b77f5ad7bc5c0a38124db86ab96d7fb7dd65))
+
 ## [2.15.1](https://github.com/e6qu/sclaude/compare/v2.15.0...v2.15.1) (2026-09-09)
 
 
