@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+  # Finish a release whose publishing did not complete. release-please can
+  # create the release and then fail on a transient GitHub API error, which
+  # skips every job below it and leaves a release with no wrappers and no
+  # images. Run this with that tag to publish what is missing.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to finish publishing (for example v2.15.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,6 +29,7 @@ env:
 
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -30,9 +41,36 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  upload-assets:
+  # The tag the jobs below publish: the one release-please just created, or
+  # the one asked for by hand.
+  tag:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.release-please.outputs.release_created)
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.pick.outputs.name }}
+    steps:
+      - id: pick
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            name="$DISPATCH_TAG"
+          else
+            name="$RELEASE_TAG"
+          fi
+          if [ -z "$name" ]; then
+            echo "::error::no tag to publish"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+  upload-assets:
+    needs: tag
     runs-on: ubuntu-latest
     steps:
       # Check out the TAG, not github.sha: when merges land back-to-back, the
@@ -41,11 +79,11 @@ jobs:
       # commit (shipped mis-stamped wrappers on v2.6.3).
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.tag.outputs.name }}
       - name: Upload scripts and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.tag.outputs.name }}
         run: |
           # --clobber keeps a re-run of a partially failed workflow idempotent.
           gh release upload "$TAG" sclaude scodex --clobber
@@ -102,7 +140,7 @@ jobs:
       - name: Verify published assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.tag.outputs.name }}
         run: |
           expected_version="${TAG#v}"
           tmpdir=$(mktemp -d)
@@ -122,8 +160,7 @@ jobs:
   # manifest. Tags: <version>-amd64, <version>-arm64, <version>; never
   # latest, so nothing moves under a user.
   build-image:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    needs: tag
     strategy:
       fail-fast: false
       matrix:
@@ -137,13 +174,13 @@ jobs:
       contents: read
       packages: write
     env:
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      TAG: ${{ needs.tag.outputs.name }}
       ARCH: ${{ matrix.arch }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/sagent-sandbox
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.tag.outputs.name }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -173,13 +210,13 @@ jobs:
           docker push "$IMAGE:$version-$ARCH"
 
   publish-manifest:
-    needs: [release-please, build-image]
+    needs: [tag, build-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     env:
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      TAG: ${{ needs.tag.outputs.name }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/sagent-sandbox
     steps:
       - uses: docker/login-action@v3
