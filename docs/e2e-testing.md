@@ -68,6 +68,7 @@ Linux, against Docker or Podman.
 | T39: `status` | Every snapshot line present with the real engine and image; still prints, naming the problem, without an engine | -- |
 | T40: `doctor` | Healthy setup: engine, workspace, build-time TLS, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
 | T42: `scodex login` | Stub engine: `login` gets `--device-auth`; explicit modes, `status` and `--help` are left alone; the tool container carries the workspace label | #78 |
+| T44: Install and migrate without sudo | `install` copies both wrappers into a user directory and adds it to the shell startup file once (a second run and an rc that already has it change nothing); `update` moves an install from outside the home directory and clears the old copies; a git checkout is left alone | -- |
 | T43: `shell` | Fresh sandbox shell sees the workspace and runs as `agent`; with a sandbox running for the workspace, `shell` attaches to that container | -- |
 | T41: TLS interception auto-fix | Stub engine answers the pre-build probe TLS-FAIL until a bundle arrives: the wrapper exports the host trust store, verifies it, persists bundle and setting, builds with the CA block; a configured bundle lacking the CA stops before the build naming the issuer | #77 |
 

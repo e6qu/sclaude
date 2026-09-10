@@ -1546,4 +1546,68 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
     [ "$out" = "${cid:0:12}" ]
 ' _ "$SCLAUDE"
 
+# ── T44: install and migrate without sudo ────────────────────────────
+# `install` puts both wrappers somewhere the user owns and makes sure that
+# directory is on PATH; running it again changes nothing. `update` moves an
+# install that lives outside the home directory (one that needed sudo) into
+# that same place. The release install path is the copy, not the symlink a
+# checkout gets, so the wrappers are copied out of the checkout first.
+run_test "T44: install and migrate without sudo" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t44.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    # Physical path throughout: on macOS $TMPDIR is reached through a
+    # symlink, and the wrapper resolves what it installs into.
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/home" "$TMP/sysbin"
+    cp "$1" "$(dirname "$1")/scodex" "$TMP/sysbin/"
+    chmod +x "$TMP/sysbin/sclaude" "$TMP/sysbin/scodex"
+    target="$TMP/home/.local/bin"
+
+    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$TMP/sysbin/sclaude" install "$target" 2>&1)
+    echo "$out"
+    if echo "$out" | grep -q sudo; then
+        echo "install used or mentioned sudo" >&2
+        exit 1
+    fi
+    # Both wrappers are there as real copies and run.
+    [ -x "$target/sclaude" ] && [ -x "$target/scodex" ] && [ ! -L "$target/sclaude" ]
+    # A real wrapper, not a truncated copy. Checked without an engine so the
+    # test says something about installing, not about docker being up.
+    head -1 "$target/sclaude" | grep -qx "#!/usr/bin/env bash"
+    grep -q "^SCRIPT_NAME=\"sclaude\"$" "$target/sclaude"
+    grep -q "^SCRIPT_NAME=\"scodex\"$" "$target/scodex"
+    bash -n "$target/sclaude" && bash -n "$target/scodex"
+    # The rc file gained exactly one block, and it does put the directory on PATH.
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    HOME="$TMP/home" bash -c "PATH=/usr/bin:/bin; . \"$TMP/home/.bashrc\"; case \":\$PATH:\" in *\":$target:\"*) exit 0 ;; esac; exit 1"
+    # Running it again is a no-op.
+    HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$target/sclaude" install "$target" >/dev/null 2>&1
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    # An rc that already puts the directory on PATH is left alone.
+    printf "export PATH=\"\$HOME/.local/bin:\$PATH\"\n" > "$TMP/home/.bash_profile"
+    before=$(wc -l < "$TMP/home/.bash_profile")
+    HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$target/sclaude" install "$target" >/dev/null 2>&1
+    [ "$(wc -l < "$TMP/home/.bash_profile")" -eq "$before" ]
+
+    # Migration: an install outside the home directory moves into it. The
+    # fixture directory is writable, so no sudo is needed to clear it.
+    rm -rf "$target" "$TMP/home/.bashrc" "$TMP/home/.bash_profile"
+    # Full PATH here: update needs to find the engine. The install steps
+    # above are the ones that must not depend on it.
+    out=$(HOME="$TMP/home" SHELL=/bin/bash \
+        SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 \
+        "$TMP/sysbin/sclaude" update 2>&1) || true
+    echo "$out"
+    echo "$out" | grep -q "Moving it to $target"
+    [ -x "$target/sclaude" ] && [ -x "$target/scodex" ]
+    [ ! -e "$TMP/sysbin/sclaude" ] && [ ! -e "$TMP/sysbin/scodex" ]
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    # A checkout is left where it is.
+    out=$(HOME="$TMP/home" SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1) || true
+    if echo "$out" | grep -q "which needed sudo"; then
+        echo "a git checkout must not be migrated" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
 print_results
