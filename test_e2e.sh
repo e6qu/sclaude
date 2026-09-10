@@ -704,6 +704,51 @@ run_test "T19e: sessions shared both ways" bash -ec '
     case "$out" in *"No such file"*) ;; *) echo "sessions still shared with SAGENT_SESSIONS=0: $out" >&2; exit 1 ;; esac
 ' _ "$SCLAUDE"
 
+# ── T19f: SAGENT_SESSIONS=all shares the flat stores too ─────────────
+# Transcripts are all a resume needs, and they are per project. The stores
+# that are not (file-history, which holds what /rewind restores) reach the
+# sandbox only with SAGENT_SESSIONS=all, and then both ways.
+run_test "T19f: SAGENT_SESSIONS=all shares file-history" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19f.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/ws" "$TMP/claude/file-history/from-host"
+    export CLAUDE_CONFIG_DIR="$TMP/claude" SAGENT_SKIP_RELEASE_CHECK=1
+    echo host-snapshot > "$TMP/claude/file-history/from-host/aaa@v1"
+
+    # Rewind data the sandbox recorded before anyone opted in.
+    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" bash -ec "
+        mkdir -p /c/file-history/from-volume && echo volume-snapshot > /c/file-history/from-volume/bbb@v1
+    "
+
+    cd "$TMP/ws"
+    # Default: only transcripts. The host stores stay on the host.
+    out=$("$1" shell -c "ls /sclaude-config/file-history/from-host 2>&1 | tail -1" 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *"No such file"*) ;; *) echo "file-history shared without SAGENT_SESSIONS=all: $out" >&2; exit 1 ;; esac
+
+    out=$(SAGENT_SESSIONS=all "$1" shell -c "
+        cat /sclaude-config/file-history/from-host/aaa@v1
+        cat /sclaude-config/file-history/from-volume/bbb@v1
+        mkdir -p /sclaude-config/file-history/from-sandbox
+        echo sandbox-snapshot > /sclaude-config/file-history/from-sandbox/ccc@v1
+    " 2>&1) || { echo "$out" >&2; exit 1; }
+    # The host store is readable inside...
+    echo "$out" | grep -qx host-snapshot
+    # ...what the volume held was moved out rather than hidden...
+    echo "$out" | grep -qx volume-snapshot
+    [ -f "$TMP/claude/file-history/from-volume/bbb@v1" ]
+    # ...and what the sandbox wrote is on the host, owned by this user.
+    [ "$(cat "$TMP/claude/file-history/from-sandbox/ccc@v1")" = sandbox-snapshot ]
+    [ -w "$TMP/claude/file-history/from-sandbox/ccc@v1" ]
+
+    # status and doctor say which of the two is in effect.
+    SAGENT_SESSIONS=all "$1" status 2>&1 | grep -q "sharing file-history too"
+    if "$1" status 2>&1 | grep -q "sharing file-history too"; then
+        echo "status claims file-history is shared by default" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
 # ── T20a: host git config, gh login and SSH sync ─────────────────────
 # The wrapper carries the host's global git config (minus host-only keys)
 # and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
@@ -1807,13 +1852,17 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
 # checkout gets, so the wrappers are copied out of the checkout first.
 run_test "T44: install and migrate without sudo" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t44.XXXXXX")
-    trap "rm -rf \"$TMP\"" EXIT
+    trap "chmod -R u+w \"$TMP\" 2>/dev/null; rm -rf \"$TMP\"" EXIT
     # Physical path throughout: on macOS $TMPDIR is reached through a
     # symlink, and the wrapper resolves what it installs into.
     TMP=$(cd "$TMP" && pwd -P)
-    mkdir -p "$TMP/home" "$TMP/sysbin"
+    mkdir -p "$TMP/home" "$TMP/sysbin" "$TMP/optbin" "$TMP/stub"
     cp "$1" "$(dirname "$1")/scodex" "$TMP/sysbin/"
     chmod +x "$TMP/sysbin/sclaude" "$TMP/sysbin/scodex"
+    # A directory the user cannot write needs root to clear, so the wrapper
+    # shells out to sudo once. Stub it: real sudo would prompt.
+    printf "#!/bin/sh\nexec \"\$@\"\n" > "$TMP/stub/sudo"
+    chmod +x "$TMP/stub/sudo"
     target="$TMP/home/.local/bin"
 
     out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$TMP/sysbin/sclaude" install "$target" 2>&1)
@@ -1842,8 +1891,8 @@ run_test "T44: install and migrate without sudo" bash -ec '
     HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$target/sclaude" install "$target" >/dev/null 2>&1
     [ "$(wc -l < "$TMP/home/.bash_profile")" -eq "$before" ]
 
-    # Migration: an install outside the home directory moves into it. The
-    # fixture directory is writable, so no sudo is needed to clear it.
+    # Migration: an install the user cannot update in place moves into the
+    # home directory, which is the whole point — updates stop needing root.
     rm -rf "$target" "$TMP/home/.bashrc" "$TMP/home/.bash_profile"
     # A stub engine, so this stays about migrating: a real `update` would
     # rebuild the image (the temp HOME has no config, so the hash differs
@@ -1857,20 +1906,136 @@ esac
 exit 0
 STUB
     chmod +x "$TMP/fake-engine"
-    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" \
+    # root writes everywhere, so no install ever needs migrating for it.
+    if [ "$(id -u)" -ne 0 ]; then
+        chmod a-w "$TMP/sysbin"
+        out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="$TMP/stub:/usr/bin:/bin" \
+            SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
+            SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 \
+            "$TMP/sysbin/sclaude" update 2>&1) || true
+        echo "$out"
+        echo "$out" | grep -q "Moving it to $target"
+        [ -x "$target/sclaude" ] && [ -x "$target/scodex" ]
+        [ ! -e "$TMP/sysbin/sclaude" ] && [ ! -e "$TMP/sysbin/scodex" ]
+        [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    fi
+
+    # An install the user can write is theirs to keep, wherever it lives:
+    # moving it would empty the directory they put on PATH (#87).
+    cp "$1" "$(dirname "$1")/scodex" "$TMP/optbin/"
+    chmod +x "$TMP/optbin/sclaude" "$TMP/optbin/scodex"
+    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="$TMP/stub:/usr/bin:/bin" \
         SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
         SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 \
-        "$TMP/sysbin/sclaude" update 2>&1) || true
+        "$TMP/optbin/sclaude" update 2>&1) || true
     echo "$out"
-    echo "$out" | grep -q "Moving it to $target"
-    [ -x "$target/sclaude" ] && [ -x "$target/scodex" ]
-    [ ! -e "$TMP/sysbin/sclaude" ] && [ ! -e "$TMP/sysbin/scodex" ]
-    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    if echo "$out" | grep -q "which needed sudo"; then
+        echo "a writable install directory must be left alone" >&2
+        exit 1
+    fi
+    [ -x "$TMP/optbin/sclaude" ] && [ -x "$TMP/optbin/scodex" ]
     # A checkout is left where it is.
     out=$(HOME="$TMP/home" PATH="/usr/bin:/bin" SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
         SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1) || true
     if echo "$out" | grep -q "which needed sudo"; then
         echo "a git checkout must not be migrated" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
+# ── T45: update shows what changed, with PR links ────────────────────
+# Updating should say what it is about to install. The notes come from the
+# CHANGELOG at the new tag, newest first, stopping at the installed version;
+# release-please's own release PRs are not entries there.
+run_test "T45: update lists the changes and their PRs" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t45.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/bin" "$TMP/stub" "$TMP/home"
+    # Not a checkout: a wrapper that resolves into a git work tree skips the
+    # self-update path entirely.
+    cp "$1" "$(dirname "$1")/scodex" "$TMP/bin/"
+    chmod +x "$TMP/bin/sclaude" "$TMP/bin/scodex"
+    installed=$(sed -n "s/^WRAPPER_VERSION=\"\([^\"]*\)\".*/\1/p" "$TMP/bin/sclaude")
+
+    cat > "$TMP/fixture.md" <<FIXTURE
+# Changelog
+
+## [99.1.0](https://github.com/e6qu/sclaude/compare/v99.0.0...v99.1.0) (2026-10-02)
+
+### Features
+
+* a shared clipboard for the sandbox ([#101](https://github.com/e6qu/sclaude/issues/101)) ([abc1234](https://github.com/e6qu/sclaude/commit/abc1234))
+
+### Bug Fixes
+
+* stop stranding sessions ([#102](https://github.com/e6qu/sclaude/issues/102)) ([def5678](https://github.com/e6qu/sclaude/commit/def5678))
+
+## [$installed](https://github.com/e6qu/sclaude/compare/v0.0.0...v$installed) (2026-09-10)
+
+### Features
+
+* already installed, must not be listed ([#1](https://github.com/e6qu/sclaude/issues/1)) ([0000000](https://github.com/e6qu/sclaude/commit/0000000))
+FIXTURE
+
+    cat > "$TMP/stub/curl" <<STUB
+#!/bin/sh
+url=""
+for a in "\$@"; do case "\$a" in https://*) url="\$a" ;; esac; done
+case "\$url" in
+    */releases/latest) echo "{\"tag_name\": \"v99.1.0\"}" ;;
+    */CHANGELOG.md)    cat "$TMP/fixture.md" ;;
+    *)                 exit 22 ;;
+esac
+STUB
+    chmod +x "$TMP/stub/curl"
+    cat > "$TMP/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n" ;;
+    run) echo TLS-OK ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/fake-engine"
+
+    # The asset download is left to fail: the notes print before it, and
+    # serving a whole release is not what this test is about.
+    out=$(HOME="$TMP/home" PATH="$TMP/stub:/usr/bin:/bin" \
+        SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" SAGENT_SKIP_RELEASE_CHECK=1 \
+        "$TMP/bin/sclaude" update 2>&1) || true
+    echo "$out"
+    echo "$out" | grep -q "Changes since v$installed"
+    echo "$out" | grep -q "99.1.0 (2026-10-02)"
+    echo "$out" | grep -q "a shared clipboard for the sandbox"
+    echo "$out" | grep -q "stop stranding sessions"
+    echo "$out" | grep -qx "        https://github.com/e6qu/sclaude/pull/101"
+    echo "$out" | grep -qx "        https://github.com/e6qu/sclaude/pull/102"
+    # Both headings survive, and nothing at or below the installed version shows.
+    echo "$out" | grep -q "Bug Fixes"
+    if echo "$out" | grep -q "must not be listed"; then
+        echo "listed a version the user already has" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
+# ── T46: the test timer leaves nothing behind ────────────────────────
+# The timeout is a subshell around a sleep. Killing only the subshell left
+# the sleep running to full term, which is why CI cleanup used to terminate
+# dozens of orphans per job.
+run_test "T46: timeout helper reaps its own timer" bash -ec '
+    marker=4813
+    # shellcheck source=test_lib.sh
+    TEST_TIMEOUT_SECONDS=$marker
+    . "$(dirname "$1")/test_lib.sh"
+    TEST_TIMEOUT_SECONDS=$marker
+    out=$(mktemp); trap "rm -f \"$out\"" EXIT
+    run_with_timeout_capture "$out" true
+    # Give the shell a moment to reap, then look for the timer.
+    sleep 1
+    if pgrep -f "sleep $marker" >/dev/null 2>&1; then
+        pgrep -f "sleep $marker" | tr "\n" " " >&2
+        echo "the timer sleep outlived the command it was timing" >&2
         exit 1
     fi
 ' _ "$SCLAUDE"
