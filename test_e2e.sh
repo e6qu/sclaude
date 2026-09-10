@@ -1613,7 +1613,9 @@ run_test "T40: doctor diagnostics" bash -ec '
     echo "$out" | grep -qE "^  PASS  nested "
     echo "$out" | grep -qE "^  PASS  caches "
     echo "$out" | grep -qE "^  (PASS|WARN)  disk "
-    echo "$out" | grep -qE "^  PASS  clipboard "
+    # WARN on a machine with no clipboard at all (a headless CI runner), PASS
+    # where there is one; either way the check must be reported.
+    echo "$out" | grep -qE "^  (PASS|WARN)  clipboard "
     echo "$out" | grep -qE "^  PASS  git:protocol +(ssh|https) "
     echo "$out" | grep -qE "^  (PASS|WARN)  auth:gh "
     echo "$out" | grep -qE "^  (PASS|WARN)  git:identity "
