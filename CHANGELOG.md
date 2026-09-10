@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.18.0](https://github.com/e6qu/sclaude/compare/v2.17.0...v2.18.0) (2026-09-10)
+
+
+### Features
+
+* session state, release notes in update, and a migration that asks first ([#75](https://github.com/e6qu/sclaude/issues/75)) ([de5dbb9](https://github.com/e6qu/sclaude/commit/de5dbb94c81edfd04e6644a8abfa2c2eac9c597b))
+
 ## [2.17.0](https://github.com/e6qu/sclaude/compare/v2.16.0...v2.17.0) (2026-09-10)
 
 
