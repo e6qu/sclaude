@@ -237,6 +237,17 @@ host or use a fine-grained token.
 Host paths do not exist in the sandbox, so `SSL_CERT_FILE` and similar are
 not forwarded; use `SAGENT_CA_BUNDLE`.
 
+#### Session transcripts
+
+The host directory holding this workspace's sessions is bind-mounted into
+the sandbox (`~/.claude/projects/<workspace>`; for Codex the whole
+`~/.codex/sessions` tree, which it does not split per project), so either
+side can resume the other's work. The agent can read and write those
+transcripts: past conversations for this workspace, and with Codex for every
+workspace. That is the same class of content the agent already produces, but
+it is history it could otherwise not reach. `SAGENT_SESSIONS=0` leaves it
+out; sessions started inside the sandbox then stay in its own volume.
+
 #### Clipboard bridge
 
 The wrapper runs a clipboard agent on the host per run and mounts a

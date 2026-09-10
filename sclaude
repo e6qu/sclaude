@@ -11,6 +11,10 @@ TOOL_BIN="claude"
 CONFIG_VOLUME="sclaude-config"
 CONFIG_MOUNT="/sclaude-config"
 CONFIG_ENV_NAME="CLAUDE_CONFIG_DIR"
+# Where this tool keeps session transcripts on the host, and whether they
+# are split per project. Claude Code writes one directory per workspace.
+SESSIONS_HOST_BASE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SESSIONS_PER_PROJECT=true
 YOLO_FLAG="--dangerously-skip-permissions"
 WRAPPER_VERSION="2.16.0" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
@@ -55,7 +59,7 @@ HOST_GID=$(id -g)
 # Environment variables and command-line flags take precedence over the file.
 # Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
 # variables, so `for x in $list` would see one item.
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -122,6 +126,11 @@ fi
 # SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
+fi
+# SAGENT_SESSIONS=0 keeps this workspace's session transcripts out of the
+# sandbox; sessions started inside then stay inside.
+if [ -n "${SAGENT_SESSIONS:-}" ]; then
+    validate_version_setting SAGENT_SESSIONS "$SAGENT_SESSIONS" '^[01]$' '0 or 1'
 fi
 
 # Optional tooling baked into the image, all at their latest release as of
@@ -1202,6 +1211,7 @@ config_validate() {
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
@@ -1554,6 +1564,16 @@ host_git_identity_line() {
     if [ -n "$id" ]; then printf '%s' "$id"; else printf 'no identity in the host global config'; fi
 }
 
+sessions_line() {
+    local host_dir
+    host_dir=$(session_paths | sed -n 1p)
+    if [ -z "$host_dir" ]; then
+        printf 'not shared (SAGENT_SESSIONS=0): a session started inside stays inside'
+    else
+        printf '%s, shared with the host so either side can resume them' "$host_dir"
+    fi
+}
+
 clipboard_bridge_line() {
     local kind
     kind=$(host_clipboard_kind)
@@ -1652,6 +1672,7 @@ status_command() {
     printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
     printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line); protocol: $(git_protocol_line) (synced into the sandbox each run)"
     printf '%-13s %s\n' "Clipboard:" "$(clipboard_bridge_line)"
+    printf '%-13s %s\n' "Sessions:" "$(sessions_line)"
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
@@ -2004,6 +2025,11 @@ EOF
         doctor_report FAIL disk "the engine has ${free} GiB free where it stores images; a build needs about $DISK_FREE_GB_MIN GiB. \`$SCRIPT_NAME cleanup\` and \`$ENGINE_CMD image prune -f\` reclaim it (a VM-backed engine needs a trim or a restart afterwards to hand the space back to the host)"
     else
         doctor_report PASS disk "${free} GiB free in the engine for images"
+    fi
+    if [ -n "$(session_paths | sed -n 1p)" ]; then
+        doctor_report PASS sessions "$(session_paths | sed -n 1p) is shared with the sandbox, so a session started on either side resumes on the other"
+    else
+        doctor_report PASS sessions "not shared (SAGENT_SESSIONS=0): a session started inside the sandbox stays there"
     fi
     if [ "${SAGENT_CLIPBOARD:-1}" = "0" ]; then
         doctor_report PASS clipboard "bridge off (SAGENT_CLIPBOARD=0): the sandbox copies through the terminal (OSC 52) and cannot read the host clipboard"
@@ -2451,6 +2477,68 @@ create_volumes() {
     done
 }
 
+# ---- Sessions shared with the host ----
+
+# Claude Code names a project directory after its path, with every character
+# outside [A-Za-z0-9_-] replaced by a dash. The sandbox mounts the workspace
+# at its host path, so both sides compute the same name.
+session_project_key() {
+    printf '%s' "$1" | LC_ALL=C sed 's/[^a-zA-Z0-9_-]/-/g'
+}
+
+# The host directory holding the sessions this run should see, then where it
+# belongs inside the sandbox. Nothing when sharing is off.
+session_paths() {
+    if [ "${SAGENT_SESSIONS:-1}" = "0" ]; then
+        return 0
+    fi
+    if [ "$SESSIONS_PER_PROJECT" = true ]; then
+        printf '%s\n' "$SESSIONS_HOST_BASE/$(session_project_key "${WORKSPACE_PATH:-$PWD}")"
+        printf '%s\n' "$CONFIG_MOUNT/projects/$(session_project_key "${WORKSPACE_PATH:-$PWD}")"
+    else
+        printf '%s\n' "$SESSIONS_HOST_BASE"
+        printf '%s\n' "$CONFIG_MOUNT/sessions"
+    fi
+}
+
+# The mount that makes host and sandbox share one set of session files, so a
+# session started on either side can be resumed on the other. A bind mount,
+# not a copy: copying would strand whichever side wrote last.
+# The same directory, mounted where the pre-run helper can reach it, plus
+# the path inside the config volume it takes over from.
+SESSION_SYNC_ARGS=()
+SESSION_VOLUME_DIR=""
+build_session_sync_args() {
+    local host_dir sandbox_dir
+    SESSION_SYNC_ARGS=()
+    SESSION_VOLUME_DIR=""
+    host_dir=$(session_paths | sed -n 1p)
+    sandbox_dir=$(session_paths | sed -n 2p)
+    [ -n "$host_dir" ] || return 0
+    mkdir -p "$host_dir" 2>/dev/null || return 0
+    host_dir=$(cd "$host_dir" && pwd -P)
+    SESSION_SYNC_ARGS=(-v "$host_dir:/host-sessions:rw")
+    SESSION_VOLUME_DIR="/vol-config${sandbox_dir#"$CONFIG_MOUNT"}"
+}
+
+SESSION_MOUNT_ARGS=()
+build_session_mount_args() {
+    local host_dir sandbox_dir
+    SESSION_MOUNT_ARGS=()
+    host_dir=$(session_paths | sed -n 1p)
+    sandbox_dir=$(session_paths | sed -n 2p)
+    [ -n "$host_dir" ] || return 0
+    # The directory must exist before the engine mounts it, or the engine
+    # creates it root-owned and the sandbox user cannot write its own
+    # transcripts.
+    if ! mkdir -p "$host_dir" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] WARNING: cannot create $host_dir; sessions will not be shared with the host this run" >&2
+        return 0
+    fi
+    host_dir=$(cd "$host_dir" && pwd -P)
+    SESSION_MOUNT_ARGS=(-v "$host_dir:$sandbox_dir:rw")
+}
+
 # ---- Host state carried into the sandbox: git config, gh login ----
 
 # Keys of the host's global git config that must not reach the sandbox:
@@ -2727,6 +2815,7 @@ sync_state() {
     if [ -n "$CREDS" ]; then
         (umask 077; printf '%s' "$CREDS" > "$stage/config/.credentials.json")
     fi
+    build_session_sync_args
     stage_host_git_config "$stage"
     stage_host_gh_auth "$stage"
     stage_host_ssh "$stage"
@@ -2745,6 +2834,7 @@ sync_state() {
         -v "$NPM_VOLUME":/vol-npm \
         -v "$PIP_VOLUME":/vol-pip \
         -v "$SHARE_VOLUME":/vol-share \
+        "${SESSION_SYNC_ARGS[@]+"${SESSION_SYNC_ARGS[@]}"}" \
         -v "$APT_CACHE_VOLUME":/vol-apt-cache \
         -v "$APT_LISTS_VOLUME":/vol-apt-lists \
         -v "$CONTAINERS_VOLUME":/vol-containers \
@@ -2798,6 +2888,24 @@ sync_state() {
             # on every run, and a host clock a fraction of a second ahead of
             # the VM the engine runs in made GNU tar warn that every one of
             # them had a time stamp in the future.
+            # Sessions the sandbox recorded before sharing existed live in
+            # the config volume, where the host mount is about to hide them.
+            # Move them out once, so no session is stranded on either side.
+            SESSIONS_VOL_DIR='"$SESSION_VOLUME_DIR"'
+            if [ -n "$SESSIONS_VOL_DIR" ] && [ -d /host-sessions ] && [ -d "$SESSIONS_VOL_DIR" ]; then
+                moved=0
+                for f in "$SESSIONS_VOL_DIR"/* "$SESSIONS_VOL_DIR"/.[!.]*; do
+                    [ -e "$f" ] || continue
+                    base=$(basename "$f")
+                    [ -e "/host-sessions/$base" ] && continue
+                    mv "$f" "/host-sessions/$base" || continue
+                    chown -R "$TARGET_UID:$TARGET_GID" "/host-sessions/$base" 2>/dev/null || true
+                    moved=$((moved + 1))
+                done
+                if [ "$moved" -gt 0 ]; then
+                    echo "['"$SCRIPT_NAME"'] Moved $moved session(s) recorded inside the sandbox to the host, where both sides can resume them" >&2
+                fi
+            fi
             mkdir -p /tmp/sync && tar -xmf - -C /tmp/sync
             if [ -f /tmp/sync/config/.credentials.json ]; then
                 if python3 -m json.tool /tmp/sync/config/.credentials.json >/dev/null 2>&1; then
@@ -3086,6 +3194,7 @@ run_tool() {
     fi
 
     start_clipboard_bridge
+    build_session_mount_args
 
     # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
     # workspace bind mount is otherwise unreadable without relabeling host files.
@@ -3099,6 +3208,7 @@ run_tool() {
     local rc=0
     "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
+        "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
