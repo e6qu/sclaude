@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.17.0](https://github.com/e6qu/sclaude/compare/v2.16.0...v2.17.0) (2026-09-10)
+
+
+### Features
+
+* share session transcripts with the host, both ways ([#73](https://github.com/e6qu/sclaude/issues/73)) ([23e969e](https://github.com/e6qu/sclaude/commit/23e969e0e2322a27dedad98c72dfa9035df699ae))
+
 ## [2.16.0](https://github.com/e6qu/sclaude/compare/v2.15.2...v2.16.0) (2026-09-10)
 
 
