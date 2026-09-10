@@ -592,6 +592,68 @@ EOF
     "
 ' _ "$SCLAUDE"
 
+# ── T19d: the clipboard bridge as a real run wires it ────────────────
+# T19c exercises the agent and the shims in isolation. This one checks the
+# wiring `run_tool` does: the spool mounted, WAYLAND_DISPLAY set so the CLIs
+# use the shims, the agent answering, and nothing left behind. The host
+# clipboard is stubbed, so it also runs on a headless CI machine.
+run_test "T19d: clipboard bridge wired into a run" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19d.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/bin" "$TMP/ws"
+    printf "from-the-host" > "$TMP/clip.txt"
+    # One stub for whichever tool this platform reaches for.
+    for name in pbcopy wl-copy xclip xsel; do
+        cat > "$TMP/bin/$name" <<STUB
+#!/bin/sh
+out=0
+for a in "\$@"; do case "\$a" in -o|-ou|-out|--output|-l|--list-types) out=1 ;; esac; done
+case "\$(basename "\$0")" in pbpaste|wl-paste) out=1 ;; esac
+if [ "\$out" = 1 ]; then cat "$TMP/clip.txt"; else cat > "$TMP/clip.txt"; fi
+STUB
+        chmod +x "$TMP/bin/$name"
+    done
+    for name in pbpaste wl-paste; do cp "$TMP/bin/pbcopy" "$TMP/bin/$name"; done
+    export PATH="$TMP/bin:$PATH" DISPLAY=:99 SAGENT_SKIP_RELEASE_CHECK=1
+    cd "$TMP/ws"
+
+    # Bridge on: the spool is mounted, WAYLAND_DISPLAY names it (which is
+    # what makes the Claude CLI use the shims), and both directions work.
+    out=$("$1" shell -c "
+        [ -d /run/sagent/clipboard ] || { echo NO-SPOOL; exit 1; }
+        [ \"\$WAYLAND_DISPLAY\" = sagent-clipboard ] || { echo NO-DISPLAY; exit 1; }
+        printf %s \"\$(pbpaste)\"
+        printf to-the-host | pbcopy
+    " 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *NO-SPOOL*|*NO-DISPLAY*) echo "$out" >&2; exit 1 ;; esac
+    # What the sandbox pasted came from the host stub...
+    case "$out" in *from-the-host*) ;; *) echo "paste did not reach the host: $out" >&2; exit 1 ;; esac
+    # ...and what it copied reached the host.
+    [ "$(cat "$TMP/clip.txt")" = to-the-host ]
+    # The per-run spool is gone afterwards.
+    if find "${XDG_CACHE_HOME:-$HOME/.cache}/sagent" -maxdepth 1 -name "clipboard.*" 2>/dev/null | grep -q .; then
+        for d in "${XDG_CACHE_HOME:-$HOME/.cache}/sagent"/clipboard.*; do
+            pid=$(cat "$d/.agent-pid" 2>/dev/null || echo 0)
+            kill -0 "$pid" 2>/dev/null && continue
+            echo "a spool directory outlived its run: $d" >&2
+            exit 1
+        done
+    fi
+
+    # Bridge off: no spool, no WAYLAND_DISPLAY, and a copy falls back to the
+    # terminal escape instead of silently doing nothing.
+    out=$(SAGENT_CLIPBOARD=0 "$1" shell -c "
+        [ -d /run/sagent/clipboard ] && { echo SPOOL-PRESENT; exit 1; }
+        [ -n \"\$WAYLAND_DISPLAY\" ] && { echo DISPLAY-SET; exit 1; }
+        printf hello | pbcopy 2>&1 | od -An -c | tr -d \" \\n\"
+    " 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *SPOOL-PRESENT*|*DISPLAY-SET*) echo "$out" >&2; exit 1 ;; esac
+    case "$out" in *"52;c;aGVsbG8="*) ;; *) echo "no OSC 52 fallback with the bridge off: $out" >&2; exit 1 ;; esac
+    # The host clipboard was left alone by that run.
+    [ "$(cat "$TMP/clip.txt")" = to-the-host ]
+' _ "$SCLAUDE"
+
 # ── T20a: host git config, gh login and SSH sync ─────────────────────
 # The wrapper carries the host's global git config (minus host-only keys)
 # and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
@@ -1518,13 +1580,18 @@ run_test "T38: tools/config commands" bash -ec '
 run_test "T39: status snapshot" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" status)
-    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials Volumes Workspace; do
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard Volumes Workspace; do
         echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
     done
     echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
     echo "$out" | grep -q "^Image: .*$SUITE_IMG"
     echo "$out" | grep -q "^Toolchain: *ubuntu="
     echo "$out" | grep -qE "^Workspace: .*(git: |not a git repository)"
+    # Host state names the git identity, the gh logins and the protocol in
+    # effect; Clipboard says which way the bridge goes.
+    echo "$out" | grep -qE "^Host state: +git: .*; gh: .*; protocol: (ssh|https)"
+    echo "$out" | grep -qE "^Clipboard: +(bridged both ways|bridge off|no clipboard on this host)"
+    SAGENT_CLIPBOARD=0 "$1" status | grep -qE "^Clipboard: +bridge off \(SAGENT_CLIPBOARD=0\)"
     # No engine: status still prints, naming the problem instead of failing.
     SAGENT_CONTAINER_ENGINE=/nonexistent/engine "$1" status | grep -q "^Engine: .*none responding"
 ' _ "$SCLAUDE"
@@ -1545,6 +1612,13 @@ run_test "T40: doctor diagnostics" bash -ec '
     echo "$out" | grep -qE "^  PASS  network "
     echo "$out" | grep -qE "^  PASS  nested "
     echo "$out" | grep -qE "^  PASS  caches "
+    echo "$out" | grep -qE "^  (PASS|WARN)  disk "
+    echo "$out" | grep -qE "^  PASS  clipboard "
+    echo "$out" | grep -qE "^  PASS  git:protocol +(ssh|https) "
+    echo "$out" | grep -qE "^  (PASS|WARN)  auth:gh "
+    echo "$out" | grep -qE "^  (PASS|WARN)  git:identity "
+    # The clipboard check follows the setting rather than reporting a constant.
+    SAGENT_CLIPBOARD=0 "$1" doctor | grep -qE "^  PASS  clipboard +bridge off"
     echo "$out" | grep -qE "^Summary: [0-9]+ passed, [0-9]+ warning\(s\), 0 failed$"
     if echo "$out" | grep -q "^  FAIL"; then echo "$out" >&2; exit 1; fi
     # Missing engine: FAIL line, exit 1, and the rest of the report still prints.

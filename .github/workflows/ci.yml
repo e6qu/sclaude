@@ -13,10 +13,12 @@ on:
 # images. The commit is tested on main right after the merge, and the
 # release workflow re-verifies the published wrappers.
 
-# Cancel in-progress runs for the same PR or branch
+# Cancel superseded runs for a pull request, but never on main: two merges
+# landing together used to cancel main's suite, and nothing gates releasing
+# on CI, so a release could be cut from a commit whose tests never finished.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Restrict permissions to minimum needed
 permissions:
