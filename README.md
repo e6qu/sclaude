@@ -24,23 +24,35 @@ Something off? `sclaude doctor` checks everything and names the fix.
 
 ## Install
 
+No sudo, nothing outside your home directory:
+
 ```bash
 # Release
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
 chmod +x sclaude scodex
-sudo mv sclaude scodex /usr/local/bin/
+./sclaude install          # copies both into ~/.local/bin and puts it on PATH
 
 # Source
 git clone https://github.com/e6qu/sclaude.git && cd sclaude
-sudo ln -s "$(pwd)/sclaude" "$(pwd)/scodex" /usr/local/bin/
+./sclaude install          # links both instead, so `git pull` updates them
 ```
+
+`install` takes a directory if you want another one (`./sclaude install
+~/bin`), or set `SAGENT_INSTALL_DIR`. When the directory is not on PATH it
+adds it to your shell's startup file, once: running `install` again changes
+nothing, and a startup file that already puts the directory on PATH is left
+alone.
 
 Update with `sclaude update`: it updates both wrappers and, when the Claude
 or Codex CLI has a new release, reinstalls them in the image. That is the
 last layer, so it takes a minute rather than a full rebuild;
 `sclaude update --force-rebuild` rebuilds everything from scratch (new base
 image, OS packages, toolchains). From source: `git pull && sclaude --build`.
+
+Installed in `/usr/local/bin` from an older version? The first `sclaude
+update` moves it to `~/.local/bin` and asks for your password once, to clear
+out what sudo put there. `SAGENT_SKIP_MIGRATION=1` leaves it where it is.
 
 ## Usage
 
@@ -139,6 +151,7 @@ selection.
 | `sclaude update` | Update both wrappers; reinstall the agent CLIs in the image when they have a new release (`--force-rebuild` rebuilds everything) |
 | `sclaude check-update` | Check for a newer wrapper |
 | `sclaude --build` | Build the image without running |
+| `sclaude install [DIR]` | Put both wrappers in `~/.local/bin` (or DIR) and on PATH, without sudo |
 | `sclaude cleanup` | Remove old image versions |
 | `sclaude dockerfile` | Print the Dockerfile a build would use |
 | `sclaude version` | Version, toolchain, tools, build metadata |

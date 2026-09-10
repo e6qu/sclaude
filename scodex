@@ -217,7 +217,12 @@ cleanup_temp() {
         rm -rf "$f"
     done
 }
-trap cleanup_temp EXIT INT TERM HUP
+# EXIT alone would clean up and then carry on: an interrupt during a
+# pre-flight step used to tear down the temp state and still launch the
+# sandbox the user had just cancelled.
+trap cleanup_temp EXIT
+trap 'cleanup_temp; exit 130' INT
+trap 'cleanup_temp; exit 143' TERM HUP
 
 portable_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -317,6 +322,12 @@ detect_engine_flavor() {
     case "$server_section" in
         *[Pp]odman*) ENGINE_SERVER_FLAVOR="podman" ;;
     esac
+    # Native podman on Linux prints no Server section at all (only
+    # podman-remote and podman machine do). Calling that a docker server is
+    # wrong in every line `version`, `status` and `doctor` print.
+    if [ -z "$server_section" ]; then
+        ENGINE_SERVER_FLAVOR="$ENGINE_CLI_FLAVOR"
+    fi
 
     # A rootless daemon maps the container's non-root UIDs to subordinate
     # UIDs, so the sandbox user (the host UID inside the image) is a stranger
@@ -666,7 +677,18 @@ RUN set -eux; \
         '    esac' \
         '    prev="$a"' \
         'done' \
-        'case "$name" in pbpaste|wl-paste) mode="paste" ;; esac' \
+        '# xclip writes by default and reads with -o; xsel is the other way' \
+        '# round (plain `xsel -b` prints the clipboard), so each keeps its own' \
+        '# default. -i/-a switch xsel back to writing.' \
+        'case "$name" in' \
+        '    pbpaste|wl-paste) mode="paste" ;;' \
+        '    xsel)' \
+        '        mode="paste"' \
+        '        for a in "$@"; do' \
+        '            case "$a" in -i|--input|-a|--append) mode=copy ;; esac' \
+        '        done' \
+        '        ;;' \
+        'esac' \
         '' \
         'fail() { echo "[sagent] $name: $1" >&2; exit 1; }' \
         'wait_gone() {' \
@@ -873,7 +895,11 @@ build_image() {
     # the Dockerfile and context afterwards: the bundle changes both.
     ensure_build_tls
     get_dockerfile_content > "$temp_dockerfile"
-    if [ -n "$CA_BUNDLE_PATH" ] && [ ! -d "$temp_context/sagent-ca" ]; then
+    # Unconditionally: ensure_build_tls may have replaced the bundle, and a
+    # context staged from the old one would build an image that trusts the
+    # wrong CA while its hash claims the new one.
+    rm -rf "$temp_context/sagent-ca" "$temp_context/sagent-ca-bundle.pem"
+    if [ -n "$CA_BUNDLE_PATH" ]; then
         stage_ca_bundle "$temp_context"
     fi
 
@@ -936,7 +962,9 @@ print_disk_guidance() {
 print_build_failure_guidance() {
     local free
     echo "[$SCRIPT_NAME] ERROR: sandbox image build failed (engine output above)." >&2
-    free=$(engine_disk_free_gb)
+    # Never let the probe's own failure swallow the guidance: it runs a
+    # container, which is exactly what may be broken here.
+    free=$(engine_disk_free_gb || true)
     if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
         echo "[$SCRIPT_NAME] The engine is out of disk, which is the likely cause (a \"no space left on device\" error above confirms it)." >&2
         print_disk_guidance "$free"
@@ -1141,8 +1169,11 @@ config_write() {
         grep -vE "^${key}=" "$SAGENT_CONFIG_FILE" > "$tmp" || true
     fi
     if [ -n "$value" ]; then
-        escaped=$(printf '%s' "$value" | sed 's/[\\"]/\\&/g')
-        printf '%s="%s"\n' "$key" "$escaped" >> "$tmp"
+        # Single quotes, because the config file is sourced: inside double
+        # quotes a value holding $ or a backtick is expanded, which corrupts
+        # a path at best and runs a command on every start at worst.
+        escaped=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
+        printf "%s='%s'\n" "$key" "$escaped" >> "$tmp"
     fi
     if ! bash -n "$tmp" 2>/dev/null; then
         echo "[$SCRIPT_NAME] ERROR: refusing to write a config file that does not parse" >&2
@@ -1273,6 +1304,15 @@ EOF
                     enable)
                         if [ -z "${current##* "$name" *}" ]; then new="$new,$name"; continue; fi
                         for item in "$@"; do
+                            # A group cannot pull in Java tools when there is
+                            # no JDK: resolve_tools would then reject the list
+                            # and blame the user for a name they never typed.
+                            # Naming one outright still gets that error.
+                            case "$item" in
+                                all | java)
+                                    [ "$group" = java ] && [ "$JAVA_VERSION" = none ] && continue
+                                    ;;
+                            esac
                             case "$item" in all | "$group" | "$name") new="$new,$name"; break ;; esac
                         done
                         ;;
@@ -1304,6 +1344,182 @@ EOF
     esac
 }
 
+# ---- `install`: put the wrappers on PATH without sudo ----
+
+# Where `install` puts the wrappers when no directory is given. ~/.local/bin
+# is the XDG location every modern tool installs into (uv, pip --user, the
+# Claude CLI itself), and Debian-derived profiles already add it to PATH.
+default_install_dir() { printf '%s' "${SAGENT_INSTALL_DIR:-$HOME/.local/bin}"; }
+
+# Is DIR already on PATH?
+dir_on_path() {
+    case ":$PATH:" in *":$1:"*) return 0 ;; esac
+    return 1
+}
+
+# The shell startup files worth editing for this login shell. bash reads
+# .bash_profile for login shells (what a macOS terminal starts) and .bashrc
+# otherwise, so both get the block; fish has its own syntax and gets its own.
+shell_rc_files() {
+    local shell_name
+    shell_name=$(basename "${SHELL:-/bin/sh}")
+    case "$shell_name" in
+        zsh) printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+        bash)
+            printf '%s\n' "$HOME/.bashrc"
+            if [ "$(uname -s)" = "Darwin" ] || [ -f "$HOME/.bash_profile" ]; then
+                printf '%s\n' "$HOME/.bash_profile"
+            fi
+            ;;
+        fish) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+        *) printf '%s\n' "$HOME/.profile" ;;
+    esac
+}
+
+SAGENT_PATH_MARKER="# added by sclaude/scodex: keep this line to find the block again"
+
+# Add DIR to PATH in FILE, once. The marker makes a second run a no-op, and a
+# file that already puts the directory on PATH some other way is left alone.
+add_dir_to_shell_file() {
+    local dir="$1" file="$2" tilde_dir home_real
+    # $HOME/... reads better in a startup file and survives a moved home. The
+    # physical home matters too: a home under a symlink (/tmp on macOS) would
+    # otherwise leave the resolved path in the file.
+    home_real=$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")
+    tilde_dir=$(printf '%s' "$dir" | sed -e "s#^$HOME/#\$HOME/#" -e "s#^$home_real/#\$HOME/#")
+    if [ -f "$file" ] && grep -qF "$SAGENT_PATH_MARKER" "$file"; then
+        echo "  $file already has the block"
+        return 0
+    fi
+    # Either spelling counts as already handled: the absolute path, or the
+    # $HOME form people usually write.
+    if [ -f "$file" ] && { grep -qF "$dir" "$file" || grep -qF "$tilde_dir" "$file"; }; then
+        echo "  $file already puts $dir on PATH; left alone"
+        return 0
+    fi
+    mkdir -p "$(dirname "$file")"
+    case "$(basename "$file")" in
+        config.fish)
+            {
+                printf '\n%s\n' "$SAGENT_PATH_MARKER"
+                printf 'fish_add_path %s\n' "$tilde_dir"
+            } >> "$file"
+            ;;
+        *)
+            # The literal $PATH belongs in the file, not this shell.
+            # shellcheck disable=SC2016
+            {
+                printf '\n%s\n' "$SAGENT_PATH_MARKER"
+                printf 'case ":$PATH:" in\n'
+                printf '    *":%s:"*) ;;\n' "$tilde_dir"
+                printf '    *) PATH="%s:$PATH" ;;\n' "$tilde_dir"
+                printf 'esac\n'
+            } >> "$file"
+            ;;
+    esac
+    echo "  added $dir to PATH in $file"
+}
+
+# An install outside the home directory is one that needed sudo. Move it
+# into the user's own bin directory, which needs sudo once more to remove
+# what is left behind. Skipped for a git checkout (its symlinks are the
+# user's own) and with SAGENT_SKIP_MIGRATION=1.
+migrate_system_install() {
+    local script_path script_dir target name failed=""
+    [ "${SAGENT_SKIP_MIGRATION:-}" = "1" ] && return 0
+    script_path="$(realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-$0}")"
+    script_dir="$(dirname "$script_path")"
+    case "$script_dir" in "$HOME"/*) return 0 ;; esac
+    git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 && return 0
+    target="$(default_install_dir)"
+    [ "$script_dir" = "$target" ] && return 0
+
+    echo "[$SCRIPT_NAME] This install lives in $script_dir, which needed sudo. Moving it to $target so updates never do." >&2
+    install_command "$target" || return 0
+    # Removing the old copies is the one step that still needs root. The
+    # running script keeps working: its file stays open until it exits.
+    for name in sclaude scodex; do
+        [ -e "$script_dir/$name" ] || continue
+        rm -f "$script_dir/$name" 2>/dev/null && continue
+        if command -v sudo >/dev/null 2>&1; then
+            echo "[$SCRIPT_NAME] Removing the old $script_dir/$name (sudo, this once)..." >&2
+            sudo rm -f "$script_dir/$name" 2>/dev/null && continue
+        fi
+        failed="$failed $script_dir/$name"
+    done
+    if [ -n "$failed" ]; then
+        echo "[$SCRIPT_NAME] Could not remove:$failed" >&2
+        echo "[$SCRIPT_NAME] Remove them yourself so the old copies stop shadowing the new ones: sudo rm$failed" >&2
+    fi
+    echo "[$SCRIPT_NAME] Moved. Open a new shell (or run \`hash -r\`) so the shell finds the new location." >&2
+}
+
+# `install [DIR]`: copy (or, from a git checkout, link) both wrappers into
+# DIR and make sure DIR is on PATH. No sudo, nothing outside the home
+# directory, and safe to run again.
+install_command() {
+    local dir="${1:-$(default_install_dir)}" script_path script_dir from_checkout=false
+    local name pair src installed=""
+
+    script_path="$(realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-$0}")"
+    script_dir="$(dirname "$script_path")"
+    if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        from_checkout=true
+    fi
+
+    if ! mkdir -p "$dir" 2>/dev/null || [ ! -w "$dir" ]; then
+        echo "[$SCRIPT_NAME] ERROR: cannot write $dir" >&2
+        exit 1
+    fi
+    dir="$(cd "$dir" && pwd -P)"
+
+    case "$SCRIPT_NAME" in sclaude) pair=scodex ;; *) pair=sclaude ;; esac
+    for name in "$SCRIPT_NAME" "$pair"; do
+        src="$script_dir/$name"
+        [ "$name" = "$SCRIPT_NAME" ] && src="$script_path"
+        if [ ! -f "$src" ]; then
+            echo "[$SCRIPT_NAME] $name is not next to this script; install it separately or run \`$SCRIPT_NAME update\` afterwards" >&2
+            continue
+        fi
+        if [ "$src" = "$dir/$name" ]; then
+            echo "  $name is already installed here"
+            installed="$installed $name"
+            continue
+        fi
+        if [ "$from_checkout" = true ]; then
+            # A checkout tracks upstream: link so `git pull` updates the
+            # installed command too, which is what the README has always done.
+            if ! ln -sfn "$src" "$dir/$name"; then
+                echo "[$SCRIPT_NAME] ERROR: could not link $name into $dir" >&2
+                continue
+            fi
+            echo "  linked $name -> $src"
+        else
+            if ! cp "$src" "$dir/$name" || ! chmod 0755 "$dir/$name"; then
+                echo "[$SCRIPT_NAME] ERROR: could not install $name into $dir" >&2
+                rm -f "$dir/$name" 2>/dev/null || true
+                continue
+            fi
+            echo "  installed $name"
+        fi
+        installed="$installed $name"
+    done
+    [ -n "$installed" ] || exit 1
+
+    echo "[$SCRIPT_NAME] Installed in $dir"
+    if dir_on_path "$dir"; then
+        echo "  $dir is already on PATH"
+        return 0
+    fi
+    echo "[$SCRIPT_NAME] $dir is not on PATH; adding it:"
+    while IFS= read -r file; do
+        [ -n "$file" ] && add_dir_to_shell_file "$dir" "$file"
+    done <<EOF
+$(shell_rc_files)
+EOF
+    echo "[$SCRIPT_NAME] Open a new shell (or \`exec \$SHELL\`) to pick it up."
+}
+
 # ---- `status` and `doctor`: snapshot and diagnostics ----
 
 wrapper_install_kind() {
@@ -1326,6 +1542,11 @@ host_has_claude_credentials() {
 }
 
 host_has_codex_auth() { [ -f "${CODEX_HOME:-${HOME}/.codex}/auth.json" ]; }
+
+# A timestamp from an epoch on either date(1): BSD takes -r, GNU -d @.
+format_epoch() {
+    date -r "$1" +%Y-%m-%dT%H:%M 2>/dev/null || date -d "@$1" +%Y-%m-%dT%H:%M 2>/dev/null || printf 'unknown'
+}
 
 host_git_identity_line() {
     local id
@@ -1383,7 +1604,7 @@ status_command() {
             printf '%-13s %s\n' "Latest:" "$latest (this wrapper is ahead of the latest release)"
         fi
     else
-        printf '%-13s %s\n' "Latest:" "unknown (releases API unreachable$([ -f "$cache_file" ] && echo "; last check $(date -r "$(cat "$cache_file" 2>/dev/null || echo 0)" +%Y-%m-%dT%H:%M 2>/dev/null)"))"
+        printf '%-13s %s\n' "Latest:" "unknown (releases API unreachable$([ -f "$cache_file" ] && echo "; last check $(format_epoch "$(cat "$cache_file" 2>/dev/null || echo 0)")"))"
     fi
 
     for key in "${SAGENT_SETTINGS[@]}"; do
@@ -1776,7 +1997,7 @@ EOF
     else
         doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
     fi
-    free=$(engine_disk_free_gb)
+    free=$(engine_disk_free_gb || true)
     if [ -z "$free" ]; then
         doctor_report WARN disk "could not read how much space the engine has for images"
     elif [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
@@ -1814,11 +2035,13 @@ print_release_guidance() {
     local latest_tag="$1"
 
     echo "[$SCRIPT_NAME] New wrapper release available: $latest_tag (installed: v$WRAPPER_VERSION)" >&2
-    echo "[$SCRIPT_NAME] Update/install scripts:" >&2
-    echo "  sudo curl -fsSL https://github.com/$PROJECT_REPO/releases/latest/download/sclaude -o /usr/local/bin/sclaude" >&2
-    echo "  sudo chmod +x /usr/local/bin/sclaude" >&2
-    echo "  sudo curl -fsSL https://github.com/$PROJECT_REPO/releases/latest/download/scodex -o /usr/local/bin/scodex" >&2
-    echo "  sudo chmod +x /usr/local/bin/scodex" >&2
+    echo "[$SCRIPT_NAME] Update with: $SCRIPT_NAME update" >&2
+    echo "[$SCRIPT_NAME] Or install by hand, without sudo:" >&2
+    echo "  mkdir -p \"$(default_install_dir)\"" >&2
+    echo "  curl -fsSL https://github.com/$PROJECT_REPO/releases/latest/download/sclaude -o \"$(default_install_dir)/sclaude\"" >&2
+    echo "  curl -fsSL https://github.com/$PROJECT_REPO/releases/latest/download/scodex -o \"$(default_install_dir)/scodex\"" >&2
+    echo "  chmod +x \"$(default_install_dir)\"/sclaude \"$(default_install_dir)\"/scodex" >&2
+    echo "  \"$(default_install_dir)/sclaude\" install   # puts that directory on PATH" >&2
 }
 
 # Fetch the latest release tag (e.g. "v2.4.0") or print empty on failure.
@@ -2152,7 +2375,7 @@ check_release() {
         return 0
     fi
 
-    if [ "${latest_tag#v}" != "$WRAPPER_VERSION" ]; then
+    if version_gt "${latest_tag#v}" "$WRAPPER_VERSION"; then
         print_release_guidance "$latest_tag"
     elif [ "$explicit" = "true" ]; then
         echo "[$SCRIPT_NAME] Wrapper scripts are up to date ($latest_tag)." >&2
@@ -2197,7 +2420,7 @@ parse_args() {
             --force-rebuild)
                 FORCE_REBUILD=true
                 ;;
-            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor|shell|dockerfile)
+            build|--build|update|check-update|cleanup|version|--version|--version-info|volumes|reset|reset-caches|tools|config|status|doctor|shell|dockerfile|install)
                 if [ -z "$WRAPPER_COMMAND" ] && [ "${#ARGS[@]}" -eq 0 ]; then
                     WRAPPER_COMMAND="$arg"
                 else
@@ -2784,7 +3007,14 @@ clipboard_bridge_serve() {
         for f in "$dir"/req-*.paste; do
             [ -e "$f" ] || continue
             id=${f##*/req-}; id=${id%.paste}
-            target=$(cat "$f")
+            # The shim deletes its own request after giving up, so the file
+            # can vanish between the test above and this read; losing the
+            # agent here would break the clipboard for the rest of the run.
+            target=$(cat "$f" 2>/dev/null || true)
+            if [ -z "$target" ]; then
+                rm -f "$f"
+                continue
+            fi
             if host_clipboard_paste "$target" "$dir/res-$id.tmp" 2>/dev/null; then
                 mv -f "$dir/res-$id.tmp" "$dir/res-$id.ok"
             else
@@ -2988,6 +3218,10 @@ case "$WRAPPER_COMMAND" in
         dockerfile_command
         exit 0
         ;;
+    install)
+        install_command "${ARGS[@]+"${ARGS[@]}"}"
+        exit 0
+        ;;
 esac
 
 select_engine || exit 1
@@ -2999,6 +3233,7 @@ case "$WRAPPER_COMMAND" in
             echo "[$SCRIPT_NAME] ERROR: wrapper self-update failed; not rebuilding image." >&2
             exit 1
         fi
+        migrate_system_install
         if [ "$FORCE_REBUILD" = true ]; then
             BUILD_EXTRA_ARGS=()
             build_image --no-cache

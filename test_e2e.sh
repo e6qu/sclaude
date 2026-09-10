@@ -1149,6 +1149,94 @@ run_test "T32b: dockerfile command" bash -ec '
     diff <(grep -v build_timestamp "$tmp/Dockerfile") <("$2" dockerfile | grep -v build_timestamp)
 ' _ "$SCLAUDE" "$SCODEX"
 
+# ── T32c: a refreshed CA bundle reaches the build context ────────────
+# ensure_build_tls can replace the bundle after the context was staged. A
+# context still holding the old certificates builds an image that trusts the
+# wrong CA while its hash claims the new one, and the build fails at its
+# first fetch with the wrapper blaming the network.
+run_test "T32c: refreshed CA bundle is re-staged" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t32c.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    # A stub engine that fails TLS once (so the wrapper refreshes the bundle
+    # from the "host trust store"), then succeeds, and records the context.
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run)
+        cat >/dev/null
+        if [ -e "$tmp/probed" ]; then
+            echo TLS-OK
+        else
+            : > "$tmp/probed"
+            echo "FREE:99"
+            echo TLS-FAIL
+            echo "* issuer: CN=Test Proxy CA"
+        fi
+        exit 0 ;;
+    build)
+        for last; do :; done
+        cp "\$last/sagent-ca-bundle.pem" "$tmp/context-bundle.pem" 2>/dev/null || true
+        (cd "\$last" && find . -type f | sort) > "$tmp/context.txt"
+        exit 1 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    # The stale bundle the run starts with, and where the refreshed one goes.
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t32c-stale" \
+        -keyout "$tmp/stale.key" -out "$tmp/ca-bundle.pem" >/dev/null 2>&1
+    cp "$tmp/ca-bundle.pem" "$tmp/stale-copy.pem"
+    printf "SAGENT_CA_BUNDLE=%s\n" "\"$tmp/ca-bundle.pem\"" > "$tmp/config"
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" \
+        SAGENT_CONFIG_FILE="$tmp/config" "$1" --build >"$tmp/out" 2>&1 || true
+    # The wrapper refreshed the bundle from the host trust store...
+    if cmp -s "$tmp/stale-copy.pem" "$tmp/ca-bundle.pem"; then
+        echo "the bundle was never refreshed; the stub did not exercise the path" >&2
+        cat "$tmp/out" >&2
+        exit 1
+    fi
+    # ...and the context carries the refreshed one, not the stale one.
+    if ! cmp -s "$tmp/ca-bundle.pem" "$tmp/context-bundle.pem"; then
+        echo "the build context holds a different bundle than the one in effect" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
+# ── T32d: build guidance survives a broken engine ────────────────────
+# The failure guidance asks the engine how much disk is left. That probe
+# runs a container, which is exactly what may be broken, and its failure
+# must not swallow the advice.
+run_test "T32d: build guidance is not swallowed" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t32d.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run)
+        # The TLS probe works; every later container (the disk probe) does not.
+        if [ -e "$tmp/probed" ]; then exit 125; fi
+        : > "$tmp/probed"; cat >/dev/null; echo TLS-OK; exit 0 ;;
+    build) exit 1 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    rc=0
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" \
+        SAGENT_CONFIG_FILE="$tmp/no-config" "$1" --build >"$tmp/out" 2>&1 || rc=$?
+    [ "$rc" -eq 1 ]
+    grep -q "sandbox image build failed" "$tmp/out"
+    if ! grep -q "rerun with" "$tmp/out"; then
+        echo "the guidance stopped at the first line:" >&2
+        cat "$tmp/out" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE"
+
 # ── T33: unshared workspace on VM-backed engines is refused ──────────
 # #74: Rancher Desktop and colima share only $HOME (plus one /tmp subdir)
 # with their VM, so any other workspace mounts empty. A stub engine reporting
@@ -1348,6 +1436,42 @@ run_test "T37b: share volume, migrated from the pip volume" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" shell -c "uv tool list" 2>/dev/null | grep -q cowsay
 ' _ "$SCLAUDE"
 
+# ── T38b: config quoting and tools groups ────────────────────────────
+# The config file is sourced on every run, so a value holding $ or a
+# backtick must be stored literally rather than expanded (or executed). And
+# a group must not pull Java tools in when there is no JDK, which would fail
+# with an error naming tools the user never typed.
+run_test "T38b: config quoting and tools groups" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t38b.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    cfg="$tmp/config"
+    : > "$cfg"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$cfg"
+    # A real file whose name only exists literally: if the value were
+    # expanded when the file is sourced, the wrapper would not find it.
+    dir="$tmp/lit\$(id -u)and\`id -u\`dir"
+    mkdir -p "$dir"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=sagent-t38b" \
+        -keyout "$dir/k.pem" -out "$dir/ca.pem" >/dev/null 2>&1
+    "$1" config set SAGENT_CA_BUNDLE "$dir/ca.pem" >/dev/null
+    [ "$("$1" config get SAGENT_CA_BUNDLE)" = "$dir/ca.pem" ]
+    "$1" version | grep -qF "CA bundle: $dir/ca.pem"
+    if grep -q "$(id -u)" "$cfg"; then
+        echo "the config file holds an expanded value:" >&2
+        cat "$cfg" >&2
+        exit 1
+    fi
+    "$1" config unset SAGENT_CA_BUNDLE >/dev/null
+    # With no JDK, a group must not drag the Java tools in.
+    printf "SAGENT_JAVA_VERSION='"'"'none'"'"'\n" > "$cfg"
+    "$1" tools enable all >/dev/null
+    tools=$("$1" version | sed -n "s/^Tools: //p")
+    for t in maven gradle quarkus spring; do
+        case " $tools " in *" $t "*) echo "enable all pulled in $t with no JDK" >&2; exit 1 ;; esac
+    done
+    case " $tools " in *" typescript "*) ;; *) echo "enable all dropped the JS tools too" >&2; exit 1 ;; esac
+' _ "$SCLAUDE"
+
 # ── T38: tools and config commands edit the text config ──────────────
 run_test "T38: tools/config commands" bash -ec '
     cfg=$(mktemp -d /tmp/sagent-t38.XXXXXX)
@@ -1356,7 +1480,10 @@ run_test "T38: tools/config commands" bash -ec '
     base=$("$1" version | sed -n "s/^Image hash: //p")
     "$1" tools | grep -qE "^  bun +js +included"
     "$1" tools disable bun gradle 2>/dev/null
-    grep -qx "SAGENT_TOOLS=\"typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring\"" "$cfg/config"
+    # Values are written single-quoted so a $ or backtick in one cannot be
+    # expanded when the file is sourced.
+    expected="SAGENT_TOOLS='"'"'typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring'"'"'"
+    grep -qxF "$expected" "$cfg/config"
     "$1" tools | grep -qE "^  bun +js +excluded"
     "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn maven quarkus spring$"
     [ "$("$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
@@ -1544,6 +1671,82 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
     out=$(cd "$WS" && "$1" shell -c "hostname" 2>"$WS/err")
     grep -q "Attaching a shell to the sandbox running for $WS" "$WS/err"
     [ "$out" = "${cid:0:12}" ]
+' _ "$SCLAUDE"
+
+# ── T44: install and migrate without sudo ────────────────────────────
+# `install` puts both wrappers somewhere the user owns and makes sure that
+# directory is on PATH; running it again changes nothing. `update` moves an
+# install that lives outside the home directory (one that needed sudo) into
+# that same place. The release install path is the copy, not the symlink a
+# checkout gets, so the wrappers are copied out of the checkout first.
+run_test "T44: install and migrate without sudo" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t44.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    # Physical path throughout: on macOS $TMPDIR is reached through a
+    # symlink, and the wrapper resolves what it installs into.
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/home" "$TMP/sysbin"
+    cp "$1" "$(dirname "$1")/scodex" "$TMP/sysbin/"
+    chmod +x "$TMP/sysbin/sclaude" "$TMP/sysbin/scodex"
+    target="$TMP/home/.local/bin"
+
+    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$TMP/sysbin/sclaude" install "$target" 2>&1)
+    echo "$out"
+    if echo "$out" | grep -q sudo; then
+        echo "install used or mentioned sudo" >&2
+        exit 1
+    fi
+    # Both wrappers are there as real copies and run.
+    [ -x "$target/sclaude" ] && [ -x "$target/scodex" ] && [ ! -L "$target/sclaude" ]
+    # A real wrapper, not a truncated copy. Checked without an engine so the
+    # test says something about installing, not about docker being up.
+    head -1 "$target/sclaude" | grep -qx "#!/usr/bin/env bash"
+    grep -q "^SCRIPT_NAME=\"sclaude\"$" "$target/sclaude"
+    grep -q "^SCRIPT_NAME=\"scodex\"$" "$target/scodex"
+    bash -n "$target/sclaude" && bash -n "$target/scodex"
+    # The rc file gained exactly one block, and it does put the directory on PATH.
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    HOME="$TMP/home" bash -c "PATH=/usr/bin:/bin; . \"$TMP/home/.bashrc\"; case \":\$PATH:\" in *\":$target:\"*) exit 0 ;; esac; exit 1"
+    # Running it again is a no-op.
+    HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$target/sclaude" install "$target" >/dev/null 2>&1
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    # An rc that already puts the directory on PATH is left alone.
+    printf "export PATH=\"\$HOME/.local/bin:\$PATH\"\n" > "$TMP/home/.bash_profile"
+    before=$(wc -l < "$TMP/home/.bash_profile")
+    HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" "$target/sclaude" install "$target" >/dev/null 2>&1
+    [ "$(wc -l < "$TMP/home/.bash_profile")" -eq "$before" ]
+
+    # Migration: an install outside the home directory moves into it. The
+    # fixture directory is writable, so no sudo is needed to clear it.
+    rm -rf "$target" "$TMP/home/.bashrc" "$TMP/home/.bash_profile"
+    # A stub engine, so this stays about migrating: a real `update` would
+    # rebuild the image (the temp HOME has no config, so the hash differs
+    # from the one the suite built) and outlast the per-test timeout.
+    cat > "$TMP/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n" ;;
+    run) echo TLS-OK ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/fake-engine"
+    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" \
+        SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
+        SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 \
+        "$TMP/sysbin/sclaude" update 2>&1) || true
+    echo "$out"
+    echo "$out" | grep -q "Moving it to $target"
+    [ -x "$target/sclaude" ] && [ -x "$target/scodex" ]
+    [ ! -e "$TMP/sysbin/sclaude" ] && [ ! -e "$TMP/sysbin/scodex" ]
+    [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
+    # A checkout is left where it is.
+    out=$(HOME="$TMP/home" PATH="/usr/bin:/bin" SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
+        SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1) || true
+    if echo "$out" | grep -q "which needed sudo"; then
+        echo "a git checkout must not be migrated" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 print_results
