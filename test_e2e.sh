@@ -1719,9 +1719,20 @@ run_test "T44: install and migrate without sudo" bash -ec '
     # Migration: an install outside the home directory moves into it. The
     # fixture directory is writable, so no sudo is needed to clear it.
     rm -rf "$target" "$TMP/home/.bashrc" "$TMP/home/.bash_profile"
-    # Full PATH here: update needs to find the engine. The install steps
-    # above are the ones that must not depend on it.
-    out=$(HOME="$TMP/home" SHELL=/bin/bash \
+    # A stub engine, so this stays about migrating: a real `update` would
+    # rebuild the image (the temp HOME has no config, so the hash differs
+    # from the one the suite built) and outlast the per-test timeout.
+    cat > "$TMP/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n" ;;
+    run) echo TLS-OK ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/fake-engine"
+    out=$(HOME="$TMP/home" SHELL=/bin/bash PATH="/usr/bin:/bin" \
+        SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
         SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 \
         "$TMP/sysbin/sclaude" update 2>&1) || true
     echo "$out"
@@ -1730,7 +1741,8 @@ run_test "T44: install and migrate without sudo" bash -ec '
     [ ! -e "$TMP/sysbin/sclaude" ] && [ ! -e "$TMP/sysbin/scodex" ]
     [ "$(grep -c "added by sclaude/scodex" "$TMP/home/.bashrc")" -eq 1 ]
     # A checkout is left where it is.
-    out=$(HOME="$TMP/home" SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1) || true
+    out=$(HOME="$TMP/home" PATH="/usr/bin:/bin" SAGENT_CONTAINER_ENGINE="$TMP/fake-engine" \
+        SAGENT_SKIP_SELF_UPDATE=1 SAGENT_SKIP_RELEASE_CHECK=1 "$1" update 2>&1) || true
     if echo "$out" | grep -q "which needed sudo"; then
         echo "a git checkout must not be migrated" >&2
         exit 1
