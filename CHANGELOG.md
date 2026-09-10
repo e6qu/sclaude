@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.0](https://github.com/e6qu/sclaude/compare/v2.15.2...v2.16.0) (2026-09-10)
+
+
+### Features
+
+* install without sudo, migrate old installs, and fix what review found ([#70](https://github.com/e6qu/sclaude/issues/70)) ([8a8f36c](https://github.com/e6qu/sclaude/commit/8a8f36cb400eaac3f56ea31789eca32dcf98fb41))
+
 ## [2.15.2](https://github.com/e6qu/sclaude/compare/v2.15.1...v2.15.2) (2026-09-09)
 
 
