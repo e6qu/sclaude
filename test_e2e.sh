@@ -663,8 +663,11 @@ run_test "T19e: sessions shared both ways" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19e.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
     TMP=$(cd "$TMP" && pwd -P)
-    mkdir -p "$TMP/home" "$TMP/ws"
-    export HOME="$TMP/home" CLAUDE_CONFIG_DIR="$TMP/home/.claude" SAGENT_SKIP_RELEASE_CHECK=1
+    mkdir -p "$TMP/ws"
+    # HOME stays as it is: the image tag hashes the wrapper config found
+    # there, and this suite runs against a prebuilt image. Only
+    # CLAUDE_CONFIG_DIR decides where sessions live.
+    export CLAUDE_CONFIG_DIR="$TMP/claude" SAGENT_SKIP_RELEASE_CHECK=1
     key=$(printf "%s" "$TMP/ws" | LC_ALL=C sed "s/[^a-zA-Z0-9_-]/-/g")
     host_dir="$CLAUDE_CONFIG_DIR/projects/$key"
 
