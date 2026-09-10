@@ -246,7 +246,18 @@ side can resume the other's work. The agent can read and write those
 transcripts: past conversations for this workspace, and with Codex for every
 workspace. That is the same class of content the agent already produces, but
 it is history it could otherwise not reach. `SAGENT_SESSIONS=0` leaves it
-out; sessions started inside the sandbox then stay in its own volume.
+out; sessions started inside the sandbox then stay in its own volume. Since
+the config file is sourced, `[ "$SCRIPT_NAME" = scodex ] && SAGENT_SESSIONS=0`
+drops Codex's whole-history sharing while keeping Claude's, which is per
+workspace.
+
+Transcripts are all a resume needs. The rest of what the tool keeps beside
+them stays on the host: `shell-snapshots` and `session-env` describe the host
+environment and would be wrong inside, `history.jsonl` is appended by both
+sides at once, and `paste-cache` and `plans` are not per project.
+`SAGENT_SESSIONS=all` shares one more — `file-history`, the snapshots
+`/rewind` restores — accepting that it holds file contents from every
+workspace, not just this one.
 
 #### Clipboard bridge
 

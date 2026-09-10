@@ -52,7 +52,8 @@ run after a version change; `sclaude volumes` shows usage and
 ### Credentials & Configuration
 - `/sclaude-config/.credentials.json` - OAuth credentials (auto-synced from macOS Keychain or `~/.claude/.credentials.json` / `$XDG_CONFIG_HOME/claude-code/credentials.json` on Linux)
 - `/sclaude-config/.claude.json` - Claude Code configuration
-- `/sclaude-config/projects/` - Session history
+- `/sclaude-config/projects/` - Session history (bind-mounted from the host)
+- `/sclaude-config/file-history/` - Snapshots `/rewind` restores (bind-mounted only with `SAGENT_SESSIONS=all`)
 - `/scodex-config/auth.json` - Codex auth copied from `${CODEX_HOME:-$HOME/.codex}/auth.json`
 - `/scodex-config/config.toml` - Codex config copied from `${CODEX_HOME:-$HOME/.codex}/config.toml` when present
 - `/scodex-config/instructions.md` - Codex instructions copied from `${CODEX_HOME:-$HOME/.codex}/instructions.md` when present

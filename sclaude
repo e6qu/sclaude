@@ -11,10 +11,15 @@ TOOL_BIN="claude"
 CONFIG_VOLUME="sclaude-config"
 CONFIG_MOUNT="/sclaude-config"
 CONFIG_ENV_NAME="CLAUDE_CONFIG_DIR"
-# Where this tool keeps session transcripts on the host, and whether they
+# Where this tool keeps session state on the host, and whether transcripts
 # are split per project. Claude Code writes one directory per workspace.
-SESSIONS_HOST_BASE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SESSIONS_CONFIG_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSIONS_HOST_BASE="$SESSIONS_CONFIG_HOME/projects"
 SESSIONS_PER_PROJECT=true
+# Kept in one flat store rather than per project, so sharing it hands the
+# sandbox state from every workspace: only SAGENT_SESSIONS=all mounts these.
+# file-history holds the file snapshots /rewind restores.
+SESSIONS_EXTRA_DIRS=(file-history)
 YOLO_FLAG="--dangerously-skip-permissions"
 WRAPPER_VERSION="2.17.0" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
@@ -128,9 +133,11 @@ if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
 fi
 # SAGENT_SESSIONS=0 keeps this workspace's session transcripts out of the
-# sandbox; sessions started inside then stay inside.
+# sandbox; sessions started inside then stay inside. "all" additionally
+# shares the flat stores in SESSIONS_EXTRA_DIRS, which hold state from every
+# workspace, not just this one.
 if [ -n "${SAGENT_SESSIONS:-}" ]; then
-    validate_version_setting SAGENT_SESSIONS "$SAGENT_SESSIONS" '^[01]$' '0 or 1'
+    validate_version_setting SAGENT_SESSIONS "$SAGENT_SESSIONS" '^(0|1|all)$' '0, 1, or all'
 fi
 
 # Optional tooling baked into the image, all at their latest release as of
@@ -1211,7 +1218,7 @@ config_validate() {
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
-        SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
@@ -1441,6 +1448,11 @@ migrate_system_install() {
     script_dir="$(dirname "$script_path")"
     case "$script_dir" in "$HOME"/*) return 0 ;; esac
     git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 && return 0
+    # Only a directory this user cannot write needs sudo to update. Somewhere
+    # deliberately chosen and writable (/opt/bin, a shared /srv/tools/bin) is
+    # not ours to relocate: moving it would empty the directory the user put
+    # on PATH and leave the old location dead (#87).
+    [ -w "$script_dir" ] && return 0
     target="$(default_install_dir)"
     [ "$script_dir" = "$target" ] && return 0
 
@@ -1565,12 +1577,19 @@ host_git_identity_line() {
 }
 
 sessions_line() {
-    local host_dir
+    local host_dir extra
     host_dir=$(session_paths | sed -n 1p)
     if [ -z "$host_dir" ]; then
         printf 'not shared (SAGENT_SESSIONS=0): a session started inside stays inside'
-    else
-        printf '%s, shared with the host so either side can resume them' "$host_dir"
+        return 0
+    fi
+    printf '%s, shared with the host so either side can resume them' "$host_dir"
+    if [ "$SESSIONS_PER_PROJECT" != true ]; then
+        printf ' (every workspace, not just this one)'
+    fi
+    extra=$(session_extra_paths | sed -n 1p)
+    if [ -n "$extra" ]; then
+        printf '; sharing %s too (SAGENT_SESSIONS=all), which is state from every workspace' "${SESSIONS_EXTRA_DIRS[*]}"
     fi
 }
 
@@ -2027,7 +2046,14 @@ EOF
         doctor_report PASS disk "${free} GiB free in the engine for images"
     fi
     if [ -n "$(session_paths | sed -n 1p)" ]; then
-        doctor_report PASS sessions "$(session_paths | sed -n 1p) is shared with the sandbox, so a session started on either side resumes on the other"
+        if [ "$SESSIONS_PER_PROJECT" = true ]; then
+            doctor_report PASS sessions "$(session_paths | sed -n 1p) is shared with the sandbox, so a session started on either side resumes on the other"
+        else
+            doctor_report PASS sessions "$(session_paths | sed -n 1p) is shared with the sandbox, so a session started on either side resumes on the other; this tool keeps one tree for every workspace, so the sandbox sees them all (SAGENT_SESSIONS=0 shares none)"
+        fi
+        if [ -n "$(session_extra_paths | sed -n 1p)" ]; then
+            doctor_report PASS sessions:all "${SESSIONS_EXTRA_DIRS[*]} is shared too (SAGENT_SESSIONS=all), so /rewind reaches edits made on the other side; it holds state from every workspace, not just this one"
+        fi
     else
         doctor_report PASS sessions "not shared (SAGENT_SESSIONS=0): a session started inside the sandbox stays there"
     fi
@@ -2152,6 +2178,62 @@ install_wrapper_file() {
 # Self-update the running wrapper (and its paired wrapper if present) to the latest release.
 # Downloads both assets first; only installs after both downloads succeed. Re-execs the new
 # wrapper to complete the update. Returns non-zero if any download or install step failed.
+# Print what changed between the installed version and $1 (a tag like
+# v2.17.0), read from the CHANGELOG at that tag: one line per merged pull
+# request, with its URL. release-please's own release PRs never appear there
+# — the entries point at the PR that made the change.
+print_release_notes() {
+    local tag="$1" notes
+    if ! command -v curl >/dev/null 2>&1; then
+        return 0
+    fi
+    notes=$(curl -fsSL --max-time 5 "https://raw.githubusercontent.com/$PROJECT_REPO/$tag/CHANGELOG.md" 2>/dev/null \
+        | awk -v from="$WRAPPER_VERSION" -v repo="$PROJECT_REPO" '
+        function newer(a, b,   x, y, i, n) {
+            n = split(a, x, ".")
+            split(b, y, ".")
+            for (i = 1; i <= n; i++) {
+                if ((x[i] + 0) > (y[i] + 0)) return 1
+                if ((x[i] + 0) < (y[i] + 0)) return 0
+            }
+            return 0
+        }
+        # Entries run newest first, so the installed version ends the list.
+        /^## \[/ {
+            version = $0
+            sub(/^## \[/, "", version)
+            sub(/\].*/, "", version)
+            if (!newer(version, from)) exit
+            date = $0
+            sub(/^.*\) /, "", date)
+            printf "  %s %s\n", version, date
+            next
+        }
+        !version { next }
+        /^### / {
+            heading = $0
+            sub(/^### /, "", heading)
+            printf "    %s\n", heading
+            next
+        }
+        /^\* / {
+            entry = $0
+            sub(/^\* /, "", entry)
+            pr = ""
+            if (match(entry, /\(\[#[0-9]+\]/)) pr = substr(entry, RSTART + 3, RLENGTH - 4)
+            sub(/ \(\[.*/, "", entry)
+            printf "      - %s\n", entry
+            if (pr != "") printf "        https://github.com/%s/pull/%s\n", repo, pr
+        }
+    ')
+    if [ -z "$notes" ]; then
+        echo "[$SCRIPT_NAME] Could not read the release notes for $tag; continuing." >&2
+        return 0
+    fi
+    echo "[$SCRIPT_NAME] Changes since v$WRAPPER_VERSION:" >&2
+    printf '%s\n' "$notes" >&2
+}
+
 self_update_wrapper() {
     local latest_tag script_path script_dir paired_name paired_path
     local tmp_self tmp_paired=""
@@ -2194,6 +2276,7 @@ self_update_wrapper() {
     fi
 
     echo "[$SCRIPT_NAME] Updating wrapper from v$WRAPPER_VERSION to $latest_tag..." >&2
+    print_release_notes "$latest_tag"
 
     # Phase 1: download every asset to staging before touching the installed files.
     tmp_self=$(mktemp)
@@ -2501,6 +2584,18 @@ session_paths() {
     fi
 }
 
+# Host directory then sandbox directory, one pair per line, for the stores
+# shared only with SAGENT_SESSIONS=all. A resumed session works without
+# them; they carry accessories like the snapshots /rewind restores.
+session_extra_paths() {
+    local name
+    [ "${SAGENT_SESSIONS:-1}" = "all" ] || return 0
+    for name in "${SESSIONS_EXTRA_DIRS[@]+"${SESSIONS_EXTRA_DIRS[@]}"}"; do
+        printf '%s\n' "$SESSIONS_CONFIG_HOME/$name"
+        printf '%s\n' "$CONFIG_MOUNT/$name"
+    done
+}
+
 # The mount that makes host and sandbox share one set of session files, so a
 # session started on either side can be resumed on the other. A bind mount,
 # not a copy: copying would strand whichever side wrote last.
@@ -2508,10 +2603,12 @@ session_paths() {
 # the path inside the config volume it takes over from.
 SESSION_SYNC_ARGS=()
 SESSION_VOLUME_DIR=""
+SESSION_EXTRA_NAMES=""
 build_session_sync_args() {
-    local host_dir sandbox_dir
+    local host_dir sandbox_dir extra_host extra_sandbox name
     SESSION_SYNC_ARGS=()
     SESSION_VOLUME_DIR=""
+    SESSION_EXTRA_NAMES=""
     host_dir=$(session_paths | sed -n 1p)
     sandbox_dir=$(session_paths | sed -n 2p)
     [ -n "$host_dir" ] || return 0
@@ -2519,11 +2616,20 @@ build_session_sync_args() {
     host_dir=$(cd "$host_dir" && pwd -P)
     SESSION_SYNC_ARGS=(-v "$host_dir:/host-sessions:rw")
     SESSION_VOLUME_DIR="/vol-config${sandbox_dir#"$CONFIG_MOUNT"}"
+    while IFS= read -r extra_host && IFS= read -r extra_sandbox; do
+        mkdir -p "$extra_host" 2>/dev/null || continue
+        extra_host=$(cd "$extra_host" && pwd -P)
+        name=${extra_sandbox##*/}
+        SESSION_SYNC_ARGS+=(-v "$extra_host:/host-extra/$name:rw")
+        SESSION_EXTRA_NAMES="$SESSION_EXTRA_NAMES $name"
+    done <<EOF
+$(session_extra_paths)
+EOF
 }
 
 SESSION_MOUNT_ARGS=()
 build_session_mount_args() {
-    local host_dir sandbox_dir
+    local host_dir sandbox_dir extra_host extra_sandbox
     SESSION_MOUNT_ARGS=()
     host_dir=$(session_paths | sed -n 1p)
     sandbox_dir=$(session_paths | sed -n 2p)
@@ -2537,6 +2643,13 @@ build_session_mount_args() {
     fi
     host_dir=$(cd "$host_dir" && pwd -P)
     SESSION_MOUNT_ARGS=(-v "$host_dir:$sandbox_dir:rw")
+    while IFS= read -r extra_host && IFS= read -r extra_sandbox; do
+        mkdir -p "$extra_host" 2>/dev/null || continue
+        extra_host=$(cd "$extra_host" && pwd -P)
+        SESSION_MOUNT_ARGS+=(-v "$extra_host:$extra_sandbox:rw")
+    done <<EOF
+$(session_extra_paths)
+EOF
 }
 
 # ---- Host state carried into the sandbox: git config, gh login ----
@@ -2888,24 +3001,35 @@ sync_state() {
             # on every run, and a host clock a fraction of a second ahead of
             # the VM the engine runs in made GNU tar warn that every one of
             # them had a time stamp in the future.
-            # Sessions the sandbox recorded before sharing existed live in
-            # the config volume, where the host mount is about to hide them.
-            # Move them out once, so no session is stranded on either side.
-            SESSIONS_VOL_DIR='"$SESSION_VOLUME_DIR"'
-            if [ -n "$SESSIONS_VOL_DIR" ] && [ -d /host-sessions ] && [ -d "$SESSIONS_VOL_DIR" ]; then
+            # State the sandbox recorded before sharing existed lives in the
+            # config volume, where the host mount is about to hide it. Move
+            # it out once, so nothing is stranded on either side. Anything
+            # the host already has wins: it is the copy both sides can see.
+            move_out() {
+                vol_dir="$1"
+                host_dir="$2"
                 moved=0
-                for f in "$SESSIONS_VOL_DIR"/* "$SESSIONS_VOL_DIR"/.[!.]*; do
+                [ -n "$vol_dir" ] && [ -d "$vol_dir" ] && [ -d "$host_dir" ] || return 0
+                for f in "$vol_dir"/* "$vol_dir"/.[!.]*; do
                     [ -e "$f" ] || continue
                     base=$(basename "$f")
-                    [ -e "/host-sessions/$base" ] && continue
-                    mv "$f" "/host-sessions/$base" || continue
-                    chown -R "$TARGET_UID:$TARGET_GID" "/host-sessions/$base" 2>/dev/null || true
+                    [ -e "$host_dir/$base" ] && continue
+                    mv "$f" "$host_dir/$base" || continue
+                    chown -R "$TARGET_UID:$TARGET_GID" "$host_dir/$base" 2>/dev/null || true
                     moved=$((moved + 1))
                 done
-                if [ "$moved" -gt 0 ]; then
-                    echo "['"$SCRIPT_NAME"'] Moved $moved session(s) recorded inside the sandbox to the host, where both sides can resume them" >&2
-                fi
+            }
+            SESSIONS_VOL_DIR='"$SESSION_VOLUME_DIR"'
+            move_out "$SESSIONS_VOL_DIR" /host-sessions
+            if [ "$moved" -gt 0 ]; then
+                echo "['"$SCRIPT_NAME"'] Moved $moved session(s) recorded inside the sandbox to the host, where both sides can resume them" >&2
             fi
+            for name in '"$SESSION_EXTRA_NAMES"'; do
+                move_out "/vol-config/$name" "/host-extra/$name"
+                if [ "$moved" -gt 0 ]; then
+                    echo "['"$SCRIPT_NAME"'] Moved $moved $name item(s) recorded inside the sandbox to the host" >&2
+                fi
+            done
             mkdir -p /tmp/sync && tar -xmf - -C /tmp/sync
             if [ -f /tmp/sync/config/.credentials.json ]; then
                 if python3 -m json.tool /tmp/sync/config/.credentials.json >/dev/null 2>&1; then

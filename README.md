@@ -141,7 +141,9 @@ the session tree it keeps (`~/.codex/sessions`, which is not split per
 project). Sessions the sandbox recorded before this existed move out to the
 host on the next run. The agent can read and write those transcripts;
 `SAGENT_SESSIONS=0` keeps them out, and sessions started inside then stay
-inside.
+inside. `SAGENT_SESSIONS=all` additionally shares `~/.claude/file-history`,
+so `/rewind` reaches edits made on the other side — that store is not per
+project, so it hands the sandbox state from every workspace.
 
 **Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
 `xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
@@ -159,7 +161,7 @@ selection.
 
 | Command | Description |
 |---------|-------------|
-| `sclaude update` | Update both wrappers; reinstall the agent CLIs in the image when they have a new release (`--force-rebuild` rebuilds everything) |
+| `sclaude update` | Update both wrappers, listing what changed and the PRs it came from; reinstall the agent CLIs in the image when they have a new release (`--force-rebuild` rebuilds everything) |
 | `sclaude check-update` | Check for a newer wrapper |
 | `sclaude --build` | Build the image without running |
 | `sclaude install [DIR]` | Put both wrappers in `~/.local/bin` (or DIR) and on PATH, without sudo |
@@ -204,7 +206,7 @@ SAGENT_CONTAINER_ENGINE=podman  # default: docker, then podman
 SAGENT_CA_BUNDLE=/path/ca.pem   # extra CA certificates
 SAGENT_GIT_PROTOCOL=ssh         # ssh or https, default: your gh setting
 SAGENT_CLIPBOARD=0              # host clipboard in the sandbox, default 1
-SAGENT_SESSIONS=0               # share session transcripts with the host, default 1
+SAGENT_SESSIONS=0               # share sessions with the host: 0, 1 (default), or all
 
 SAGENT_UBUNTU_VERSION="26.04"
 SAGENT_NODE_VERSION="26"
@@ -215,7 +217,13 @@ SAGENT_JAVA_VERSION="26"        # or none
 SAGENT_TOOLS="all"              # all, none, js, java, or names
 ```
 
-`SAGENT_CONFIG_FILE` points at a different file.
+`SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a
+setting can differ per tool — `scodex` shares every workspace's Codex history
+because Codex keeps one tree for all of them:
+
+```bash
+[ "$SCRIPT_NAME" = scodex ] && SAGENT_SESSIONS=0
+```
 
 ## Published images
 

@@ -28,6 +28,8 @@ run_with_timeout_capture() {
     local output_file="$1"; shift
     local cmd_pid
     local timer_pid
+    local timer_children
+    local timer_child
     local rc
 
     "$@" >"$output_file" 2>&1 &
@@ -43,7 +45,15 @@ run_with_timeout_capture() {
     else
         rc=$?
     fi
+    # The timer is a subshell whose `sleep` is a separate process: killing
+    # only the subshell leaves the sleep running to full term, which is why
+    # CI cleanup used to terminate dozens of orphans per job. Its children
+    # have to be noted before it dies, since they reparent away from it.
+    timer_children=$(pgrep -P "$timer_pid" 2>/dev/null || true)
     kill "$timer_pid" 2>/dev/null || true
+    for timer_child in $timer_children; do
+        kill "$timer_child" 2>/dev/null || true
+    done
     wait "$timer_pid" 2>/dev/null || true
 
     if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
