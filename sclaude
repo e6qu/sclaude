@@ -217,7 +217,12 @@ cleanup_temp() {
         rm -rf "$f"
     done
 }
-trap cleanup_temp EXIT INT TERM HUP
+# EXIT alone would clean up and then carry on: an interrupt during a
+# pre-flight step used to tear down the temp state and still launch the
+# sandbox the user had just cancelled.
+trap cleanup_temp EXIT
+trap 'cleanup_temp; exit 130' INT
+trap 'cleanup_temp; exit 143' TERM HUP
 
 portable_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -317,6 +322,12 @@ detect_engine_flavor() {
     case "$server_section" in
         *[Pp]odman*) ENGINE_SERVER_FLAVOR="podman" ;;
     esac
+    # Native podman on Linux prints no Server section at all (only
+    # podman-remote and podman machine do). Calling that a docker server is
+    # wrong in every line `version`, `status` and `doctor` print.
+    if [ -z "$server_section" ]; then
+        ENGINE_SERVER_FLAVOR="$ENGINE_CLI_FLAVOR"
+    fi
 
     # A rootless daemon maps the container's non-root UIDs to subordinate
     # UIDs, so the sandbox user (the host UID inside the image) is a stranger
@@ -666,7 +677,18 @@ RUN set -eux; \
         '    esac' \
         '    prev="$a"' \
         'done' \
-        'case "$name" in pbpaste|wl-paste) mode="paste" ;; esac' \
+        '# xclip writes by default and reads with -o; xsel is the other way' \
+        '# round (plain `xsel -b` prints the clipboard), so each keeps its own' \
+        '# default. -i/-a switch xsel back to writing.' \
+        'case "$name" in' \
+        '    pbpaste|wl-paste) mode="paste" ;;' \
+        '    xsel)' \
+        '        mode="paste"' \
+        '        for a in "$@"; do' \
+        '            case "$a" in -i|--input|-a|--append) mode=copy ;; esac' \
+        '        done' \
+        '        ;;' \
+        'esac' \
         '' \
         'fail() { echo "[sagent] $name: $1" >&2; exit 1; }' \
         'wait_gone() {' \
@@ -873,7 +895,11 @@ build_image() {
     # the Dockerfile and context afterwards: the bundle changes both.
     ensure_build_tls
     get_dockerfile_content > "$temp_dockerfile"
-    if [ -n "$CA_BUNDLE_PATH" ] && [ ! -d "$temp_context/sagent-ca" ]; then
+    # Unconditionally: ensure_build_tls may have replaced the bundle, and a
+    # context staged from the old one would build an image that trusts the
+    # wrong CA while its hash claims the new one.
+    rm -rf "$temp_context/sagent-ca" "$temp_context/sagent-ca-bundle.pem"
+    if [ -n "$CA_BUNDLE_PATH" ]; then
         stage_ca_bundle "$temp_context"
     fi
 
@@ -936,7 +962,9 @@ print_disk_guidance() {
 print_build_failure_guidance() {
     local free
     echo "[$SCRIPT_NAME] ERROR: sandbox image build failed (engine output above)." >&2
-    free=$(engine_disk_free_gb)
+    # Never let the probe's own failure swallow the guidance: it runs a
+    # container, which is exactly what may be broken here.
+    free=$(engine_disk_free_gb || true)
     if [ -n "$free" ] && [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
         echo "[$SCRIPT_NAME] The engine is out of disk, which is the likely cause (a \"no space left on device\" error above confirms it)." >&2
         print_disk_guidance "$free"
@@ -1141,8 +1169,11 @@ config_write() {
         grep -vE "^${key}=" "$SAGENT_CONFIG_FILE" > "$tmp" || true
     fi
     if [ -n "$value" ]; then
-        escaped=$(printf '%s' "$value" | sed 's/[\\"]/\\&/g')
-        printf '%s="%s"\n' "$key" "$escaped" >> "$tmp"
+        # Single quotes, because the config file is sourced: inside double
+        # quotes a value holding $ or a backtick is expanded, which corrupts
+        # a path at best and runs a command on every start at worst.
+        escaped=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
+        printf "%s='%s'\n" "$key" "$escaped" >> "$tmp"
     fi
     if ! bash -n "$tmp" 2>/dev/null; then
         echo "[$SCRIPT_NAME] ERROR: refusing to write a config file that does not parse" >&2
@@ -1273,6 +1304,15 @@ EOF
                     enable)
                         if [ -z "${current##* "$name" *}" ]; then new="$new,$name"; continue; fi
                         for item in "$@"; do
+                            # A group cannot pull in Java tools when there is
+                            # no JDK: resolve_tools would then reject the list
+                            # and blame the user for a name they never typed.
+                            # Naming one outright still gets that error.
+                            case "$item" in
+                                all | java)
+                                    [ "$group" = java ] && [ "$JAVA_VERSION" = none ] && continue
+                                    ;;
+                            esac
                             case "$item" in all | "$group" | "$name") new="$new,$name"; break ;; esac
                         done
                         ;;
@@ -1503,6 +1543,11 @@ host_has_claude_credentials() {
 
 host_has_codex_auth() { [ -f "${CODEX_HOME:-${HOME}/.codex}/auth.json" ]; }
 
+# A timestamp from an epoch on either date(1): BSD takes -r, GNU -d @.
+format_epoch() {
+    date -r "$1" +%Y-%m-%dT%H:%M 2>/dev/null || date -d "@$1" +%Y-%m-%dT%H:%M 2>/dev/null || printf 'unknown'
+}
+
 host_git_identity_line() {
     local id
     id=$(host_git_identity)
@@ -1559,7 +1604,7 @@ status_command() {
             printf '%-13s %s\n' "Latest:" "$latest (this wrapper is ahead of the latest release)"
         fi
     else
-        printf '%-13s %s\n' "Latest:" "unknown (releases API unreachable$([ -f "$cache_file" ] && echo "; last check $(date -r "$(cat "$cache_file" 2>/dev/null || echo 0)" +%Y-%m-%dT%H:%M 2>/dev/null)"))"
+        printf '%-13s %s\n' "Latest:" "unknown (releases API unreachable$([ -f "$cache_file" ] && echo "; last check $(format_epoch "$(cat "$cache_file" 2>/dev/null || echo 0)")"))"
     fi
 
     for key in "${SAGENT_SETTINGS[@]}"; do
@@ -1952,7 +1997,7 @@ EOF
     else
         doctor_report WARN auth:gh "gh is not logged in on the host and GH_TOKEN is unset; run \`gh auth login\` here to sync it, or inside the sandbox (persisted in sagent-rootfs)"
     fi
-    free=$(engine_disk_free_gb)
+    free=$(engine_disk_free_gb || true)
     if [ -z "$free" ]; then
         doctor_report WARN disk "could not read how much space the engine has for images"
     elif [ "$free" -lt "$DISK_FREE_GB_MIN" ]; then
@@ -2330,7 +2375,7 @@ check_release() {
         return 0
     fi
 
-    if [ "${latest_tag#v}" != "$WRAPPER_VERSION" ]; then
+    if version_gt "${latest_tag#v}" "$WRAPPER_VERSION"; then
         print_release_guidance "$latest_tag"
     elif [ "$explicit" = "true" ]; then
         echo "[$SCRIPT_NAME] Wrapper scripts are up to date ($latest_tag)." >&2
@@ -2944,7 +2989,14 @@ clipboard_bridge_serve() {
         for f in "$dir"/req-*.paste; do
             [ -e "$f" ] || continue
             id=${f##*/req-}; id=${id%.paste}
-            target=$(cat "$f")
+            # The shim deletes its own request after giving up, so the file
+            # can vanish between the test above and this read; losing the
+            # agent here would break the clipboard for the rest of the run.
+            target=$(cat "$f" 2>/dev/null || true)
+            if [ -z "$target" ]; then
+                rm -f "$f"
+                continue
+            fi
             if host_clipboard_paste "$target" "$dir/res-$id.tmp" 2>/dev/null; then
                 mv -f "$dir/res-$id.tmp" "$dir/res-$id.ok"
             else
