@@ -654,6 +654,56 @@ STUB
     [ "$(cat "$TMP/clip.txt")" = to-the-host ]
 ' _ "$SCLAUDE"
 
+# ── T19e: sessions are shared with the host ──────────────────────────
+# A session started outside the sandbox must be resumable inside it, and one
+# started inside must be resumable outside, so a bug in either place cannot
+# strand work. One bind mount, not a copy, plus a one-time move of sessions
+# the sandbox recorded before this existed.
+run_test "T19e: sessions shared both ways" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19e.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/ws"
+    # HOME stays as it is: the image tag hashes the wrapper config found
+    # there, and this suite runs against a prebuilt image. Only
+    # CLAUDE_CONFIG_DIR decides where sessions live.
+    export CLAUDE_CONFIG_DIR="$TMP/claude" SAGENT_SKIP_RELEASE_CHECK=1
+    key=$(printf "%s" "$TMP/ws" | LC_ALL=C sed "s/[^a-zA-Z0-9_-]/-/g")
+    host_dir="$CLAUDE_CONFIG_DIR/projects/$key"
+
+    # A session recorded inside the sandbox before sharing existed.
+    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" bash -ec "
+        mkdir -p /c/projects/$key && echo stranded > /c/projects/$key/older.jsonl
+    "
+    # One the host already has.
+    mkdir -p "$host_dir"
+    echo from-host > "$host_dir/from-host.jsonl"
+
+    cd "$TMP/ws"
+    out=$("$1" shell -c "
+        cat /sclaude-config/projects/$key/from-host.jsonl
+        cat /sclaude-config/projects/$key/older.jsonl
+        echo from-sandbox > /sclaude-config/projects/$key/from-sandbox.jsonl
+    " 2>&1) || { echo "$out" >&2; exit 1; }
+    # The host session is readable inside...
+    echo "$out" | grep -qx from-host
+    # ...the stranded one was moved out to the host and is readable inside...
+    echo "$out" | grep -qx stranded
+    [ -f "$host_dir/older.jsonl" ]
+    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" \
+        bash -ec "[ ! -e /c/projects/$key/older.jsonl ]"
+    # ...and what the sandbox wrote is on the host, owned by this user.
+    [ "$(cat "$host_dir/from-sandbox.jsonl")" = from-sandbox ]
+    [ -w "$host_dir/from-sandbox.jsonl" ]
+
+    # Off: nothing of the host reaches the sandbox, and what it writes stays
+    # in its own volume rather than vanishing.
+    out=$(SAGENT_SESSIONS=0 "$1" shell -c "
+        ls /sclaude-config/projects/$key/from-host.jsonl 2>&1 | tail -1
+    " 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *"No such file"*) ;; *) echo "sessions still shared with SAGENT_SESSIONS=0: $out" >&2; exit 1 ;; esac
+' _ "$SCLAUDE"
+
 # ── T20a: host git config, gh login and SSH sync ─────────────────────
 # The wrapper carries the host's global git config (minus host-only keys)
 # and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and

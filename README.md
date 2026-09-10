@@ -132,6 +132,17 @@ writes `~/.gitconfig`, which wins and persists.
 - `https`: no keys go in; git uses the gh token and `git@github.com:`
   remotes are rewritten to HTTPS.
 
+**Sessions are shared with the host**, both ways: a conversation started
+outside the sandbox can be resumed inside it (`claude --resume`), and one
+started inside can be resumed outside, so a bug on either side never strands
+your work. One bind-mounted directory, not a copy: for Claude Code this
+workspace's transcripts (`~/.claude/projects/<this directory>`), for Codex
+the session tree it keeps (`~/.codex/sessions`, which is not split per
+project). Sessions the sandbox recorded before this existed move out to the
+host on the next run. The agent can read and write those transcripts;
+`SAGENT_SESSIONS=0` keeps them out, and sessions started inside then stay
+inside.
+
 **Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
 `xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
 clipboard through the wrapper. Selecting in Claude Code's TUI copies to your
@@ -193,6 +204,7 @@ SAGENT_CONTAINER_ENGINE=podman  # default: docker, then podman
 SAGENT_CA_BUNDLE=/path/ca.pem   # extra CA certificates
 SAGENT_GIT_PROTOCOL=ssh         # ssh or https, default: your gh setting
 SAGENT_CLIPBOARD=0              # host clipboard in the sandbox, default 1
+SAGENT_SESSIONS=0               # share session transcripts with the host, default 1
 
 SAGENT_UBUNTU_VERSION="26.04"
 SAGENT_NODE_VERSION="26"
