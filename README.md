@@ -113,6 +113,13 @@ sclaude config set SAGENT_GO_VERSION none
 Changing any of them builds a new image on the next run. Caches that belong
 to an old toolchain are cleared automatically.
 
+Builds fetch Ubuntu packages from Ubuntu's archive. If you sit next to a
+mirror, name it — `SAGENT_APT_MIRROR="http://azure.archive.ubuntu.com/ubuntu/"`
+— and the build uses it instead. The value has to match what you are building:
+amd64 images want an archive mirror, arm64 images a `ubuntu-ports` one. A
+mirror whose layout the rewrite does not recognise fails the build rather
+than quietly using the slow default.
+
 Layers are ordered by how often they change: base image, OS packages and
 toolchains first, then the user and shims, and the two agent CLIs alone at
 the end. A CLI release therefore rebuilds one layer; the build metadata is
@@ -223,6 +230,7 @@ SAGENT_GO_VERSION="1.27"        # or none
 SAGENT_RUST_VERSION="stable"    # or none
 SAGENT_JAVA_VERSION="26"        # or none
 SAGENT_TOOLS="all"              # all, none, js, java, infra, cloud, or names
+SAGENT_APT_MIRROR=""            # Ubuntu mirror for image builds, default: the archive
 ```
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a

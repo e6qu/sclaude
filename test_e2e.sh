@@ -2078,4 +2078,51 @@ run_test "T46: timeout helper reaps its own timer" bash -ec '
     fi
 ' _ "$SCLAUDE"
 
+# ── T47: the apt mirror is named, not guessed ────────────────────────
+# Unset means Ubuntu's own archive. Set, it rewrites the image's sources
+# before the first apt-get update — and the rewrite is checked against a
+# real sources file, not just the text of the Dockerfile.
+run_test "T47: apt mirror rewrites the image sources" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    mirror="http://azure.ports.ubuntu.com/ubuntu-ports/"
+
+    # Unset: nothing about a mirror, and the default archive is left alone.
+    if "$1" dockerfile | grep -q SAGENT_APT_MIRROR; then
+        echo "a mirror layer appears with the setting unset" >&2
+        exit 1
+    fi
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+
+    # Set: the layer is there, and it changes the image.
+    out=$(SAGENT_APT_MIRROR="$mirror" "$1" dockerfile)
+    echo "$out" | grep -q "SAGENT_APT_MIRROR"
+    echo "$out" | grep -qF "$mirror"
+    [ "$(SAGENT_APT_MIRROR="$mirror" "$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
+    # A value without a trailing slash is stored with one, so the rewritten
+    # URI never runs the mirror and the suite together.
+    SAGENT_APT_MIRROR="${mirror%/}" "$1" dockerfile | grep -qF "URIs: $mirror"
+
+    # The sed it emits, run against a real Ubuntu sources file, rewrites
+    # every stanza — including security, and ports on an arm64 image.
+    sed_line=$(echo "$out" | sed -n "s/^    \(sed -i -E .*\) \\\\$/\1/p")
+    [ -n "$sed_line" ]
+    "$ENGINE" run --rm --user root "$SUITE_IMG" bash -ec "
+        $sed_line /etc/apt/sources.list.d/ubuntu.sources
+        grep -q \"^URIs: $mirror\" /etc/apt/sources.list.d/ubuntu.sources
+        if grep -E \"^URIs\" /etc/apt/sources.list.d/ubuntu.sources | grep -vq \"$mirror\"; then
+            echo \"a stanza still points at the default archive\" >&2
+            grep -E \"^URIs\" /etc/apt/sources.list.d/ubuntu.sources >&2
+            exit 1
+        fi
+    "
+
+    # Anything that is not an http(s) URL is refused.
+    for bad in "ftp://mirror.example/ubuntu/" "not a url" "http://mirror example/"; do
+        if SAGENT_APT_MIRROR="$bad" "$1" version >/dev/null 2>&1; then
+            echo "accepted a bad mirror: $bad" >&2
+            exit 1
+        fi
+    done
+' _ "$SCLAUDE"
+
 print_results

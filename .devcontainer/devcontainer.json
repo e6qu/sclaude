@@ -2,7 +2,12 @@
 // Includes Docker-in-Docker (needed by E2E tests) and linting tools.
 {
   "name": "sclaude-dev",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  // Built from the Dockerfile beside this file so CI can name an apt mirror;
+  // with SAGENT_APT_MIRROR unset it is the same base image as before.
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": { "APT_MIRROR": "${localEnv:SAGENT_APT_MIRROR}" }
+  },
   "features": {
     // E2E tests build and run Docker containers
     "ghcr.io/devcontainers/features/docker-in-docker:2": {

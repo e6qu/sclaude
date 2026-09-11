@@ -64,7 +64,7 @@ HOST_GID=$(id -g)
 # Environment variables and command-line flags take precedence over the file.
 # Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
 # variables, so `for x in $list` would see one item.
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -127,6 +127,15 @@ validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' '
 # Unset means the protocol the host's gh is configured with.
 if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
     validate_version_setting SAGENT_GIT_PROTOCOL "$SAGENT_GIT_PROTOCOL" '^(ssh|https)$' 'ssh or https'
+fi
+# Where the image's Ubuntu packages come from. Unset means Ubuntu's own
+# archive, which is right nearly everywhere and slow from some places (a CI
+# runner next to a mirror, most of all). The value has to match the
+# architecture being built: amd64 images pull from an archive mirror, arm64
+# images from a ubuntu-ports one.
+if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
+    validate_version_setting SAGENT_APT_MIRROR "$SAGENT_APT_MIRROR" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/'
+    case "$SAGENT_APT_MIRROR" in */) ;; *) SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR/" ;; esac
 fi
 # SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
@@ -395,6 +404,22 @@ DOCKERFILE_HEAD
 
     cat <<'DOCKERFILE_END'
 ENV DEBIAN_FRONTEND=noninteractive
+DOCKERFILE_END
+
+    # Ubuntu's own archive is the default. A mirror is worth naming when the
+    # builder sits next to one: an index that takes ten minutes from the
+    # archive arrives in seconds from a mirror in the same datacentre. The
+    # rewrite is checked, so a sources layout this does not understand fails
+    # the build instead of quietly building from the slow default.
+    if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
+        printf '\n# Ubuntu packages come from a named mirror (SAGENT_APT_MIRROR).\n'
+        printf 'RUN set -eux; \\\n'
+        printf '    sed -i -E "s#https?://(archive[.]ubuntu[.]com/ubuntu|ports[.]ubuntu[.]com/ubuntu-ports|security[.]ubuntu[.]com/ubuntu)/#%s#g" \\\n' "$SAGENT_APT_MIRROR"
+        printf '        /etc/apt/sources.list.d/ubuntu.sources; \\\n'
+        printf '    grep -q "^URIs: %s" /etc/apt/sources.list.d/ubuntu.sources\n' "$SAGENT_APT_MIRROR"
+    fi
+
+    cat <<'DOCKERFILE_END'
 
 RUN apt-get update && apt-get install -y \
     curl git git-lfs python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
@@ -1368,6 +1393,7 @@ config_validate() {
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
+        SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;

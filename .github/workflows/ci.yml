@@ -26,6 +26,16 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # These runners are Azure VMs sitting beside Canonical's Azure mirror.
+  # From the default archive a single package index has taken ten minutes
+  # here and timed out a job; from this one it arrives in seconds. Only the
+  # Linux jobs use it (x86_64: an arm64 build would need the ports mirror),
+  # and the macOS jobs keep Ubuntu's default.
+  SAGENT_APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu/
+  # A cold T02 build fetches an Ubuntu base, five toolchains and the cloud
+  # tooling; that does not fit the harness's default 600s per test. The
+  # macOS jobs already ran at this budget for the same reason.
+  TEST_TIMEOUT_SECONDS: "1200"
 
 jobs:
   commit-lint:
@@ -59,6 +69,9 @@ jobs:
   lint-macos:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: macos-latest
+    env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
     steps:
       - uses: actions/checkout@v5
       - name: Install pre-commit
@@ -153,6 +166,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
+    env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
@@ -232,6 +248,8 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 120
     env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
     steps:
       - uses: actions/checkout@v5
