@@ -118,7 +118,9 @@ mirror, name it — `SAGENT_APT_MIRROR="http://azure.archive.ubuntu.com/ubuntu/"
 — and the build uses it instead. The value has to match what you are building:
 amd64 images want an archive mirror, arm64 images a `ubuntu-ports` one. A
 mirror whose layout the rewrite does not recognise fails the build rather
-than quietly using the slow default.
+than quietly using the slow default. The image keeps those sources, so
+`sudo apt install` inside the sandbox uses the mirror too. The published
+images are built without one.
 
 Layers are ordered by how often they change: base image, OS packages and
 toolchains first, then the user and shims, and the two agent CLIs alone at

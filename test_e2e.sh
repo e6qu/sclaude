@@ -2110,25 +2110,54 @@ run_test "T47: apt mirror rewrites the image sources" bash -ec '
 
     # Set: the layer is there, and it changes the image.
     out=$(SAGENT_APT_MIRROR="$mirror" "$1" dockerfile)
-    echo "$out" | grep -q "SAGENT_APT_MIRROR"
-    echo "$out" | grep -qF "$mirror"
-    [ "$(SAGENT_APT_MIRROR="$mirror" "$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
+    echo "$out" | grep -q "SAGENT_APT_MIRROR" || { echo "no mirror layer with the setting on" >&2; exit 1; }
+    echo "$out" | grep -qF "$mirror" || { echo "the mirror layer does not name the mirror" >&2; exit 1; }
+    with_mirror=$(SAGENT_APT_MIRROR="$mirror" "$1" version | sed -n "s/^Image hash: //p")
+    if [ "$with_mirror" = "$base" ]; then
+        echo "the image hash did not change with a mirror configured ($base)" >&2
+        exit 1
+    fi
     # A value without a trailing slash is stored with one, so the rewritten
     # URI never runs the mirror and the suite together.
-    SAGENT_APT_MIRROR="${mirror%/}" "$1" dockerfile | grep -qF "URIs: $mirror"
+    SAGENT_APT_MIRROR="${mirror%/}" "$1" dockerfile | grep -qF "URIs: $mirror" \
+        || { echo "a mirror given without a trailing slash did not get one" >&2; exit 1; }
 
-    # The sed it emits, run against a real Ubuntu sources file, rewrites
-    # every stanza — including security, and ports on an arm64 image.
+    # The sed it emits, run against a stock Ubuntu sources file, rewrites
+    # every stanza: the archive, security, and the ports host an arm64 image
+    # uses. The fixture is written here rather than taken from the image,
+    # which may itself have been built through a mirror (CI builds are).
     sed_line=$(echo "$out" | sed -n "s/^    \(sed -i -E .*\) \\\\$/\1/p")
-    [ -n "$sed_line" ]
+    if [ -z "$sed_line" ]; then
+        echo "could not find the sed the mirror layer runs, in:" >&2
+        echo "$out" | grep -A3 "named mirror" >&2
+        exit 1
+    fi
     "$ENGINE" run --rm --user root "$SUITE_IMG" bash -ec "
-        $sed_line /etc/apt/sources.list.d/ubuntu.sources
-        grep -q \"^URIs: $mirror\" /etc/apt/sources.list.d/ubuntu.sources
-        if grep -E \"^URIs\" /etc/apt/sources.list.d/ubuntu.sources | grep -vq \"$mirror\"; then
-            echo \"a stanza still points at the default archive\" >&2
-            grep -E \"^URIs\" /etc/apt/sources.list.d/ubuntu.sources >&2
+        cat > /tmp/stock.sources <<SRC
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: resolute resolute-updates
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: resolute-security
+
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: resolute
+SRC
+        $sed_line /tmp/stock.sources
+        if ! grep -q \"^URIs: $mirror\" /tmp/stock.sources; then
+            echo \"the rewrite changed nothing:\" >&2
+            cat /tmp/stock.sources >&2
             exit 1
         fi
+        if grep -E \"^URIs\" /tmp/stock.sources | grep -vq \"$mirror\"; then
+            echo \"a stanza still points somewhere else:\" >&2
+            grep -E \"^URIs\" /tmp/stock.sources >&2
+            exit 1
+        fi
+        [ \"\$(grep -c \"^URIs: $mirror\" /tmp/stock.sources)\" = 3 ]
     "
 
     # Anything that is not an http(s) URL is refused.
