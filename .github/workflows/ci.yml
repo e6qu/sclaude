@@ -38,6 +38,30 @@ env:
   TEST_TIMEOUT_SECONDS: "1200"
 
 jobs:
+  # A run whose every job is filtered out has nothing to conclude from, and
+  # GitHub calls that a failure ("This run likely failed because of a
+  # workflow file issue"), which left a permanent red X on every release PR.
+  # This job never filters itself out, so the run concludes on it, and it
+  # says why the others did not run.
+  what-ran:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say which jobs this run has and why
+        # A branch name is whatever its author typed, so it reaches the shell
+        # as data in the environment, never spliced into the script.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$HEAD_REF" = 'release-please--branches--main' ]; then
+            echo "Release PR: the test jobs are skipped on purpose."
+            echo "The commit is tested on main right after the merge, and the"
+            echo "release workflow re-verifies the published wrappers."
+          else
+            echo "Testing $EVENT on $REF_NAME."
+          fi
+
   commit-lint:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest

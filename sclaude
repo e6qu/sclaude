@@ -3610,7 +3610,7 @@ case "$WRAPPER_COMMAND" in
         exit 1
         ;;
     dockerfile)
-        dockerfile_command
+        print_whole dockerfile_command
         exit 0
         ;;
     install)

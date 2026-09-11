@@ -196,6 +196,13 @@ run_test "T10: update (forced no-cache rebuild)" bash -ec '
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
+    # --force-rebuild means --no-cache --pull: the most expensive thing the
+    # suite does. What it proves is that the rebuild runs, not how much it
+    # rebuilds, so it rebuilds the small image. This also leaves the suite
+    # image and its cache alone.
+    export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
+    img="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" version | sed -n "s/^Image hash: //p")"
+    trap "rm -rf $tmpdir; \"$ENGINE\" rmi -f \"$img\" >/dev/null 2>&1 || true" EXIT
     # Capture with || so a failing update does not set -e out of the subshell
     # before the output is echoed (a failing T10 used to report "(empty)").
     rc=0
@@ -1115,6 +1122,11 @@ run_test "T30: sandbox isolation assertions" bash -ec '
 # the bundle validation and that the bundle content is part of the image hash.
 run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
     set -e
+    # This builds a fresh image, and what it asserts (the staged bundle, the
+    # system trust store, the two env vars) has nothing to do with the
+    # toolchains or tooling. Build the small version: with the cloud tools in
+    # "all", the full one outgrew even the 1200s budget on a CI runner.
+    export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t31.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
     if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/missing.pem" "$1" version >/dev/null 2>"$tmp/err"; then
@@ -2085,6 +2097,9 @@ run_test "T46: timeout helper reaps its own timer" bash -ec '
 run_test "T47: apt mirror rewrites the image sources" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     mirror="http://azure.ports.ubuntu.com/ubuntu-ports/"
+    # Empty, not merely absent: CI names a mirror in the environment for
+    # every job, and this half of the test is about not having one.
+    export SAGENT_APT_MIRROR=""
 
     # Unset: nothing about a mirror, and the default archive is left alone.
     if "$1" dockerfile | grep -q SAGENT_APT_MIRROR; then
@@ -2123,6 +2138,59 @@ run_test "T47: apt mirror rewrites the image sources" bash -ec '
             exit 1
         fi
     done
+' _ "$SCLAUDE"
+
+# ── T48: an engine that dies mid-suite does not fail the job ─────────
+# The Rancher Desktop VM has lost its network with the suite half-run,
+# failing tests that had nothing to do with it. Such a failure is retried
+# once, out loud; a test that failed on its own merits is not.
+run_test "T48: a test is retried only when the engine went away" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t48.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    # shellcheck source=test_lib.sh
+    . "$(dirname "$1")/test_lib.sh"
+
+    # The signature is recognised, and an unrelated failure is not.
+    printf "[sclaude] ERROR: requested container engine is not responding: docker\n" > "$TMP/gone"
+    printf "assertion failed: 1 != 2\n" > "$TMP/real"
+    engine_went_away "$TMP/gone"
+    if engine_went_away "$TMP/real"; then
+        echo "a plain assertion failure was mistaken for a dead engine" >&2
+        exit 1
+    fi
+
+    # A test that fails once with that signature and passes next time is
+    # reported as a pass, having said RETRY; the counters move by one.
+    cat > "$TMP/flaky" <<FLAKY
+#!/bin/sh
+if [ -e "$TMP/ran" ]; then exit 0; fi
+touch "$TMP/ran"
+echo "[sclaude] ERROR: requested container engine is not responding: docker" >&2
+exit 1
+FLAKY
+    chmod +x "$TMP/flaky"
+    # Redirected, not captured: a command substitution would run run_test in
+    # a subshell and its counters would never reach this one.
+    PASS=0; FAIL=0
+    run_test "flaky" "$TMP/flaky" > "$TMP/out1"
+    out=$(cat "$TMP/out1")
+    case "$out" in *RETRY*PASS*) ;; *) echo "expected a loud retry then a pass, got: $out" >&2; exit 1 ;; esac
+    [ "$PASS" = 1 ]
+    [ "$FAIL" = 0 ]
+
+    # A test that just fails is reported once, with no retry.
+    cat > "$TMP/broken" <<BROKEN
+#!/bin/sh
+echo "assertion failed" >&2
+exit 1
+BROKEN
+    chmod +x "$TMP/broken"
+    PASS=0; FAIL=0
+    run_test "broken" "$TMP/broken" > "$TMP/out2"
+    out=$(cat "$TMP/out2")
+    case "$out" in *RETRY*) echo "a real failure was retried: $out" >&2; exit 1 ;; esac
+    [ "$FAIL" = 1 ]
+    [ "$PASS" = 0 ]
 ' _ "$SCLAUDE"
 
 print_results
