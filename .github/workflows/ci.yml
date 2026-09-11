@@ -378,7 +378,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Setup Node.js
@@ -393,6 +393,13 @@ jobs:
       # the configuration that exposed bugs #56 (ubuntu-user sudoers collision)
       # and #57 (SELinux) classes of platform bugs. Run the full suite inside.
       - name: Run E2E suite inside the dev container (UID 1000, Docker-in-Docker)
+        # `devcontainer exec` starts with the container's own environment, so
+        # the settings this job runs under have to be handed over explicitly.
+        # Without the mirror the suite inside built from Ubuntu's archive and
+        # outgrew the job's timeout.
         run: |
           devcontainer up --workspace-folder .
-          devcontainer exec --workspace-folder . bash test_e2e.sh
+          devcontainer exec --workspace-folder . \
+            --remote-env SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR" \
+            --remote-env TEST_TIMEOUT_SECONDS="$TEST_TIMEOUT_SECONDS" \
+            bash test_e2e.sh

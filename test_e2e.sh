@@ -354,11 +354,14 @@ run_test "T16: shebang uses env" bash -ec '
 run_test "T17: scodex version command" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
 # T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
-# so cap their per-test timeout at 120s regardless of the global default — a
-# hang in inner-CLI config loading shouldn't waste 10 minutes per test in CI.
-# Users can still raise it via T17_TIMEOUT_SECONDS for slow builders.
+# so cap their per-test timeout regardless of the global default — a hang in
+# inner-CLI config loading shouldn't waste 10 minutes per test in CI. The cap
+# is 300s, not the 120s it started at: the first run of the inner CLI takes
+# 97s on a podman CI runner now that the image carries the cloud tooling, and
+# a cap a legitimate run nearly reaches is a coin toss, not a guard.
+# Users can still set T17_TIMEOUT_SECONDS for slow builders.
 _t17_prev_timeout="$TEST_TIMEOUT_SECONDS"
-_t17_cap="${T17_TIMEOUT_SECONDS:-120}"
+_t17_cap="${T17_TIMEOUT_SECONDS:-300}"
 if [ "$TEST_TIMEOUT_SECONDS" -gt "$_t17_cap" ]; then
     TEST_TIMEOUT_SECONDS="$_t17_cap"
 fi
