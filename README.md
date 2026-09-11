@@ -89,16 +89,24 @@ run through nested rootless podman, no host socket. Turn off with
 
 Ubuntu 26.04 with Claude Code, Codex, `gh`, git, git-lfs, build-essential
 and toolchains: Node.js 26, Python 3.14 (pip, uv), Go 1.27, Rust stable, Java
-26 (Temurin). Tooling: TypeScript, tsx, bun, yarn and pnpm (corepack),
-create-next-app, create-vite, shadcn, Maven, Gradle, Quarkus CLI, Spring
-Boot CLI. Utilities: tree, htop, btop, jq, ripgrep, fd, bat, vim, nano, wget,
-zip, rsync, ssh, lsof, dig, nc, tmux, sqlite3.
+26 (Temurin). Tooling by group:
 
-About 4.3 GB. Every version and tool is a setting:
+| Group | Tools |
+|-------|-------|
+| `js` | TypeScript, tsx, bun, yarn and pnpm (corepack), create-next-app, create-vite, shadcn |
+| `java` | Maven, Gradle, Quarkus CLI, Spring Boot CLI |
+| `infra` | kubectl, Helm, Terraform, Terragrunt |
+| `cloud` | AWS CLI v2, Azure CLI, Google Cloud CLI (with gsutil and bq) |
+
+Utilities: tree, htop, btop, jq, ripgrep, fd, bat, vim, nano, wget, zip,
+rsync, ssh, lsof, dig, nc, tmux, sqlite3.
+
+About 5.5 GB with everything; the cloud group is 1.4 GB of it. Every version
+and tool is a setting:
 
 ```bash
 sclaude tools                          # what is in and why not
-sclaude tools disable bun gradle
+sclaude tools disable cloud            # a group, or names
 sclaude config set SAGENT_GO_VERSION none
 ```
 
@@ -214,7 +222,7 @@ SAGENT_PYTHON_VERSION="3.14"
 SAGENT_GO_VERSION="1.27"        # or none
 SAGENT_RUST_VERSION="stable"    # or none
 SAGENT_JAVA_VERSION="26"        # or none
-SAGENT_TOOLS="all"              # all, none, js, java, or names
+SAGENT_TOOLS="all"              # all, none, js, java, infra, cloud, or names
 ```
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a

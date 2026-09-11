@@ -142,9 +142,10 @@ fi
 
 # Optional tooling baked into the image, all at their latest release as of
 # the build. SAGENT_TOOLS selects by name or group (comma/space separated):
-# "all" (default), "none", "js", "java", or explicit names. Java tools need a
-# JDK: with SAGENT_JAVA_VERSION=none they drop out of "all"/"java" silently
-# but naming one explicitly is an error. Registry rows: name|group|description.
+# "all" (default), "none", a group from SAGENT_TOOL_GROUPS, or explicit
+# names. Java tools need a JDK: with SAGENT_JAVA_VERSION=none they drop out
+# of "all"/"java" silently but naming one explicitly is an error.
+# Registry rows: name|group|description.
 SAGENT_TOOL_REGISTRY='typescript|js|TypeScript compiler (tsc)
 tsx|js|run TypeScript files directly
 bun|js|Bun runtime and package manager
@@ -152,11 +153,27 @@ corepack|js|yarn and pnpm at the version a project declares
 create-next-app|js|Next.js project scaffolding
 create-vite|js|Vite project scaffolding (React, Vue, Svelte, ...)
 shadcn|js|shadcn/ui component CLI
+kubectl|infra|Kubernetes CLI
+helm|infra|Kubernetes package manager
+terraform|infra|HashiCorp Terraform
+terragrunt|infra|Terragrunt, a Terraform wrapper
+aws|cloud|AWS CLI v2
+az|cloud|Azure CLI
+gcloud|cloud|Google Cloud CLI (with gsutil and bq)
 maven|java|Apache Maven
 gradle|java|Gradle
 quarkus|java|Quarkus CLI
 spring|java|Spring Boot CLI'
+# Group order is the order tools install in, and what "all" means.
+SAGENT_TOOL_GROUPS="js java infra cloud"
 SAGENT_TOOLS="${SAGENT_TOOLS:-all}"
+
+tool_group_known() { case " $SAGENT_TOOL_GROUPS " in *" $1 "*) return 0 ;; esac; return 1; }
+tool_names_and_groups() {
+    printf '%s
+' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' '
+    printf 'and the groups all, none, %s' "$(printf '%s' "$SAGENT_TOOL_GROUPS" | tr ' ' ',' | sed 's/,/, /g')"
+}
 
 tool_group() { printf '%s\n' "$SAGENT_TOOL_REGISTRY" | awk -F'|' -v n="$1" '$1 == n {print $2}'; }
 tool_known() { [ -n "$(tool_group "$1")" ]; }
@@ -169,13 +186,13 @@ resolve_tools() {
     while read -r item; do
         [ -n "$item" ] || continue
         case "$item" in
-            all) wanted="$wanted js java" ;;
+            all) wanted="$wanted $SAGENT_TOOL_GROUPS" ;;
             none) ;;
-            js | java) wanted="$wanted $item" ;;
             *)
+                if tool_group_known "$item"; then wanted="$wanted $item"; continue; fi
                 if ! tool_known "$item"; then
                     echo "[$SCRIPT_NAME] ERROR: SAGENT_TOOLS names an unknown tool: $item" >&2
-                    echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                    echo "[$SCRIPT_NAME] Known: $(tool_names_and_groups)" >&2
                     exit 1
                 fi
                 wanted="$wanted $item"
@@ -776,6 +793,11 @@ RUN set -eux; \
         /home/agent/.local/bin \
         /home/agent/.local/share/containers; \
     chown -R agent /workspace /home/agent
+DOCKERFILE_END
+
+    emit_extra_tools
+
+    cat <<'DOCKERFILE_END'
 
 USER agent
 ENV BROWSER=/usr/local/bin/host-open
@@ -804,6 +826,133 @@ ARG AGENT_CLI_REFRESH=initial
 RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex
 USER agent
 DOCKERFILE_END
+}
+
+# The cloud, infrastructure and CLI tooling, each at its latest release as of
+# the build and fetched for the image's own architecture. These sit as low in
+# the file as they can: changing the selection rebuilds them and the agent-CLI
+# layer above, never the toolchains below. An architecture a vendor does not
+# publish for fails the build rather than quietly leaving the tool out.
+emit_extra_tools() {
+    # ripgrep and btop are not here: the image installs them for everyone,
+    # so a row offering to disable them could not keep its promise.
+    if tool_selected kubectl; then
+        cat <<'DOCKERFILE_END'
+
+# kubectl at the version dl.k8s.io calls stable.
+RUN set -eux; \
+    version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"; \
+    curl -fsSL "https://dl.k8s.io/release/${version}/bin/linux/$(dpkg --print-architecture)/kubectl" \
+        -o /usr/local/bin/kubectl; \
+    chmod 0755 /usr/local/bin/kubectl; \
+    kubectl version --client
+DOCKERFILE_END
+    fi
+
+    if tool_selected helm; then
+        cat <<'DOCKERFILE_END'
+
+# Helm, from its own latest-version pointer (the GitHub API rate-limits the
+# shared addresses CI builds from).
+RUN set -eux; \
+    version="$(curl -fsSL https://get.helm.sh/helm-latest-version)"; \
+    arch="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://get.helm.sh/helm-${version}-linux-${arch}.tar.gz" -o /tmp/helm.tar.gz; \
+    tar -xzf /tmp/helm.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/linux-${arch}/helm" /usr/local/bin/helm; \
+    rm -rf /tmp/helm.tar.gz "/tmp/linux-${arch}"; \
+    helm version --short
+DOCKERFILE_END
+    fi
+
+    if tool_selected terraform; then
+        cat <<'DOCKERFILE_END'
+
+# Terraform at the version HashiCorp's release checkpoint names current.
+RUN set -eux; \
+    version="$(curl -fsSL https://checkpoint-api.hashicorp.com/v1/check/terraform \
+        | sed -n 's/.*"current_version":"\([^"]*\)".*/\1/p')"; \
+    test -n "${version}"; \
+    curl -fsSL "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_$(dpkg --print-architecture).zip" \
+        -o /tmp/terraform.zip; \
+    unzip -q -o /tmp/terraform.zip -d /usr/local/bin; \
+    rm /tmp/terraform.zip; \
+    terraform version
+DOCKERFILE_END
+    fi
+
+    if tool_selected terragrunt; then
+        cat <<'DOCKERFILE_END'
+
+# Terragrunt, from the release GitHub redirects "latest" to.
+RUN set -eux; \
+    curl -fsSL "https://github.com/gruntwork-io/terragrunt/releases/latest/download/terragrunt_linux_$(dpkg --print-architecture)" \
+        -o /usr/local/bin/terragrunt; \
+    chmod 0755 /usr/local/bin/terragrunt; \
+    terragrunt --version
+DOCKERFILE_END
+    fi
+
+    if tool_selected aws; then
+        cat <<'DOCKERFILE_END'
+
+# AWS CLI v2, from Amazon's own installer.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) arch=x86_64 ;; \
+        arm64) arch=aarch64 ;; \
+        *) echo "no AWS CLI build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscli.zip; \
+    unzip -q /tmp/awscli.zip -d /tmp; \
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
+    rm -rf /tmp/aws /tmp/awscli.zip; \
+    aws --version
+DOCKERFILE_END
+    fi
+
+    if tool_selected az; then
+        cat <<'DOCKERFILE_END'
+
+# Azure CLI from Microsoft's archive, which publishes for both architectures.
+# An Ubuntu they have no dist for fails here instead of shipping without az.
+RUN set -eux; \
+    . /etc/os-release; \
+    install -d -m 0755 /usr/share/keyrings; \
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg]" \
+        "https://packages.microsoft.com/repos/azure-cli/ ${VERSION_CODENAME} main" \
+        > /etc/apt/sources.list.d/azure-cli.list; \
+    apt-get update; \
+    apt-get install -y azure-cli; \
+    rm -rf /var/lib/apt/lists/*; \
+    az version
+DOCKERFILE_END
+    fi
+
+    if tool_selected gcloud; then
+        cat <<'DOCKERFILE_END'
+
+# Google Cloud CLI, the archive without a bundled Python: it runs on the
+# image's own. gsutil and bq come with it.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) arch=x86_64 ;; \
+        arm64) arch=arm ;; \
+        *) echo "no Google Cloud CLI build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${arch}.tar.gz" \
+        -o /tmp/gcloud.tar.gz; \
+    tar -xzf /tmp/gcloud.tar.gz -C /opt; \
+    rm /tmp/gcloud.tar.gz; \
+    /opt/google-cloud-sdk/install.sh --quiet --usage-reporting=false \
+        --path-update=false --command-completion=false; \
+    for b in gcloud gsutil bq; do ln -sf "/opt/google-cloud-sdk/bin/${b}" "/usr/local/bin/${b}"; done; \
+    gcloud --version
+ENV CLOUDSDK_PYTHON=/usr/bin/python3
+DOCKERFILE_END
+    fi
 }
 
 # The hash covers image content only: the Dockerfile, the UID/GID build args
@@ -1277,12 +1426,28 @@ config_command() {
     esac
 }
 
+# Write a command's whole output in one go. A reader like `| grep -q` or
+# `| head` closes the pipe as soon as it has what it wants, and a command
+# still writing into it dies with "write error: Broken pipe". For the short,
+# non-progressive commands only: doctor prints each check as it finishes,
+# which is worth more than being pipe-proof.
+print_whole() {
+    local out rc=0
+    out=$("$@") || rc=$?
+    printf '%s\n' "$out" 2>/dev/null || true
+    return "$rc"
+}
+
 tools_command() {
-    local sub="${1:-}" name group desc status current new item
+    local sub="${1:-}" name group desc status current new item listing
     case "$sub" in
         "" | list)
-            echo "Tools in the sandbox image (SAGENT_TOOLS=\"$SAGENT_TOOLS\", $(setting_source SAGENT_TOOLS)):"
-            printf '  %-18s %-6s %-22s %s\n' NAME GROUP STATUS DESCRIPTION
+            # Built whole, then written once: `$SCRIPT_NAME tools | grep -q x`
+            # closes the pipe as soon as it matches, and a loop still writing
+            # into it dies with "printf: write error: Broken pipe".
+            listing="Tools in the sandbox image (SAGENT_TOOLS=\"$SAGENT_TOOLS\", $(setting_source SAGENT_TOOLS)):"
+            listing="$listing
+$(printf '  %-18s %-6s %-22s %s' NAME GROUP STATUS DESCRIPTION)"
             while IFS='|' read -r name group desc; do
                 if tool_selected "$name"; then
                     status="included"
@@ -1291,12 +1456,15 @@ tools_command() {
                 else
                     status="excluded"
                 fi
-                printf '  %-18s %-6s %-22s %s\n' "$name" "$group" "$status" "$desc"
+                listing="$listing
+$(printf '  %-18s %-6s %-22s %s' "$name" "$group" "$status" "$desc")"
             done <<EOF
 $SAGENT_TOOL_REGISTRY
 EOF
-            echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
-            echo "Change with: $SCRIPT_NAME tools enable|disable NAME... (names or groups all, none, js, java); versions with: $SCRIPT_NAME config set SAGENT_<LANG>_VERSION <version>"
+            listing="$listing
+Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION
+Change with: $SCRIPT_NAME tools enable|disable NAME... (names or groups all, none, $(printf '%s' "$SAGENT_TOOL_GROUPS" | tr ' ' ',' | sed 's/,/, /g')); versions with: $SCRIPT_NAME config set SAGENT_<LANG>_VERSION <version>"
+            printf '%s\n' "$listing"
             ;;
         enable | disable)
             shift
@@ -1305,11 +1473,12 @@ EOF
             current=" $TOOLS_SELECTED "
             for item in "$@"; do
                 case "$item" in
-                    all | js | java | none) ;;
+                    all | none) ;;
                     *)
+                        if tool_group_known "$item"; then continue; fi
                         if ! tool_known "$item"; then
                             echo "[$SCRIPT_NAME] ERROR: unknown tool: $item" >&2
-                            echo "[$SCRIPT_NAME] Known: $(printf '%s\n' "$SAGENT_TOOL_REGISTRY" | cut -d'|' -f1 | tr '\n' ' ')and the groups all, none, js, java" >&2
+                            echo "[$SCRIPT_NAME] Known: $(tool_names_and_groups)" >&2
                             exit 1
                         fi
                         ;;
@@ -3399,15 +3568,15 @@ case "$WRAPPER_COMMAND" in
         exit 0
         ;;
     tools)
-        tools_command "${ARGS[@]+"${ARGS[@]}"}"
+        print_whole tools_command "${ARGS[@]+"${ARGS[@]}"}"
         exit 0
         ;;
     config)
-        config_command "${ARGS[@]+"${ARGS[@]}"}"
+        print_whole config_command "${ARGS[@]+"${ARGS[@]}"}"
         exit 0
         ;;
     status)
-        status_command
+        print_whole status_command
         exit 0
         ;;
     doctor)
@@ -3454,11 +3623,11 @@ case "$WRAPPER_COMMAND" in
         exit 0
         ;;
     version|--version|--version-info)
-        show_version
+        print_whole show_version
         exit 0
         ;;
     volumes)
-        show_volumes
+        print_whole show_volumes
         exit 0
         ;;
     reset)

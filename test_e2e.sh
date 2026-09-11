@@ -475,7 +475,7 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
             command -v \$u >/dev/null || { echo \"utility missing: \$u\" >&2; exit 1; }
         done
         # Every selected tool is present; every unselected one is absent.
-        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring; do
+        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring kubectl helm terraform terragrunt aws az gcloud; do
             case \" $tools \" in *\" \$tool \"*) want=1 ;; *) want=0 ;; esac
             case \$tool in
                 typescript) cmd=tsc ;; corepack) cmd=yarn ;; maven) cmd=mvn ;; *) cmd=\$tool ;;
@@ -488,6 +488,13 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
                     gradle) gradle --version | grep -q \"^Gradle\" ;;
                     spring) spring --version | grep -q \"^Spring CLI\" ;;
                     create-vite) command -v create-vite >/dev/null ;;
+                    kubectl) kubectl version --client | grep -q Client ;;
+                    helm) helm version --short | grep -q \"^v\" ;;
+                    terraform) terraform version | grep -q \"^Terraform v\" ;;
+                    terragrunt) terragrunt --version | grep -q terragrunt ;;
+                    aws) aws --version | grep -q \"^aws-cli/2\" ;;
+                    az) az version >/dev/null ;;
+                    gcloud) gcloud --version | grep -q \"Google Cloud SDK\"; command -v gsutil >/dev/null; command -v bq >/dev/null ;;
                     *) \$tool --version >/dev/null ;;
                 esac
             elif command -v \$cmd >/dev/null; then
@@ -1627,6 +1634,37 @@ run_test "T38b: config quoting and tools groups" bash -ec '
         case " $tools " in *" $t "*) echo "enable all pulled in $t with no JDK" >&2; exit 1 ;; esac
     done
     case " $tools " in *" typescript "*) ;; *) echo "enable all dropped the JS tools too" >&2; exit 1 ;; esac
+
+    # The cloud and infrastructure groups select and deselect as one, and a
+    # name from them is as good as a group.
+    : > "$cfg"
+    "$1" tools disable cloud >/dev/null
+    tools=$("$1" version | sed -n "s/^Tools: //p")
+    for t in aws az gcloud; do
+        case " $tools " in *" $t "*) echo "disable cloud left $t in" >&2; exit 1 ;; esac
+    done
+    for t in kubectl helm terraform terragrunt; do
+        case " $tools " in *" $t "*) ;; *) echo "disable cloud also dropped $t" >&2; exit 1 ;; esac
+    done
+    "$1" tools enable aws >/dev/null
+    tools=$("$1" version | sed -n "s/^Tools: //p")
+    case " $tools " in *" aws "*) ;; *) echo "enable aws did not add it" >&2; exit 1 ;; esac
+    case " $tools " in *" az "*) echo "enable aws pulled in the whole group" >&2; exit 1 ;; esac
+    # A reader that stops early must not break the writer: with enough rows
+    # to outgrow the pipe buffer, `tools | grep -q` used to kill the listing
+    # with "printf: write error: Broken pipe".
+    out=$("$1" tools 2>&1 >/dev/null) || true
+    [ -z "$out" ]
+    "$1" tools | grep -qE "^  bun +js +included"
+    if "$1" tools 2>&1 >/dev/null | grep -q "Broken pipe"; then
+        echo "listing the tools into a closed pipe reported an error" >&2
+        exit 1
+    fi
+    # Groups are not tool names: an unknown one is still an error.
+    if SAGENT_TOOLS=clowd "$1" version >/dev/null 2>&1; then
+        echo "an unknown group was accepted" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T38: tools and config commands edit the text config ──────────────
@@ -1639,10 +1677,10 @@ run_test "T38: tools/config commands" bash -ec '
     "$1" tools disable bun gradle 2>/dev/null
     # Values are written single-quoted so a $ or backtick in one cannot be
     # expanded when the file is sourced.
-    expected="SAGENT_TOOLS='"'"'typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring'"'"'"
+    expected="SAGENT_TOOLS='"'"'typescript,tsx,corepack,create-next-app,create-vite,shadcn,kubectl,helm,terraform,terragrunt,aws,az,gcloud,maven,quarkus,spring'"'"'"
     grep -qxF "$expected" "$cfg/config"
     "$1" tools | grep -qE "^  bun +js +excluded"
-    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn maven quarkus spring$"
+    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn kubectl helm terraform terragrunt aws az gcloud maven quarkus spring$"
     [ "$("$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
     "$1" tools enable java 2>/dev/null
     "$1" version | grep -q "^Tools: .* maven gradle quarkus spring$"
@@ -1666,7 +1704,7 @@ run_test "T38: tools/config commands" bash -ec '
     # Environment wins over the file and the command says so.
     SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
     # Java tools drop out without a JDK; naming one explicitly is an error.
-    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn$"
+    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn kubectl helm terraform terragrunt aws az gcloud$"
     if SAGENT_TOOLS=maven SAGENT_JAVA_VERSION=none "$1" version >/dev/null 2>&1; then echo "java tool without JDK accepted" >&2; exit 1; fi
     bash -n "$cfg/config"
 ' _ "$SCLAUDE"
