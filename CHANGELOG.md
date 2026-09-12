@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.0](https://github.com/e6qu/sclaude/compare/v2.18.0...v2.19.0) (2026-09-12)
+
+
+### Features
+
+* cloud and infrastructure tooling, from a mirror that keeps up ([#77](https://github.com/e6qu/sclaude/issues/77)) ([15dc126](https://github.com/e6qu/sclaude/commit/15dc1260e4834a3392f821646e8ab35993477efa))
+
 ## [2.18.0](https://github.com/e6qu/sclaude/compare/v2.17.0...v2.18.0) (2026-09-10)
 
 

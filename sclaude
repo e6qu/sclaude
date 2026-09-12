@@ -21,7 +21,7 @@ SESSIONS_PER_PROJECT=true
 # file-history holds the file snapshots /rewind restores.
 SESSIONS_EXTRA_DIRS=(file-history)
 YOLO_FLAG="--dangerously-skip-permissions"
-WRAPPER_VERSION="2.18.0" # x-release-please-version
+WRAPPER_VERSION="2.19.0" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
 ENGINE_CMD=""
