@@ -204,7 +204,10 @@ jobs:
       - name: Start colima VM
         # vz (Virtualization.framework) instead of the default qemu — markedly
         # faster on the Intel runners.
-        run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30
+        # --dns: the VM's own resolver has failed to resolve archive.ubuntu.com
+        # from inside a build container, 597 times in one run, and took the
+        # job with it. Public resolvers make container DNS deterministic.
+        run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30 --dns 1.1.1.1 --dns 8.8.8.8
       - name: Wait for the VM's docker daemon
         # colima start can return while (or without) dockerd becoming
         # reachable; assert readiness with a clear error instead of failing

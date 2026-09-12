@@ -92,6 +92,7 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 90 | A container engine that fell over mid-suite (the Rancher Desktop VM losing its network) failed tests that had nothing to do with it, and with them the job | A failure whose output says the engine went away is retried once, after waiting for the engine to answer again, and says RETRY where it does so; a test that failed on its own merits is never retried; T48 |
 | 91 | Publishing v2.19.0 half-finished: the arm64 image built and passed its checks, then `docker push` came back "unknown blob" from ghcr, so no manifest was published and the release had wrappers and one architecture | The push and the manifest creation are retried up to three times, twenty seconds apart; both are idempotent, and the image grew to 5.5 GB, which is when the registry started doing this |
 | 92 | T19c started the host clipboard agent in the background and used it immediately, so on a loaded runner the shim inside the sandbox gave up before a backgrounded bash had reached its serving loop | The test sends one request and waits for its answer before running the sandbox, which is the only proof the agent is up |
+| 93 | `test-macos` failed building the image: the colima VM's resolver could not resolve `archive.ubuntu.com` from inside the build container, 597 times in one run | The VM starts with public resolvers (`--dns`), so container DNS does not depend on whatever the runner host hands the guest |
 
 ## False Positives
 
