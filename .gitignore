@@ -1,1 +1,5 @@
 *.pcap
+
+# Scratch copies of test subsets, made while debugging a single test.
+.s[0-9]*.sh
+.subset[0-9]*.sh
