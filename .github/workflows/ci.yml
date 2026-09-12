@@ -26,8 +26,42 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # These runners are Azure VMs sitting beside Canonical's Azure mirror.
+  # From the default archive a single package index has taken ten minutes
+  # here and timed out a job; from this one it arrives in seconds. Only the
+  # Linux jobs use it (x86_64: an arm64 build would need the ports mirror),
+  # and the macOS jobs keep Ubuntu's default.
+  SAGENT_APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu/
+  # A cold T02 build fetches an Ubuntu base, five toolchains and the cloud
+  # tooling; that does not fit the harness's default 600s per test. The
+  # macOS jobs already ran at this budget for the same reason.
+  TEST_TIMEOUT_SECONDS: "1200"
 
 jobs:
+  # A run whose every job is filtered out has nothing to conclude from, and
+  # GitHub calls that a failure ("This run likely failed because of a
+  # workflow file issue"), which left a permanent red X on every release PR.
+  # This job never filters itself out, so the run concludes on it, and it
+  # says why the others did not run.
+  what-ran:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say which jobs this run has and why
+        # A branch name is whatever its author typed, so it reaches the shell
+        # as data in the environment, never spliced into the script.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$HEAD_REF" = 'release-please--branches--main' ]; then
+            echo "Release PR: the test jobs are skipped on purpose."
+            echo "The commit is tested on main right after the merge, and the"
+            echo "release workflow re-verifies the published wrappers."
+          else
+            echo "Testing $EVENT on $REF_NAME."
+          fi
+
   commit-lint:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
@@ -59,6 +93,9 @@ jobs:
   lint-macos:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: macos-latest
+    env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
     steps:
       - uses: actions/checkout@v5
       - name: Install pre-commit
@@ -153,6 +190,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
+    env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
@@ -232,6 +272,8 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 120
     env:
+      # Not an Azure runner: Ubuntu's own archive is the right default here.
+      SAGENT_APT_MIRROR: ""
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
     steps:
       - uses: actions/checkout@v5
@@ -336,7 +378,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Setup Node.js
@@ -351,6 +393,13 @@ jobs:
       # the configuration that exposed bugs #56 (ubuntu-user sudoers collision)
       # and #57 (SELinux) classes of platform bugs. Run the full suite inside.
       - name: Run E2E suite inside the dev container (UID 1000, Docker-in-Docker)
+        # `devcontainer exec` starts with the container's own environment, so
+        # the settings this job runs under have to be handed over explicitly.
+        # Without the mirror the suite inside built from Ubuntu's archive and
+        # outgrew the job's timeout.
         run: |
           devcontainer up --workspace-folder .
-          devcontainer exec --workspace-folder . bash test_e2e.sh
+          devcontainer exec --workspace-folder . \
+            --remote-env SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR" \
+            --remote-env TEST_TIMEOUT_SECONDS="$TEST_TIMEOUT_SECONDS" \
+            bash test_e2e.sh

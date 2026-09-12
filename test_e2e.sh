@@ -196,6 +196,13 @@ run_test "T10: update (forced no-cache rebuild)" bash -ec '
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
+    # --force-rebuild means --no-cache --pull: the most expensive thing the
+    # suite does. What it proves is that the rebuild runs, not how much it
+    # rebuilds, so it rebuilds the small image. This also leaves the suite
+    # image and its cache alone.
+    export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
+    img="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" version | sed -n "s/^Image hash: //p")"
+    trap "rm -rf $tmpdir; \"$ENGINE\" rmi -f \"$img\" >/dev/null 2>&1 || true" EXIT
     # Capture with || so a failing update does not set -e out of the subshell
     # before the output is echoed (a failing T10 used to report "(empty)").
     rc=0
@@ -347,11 +354,14 @@ run_test "T16: shebang uses env" bash -ec '
 run_test "T17: scodex version command" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
 # T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
-# so cap their per-test timeout at 120s regardless of the global default — a
-# hang in inner-CLI config loading shouldn't waste 10 minutes per test in CI.
-# Users can still raise it via T17_TIMEOUT_SECONDS for slow builders.
+# so cap their per-test timeout regardless of the global default — a hang in
+# inner-CLI config loading shouldn't waste 10 minutes per test in CI. The cap
+# is 300s, not the 120s it started at: the first run of the inner CLI takes
+# 97s on a podman CI runner now that the image carries the cloud tooling, and
+# a cap a legitimate run nearly reaches is a coin toss, not a guard.
+# Users can still set T17_TIMEOUT_SECONDS for slow builders.
 _t17_prev_timeout="$TEST_TIMEOUT_SECONDS"
-_t17_cap="${T17_TIMEOUT_SECONDS:-120}"
+_t17_cap="${T17_TIMEOUT_SECONDS:-300}"
 if [ "$TEST_TIMEOUT_SECONDS" -gt "$_t17_cap" ]; then
     TEST_TIMEOUT_SECONDS="$_t17_cap"
 fi
@@ -475,7 +485,7 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
             command -v \$u >/dev/null || { echo \"utility missing: \$u\" >&2; exit 1; }
         done
         # Every selected tool is present; every unselected one is absent.
-        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring; do
+        for tool in typescript tsx bun corepack create-next-app create-vite shadcn maven gradle quarkus spring kubectl helm terraform terragrunt aws az gcloud; do
             case \" $tools \" in *\" \$tool \"*) want=1 ;; *) want=0 ;; esac
             case \$tool in
                 typescript) cmd=tsc ;; corepack) cmd=yarn ;; maven) cmd=mvn ;; *) cmd=\$tool ;;
@@ -488,6 +498,13 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
                     gradle) gradle --version | grep -q \"^Gradle\" ;;
                     spring) spring --version | grep -q \"^Spring CLI\" ;;
                     create-vite) command -v create-vite >/dev/null ;;
+                    kubectl) kubectl version --client | grep -q Client ;;
+                    helm) helm version --short | grep -q \"^v\" ;;
+                    terraform) terraform version | grep -q \"^Terraform v\" ;;
+                    terragrunt) terragrunt --version | grep -q terragrunt ;;
+                    aws) aws --version | grep -q \"^aws-cli/2\" ;;
+                    az) az version >/dev/null ;;
+                    gcloud) gcloud --version | grep -q \"Google Cloud SDK\"; command -v gsutil >/dev/null; command -v bq >/dev/null ;;
                     *) \$tool --version >/dev/null ;;
                 esac
             elif command -v \$cmd >/dev/null; then
@@ -1108,6 +1125,11 @@ run_test "T30: sandbox isolation assertions" bash -ec '
 # the bundle validation and that the bundle content is part of the image hash.
 run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
     set -e
+    # This builds a fresh image, and what it asserts (the staged bundle, the
+    # system trust store, the two env vars) has nothing to do with the
+    # toolchains or tooling. Build the small version: with the cloud tools in
+    # "all", the full one outgrew even the 1200s budget on a CI runner.
+    export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t31.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
     if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CA_BUNDLE="$tmp/missing.pem" "$1" version >/dev/null 2>"$tmp/err"; then
@@ -1627,6 +1649,37 @@ run_test "T38b: config quoting and tools groups" bash -ec '
         case " $tools " in *" $t "*) echo "enable all pulled in $t with no JDK" >&2; exit 1 ;; esac
     done
     case " $tools " in *" typescript "*) ;; *) echo "enable all dropped the JS tools too" >&2; exit 1 ;; esac
+
+    # The cloud and infrastructure groups select and deselect as one, and a
+    # name from them is as good as a group.
+    : > "$cfg"
+    "$1" tools disable cloud >/dev/null
+    tools=$("$1" version | sed -n "s/^Tools: //p")
+    for t in aws az gcloud; do
+        case " $tools " in *" $t "*) echo "disable cloud left $t in" >&2; exit 1 ;; esac
+    done
+    for t in kubectl helm terraform terragrunt; do
+        case " $tools " in *" $t "*) ;; *) echo "disable cloud also dropped $t" >&2; exit 1 ;; esac
+    done
+    "$1" tools enable aws >/dev/null
+    tools=$("$1" version | sed -n "s/^Tools: //p")
+    case " $tools " in *" aws "*) ;; *) echo "enable aws did not add it" >&2; exit 1 ;; esac
+    case " $tools " in *" az "*) echo "enable aws pulled in the whole group" >&2; exit 1 ;; esac
+    # A reader that stops early must not break the writer: with enough rows
+    # to outgrow the pipe buffer, `tools | grep -q` used to kill the listing
+    # with "printf: write error: Broken pipe".
+    out=$("$1" tools 2>&1 >/dev/null) || true
+    [ -z "$out" ]
+    "$1" tools | grep -qE "^  bun +js +included"
+    if "$1" tools 2>&1 >/dev/null | grep -q "Broken pipe"; then
+        echo "listing the tools into a closed pipe reported an error" >&2
+        exit 1
+    fi
+    # Groups are not tool names: an unknown one is still an error.
+    if SAGENT_TOOLS=clowd "$1" version >/dev/null 2>&1; then
+        echo "an unknown group was accepted" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T38: tools and config commands edit the text config ──────────────
@@ -1639,10 +1692,10 @@ run_test "T38: tools/config commands" bash -ec '
     "$1" tools disable bun gradle 2>/dev/null
     # Values are written single-quoted so a $ or backtick in one cannot be
     # expanded when the file is sourced.
-    expected="SAGENT_TOOLS='"'"'typescript,tsx,corepack,create-next-app,create-vite,shadcn,maven,quarkus,spring'"'"'"
+    expected="SAGENT_TOOLS='"'"'typescript,tsx,corepack,create-next-app,create-vite,shadcn,kubectl,helm,terraform,terragrunt,aws,az,gcloud,maven,quarkus,spring'"'"'"
     grep -qxF "$expected" "$cfg/config"
     "$1" tools | grep -qE "^  bun +js +excluded"
-    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn maven quarkus spring$"
+    "$1" version | grep -q "^Tools: typescript tsx corepack create-next-app create-vite shadcn kubectl helm terraform terragrunt aws az gcloud maven quarkus spring$"
     [ "$("$1" version | sed -n "s/^Image hash: //p")" != "$base" ]
     "$1" tools enable java 2>/dev/null
     "$1" version | grep -q "^Tools: .* maven gradle quarkus spring$"
@@ -1666,7 +1719,7 @@ run_test "T38: tools/config commands" bash -ec '
     # Environment wins over the file and the command says so.
     SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
     # Java tools drop out without a JDK; naming one explicitly is an error.
-    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn$"
+    SAGENT_TOOLS=all SAGENT_JAVA_VERSION=none "$1" version | grep -q "^Tools: typescript tsx bun corepack create-next-app create-vite shadcn kubectl helm terraform terragrunt aws az gcloud$"
     if SAGENT_TOOLS=maven SAGENT_JAVA_VERSION=none "$1" version >/dev/null 2>&1; then echo "java tool without JDK accepted" >&2; exit 1; fi
     bash -n "$cfg/config"
 ' _ "$SCLAUDE"
@@ -2038,6 +2091,138 @@ run_test "T46: timeout helper reaps its own timer" bash -ec '
         echo "the timer sleep outlived the command it was timing" >&2
         exit 1
     fi
+' _ "$SCLAUDE"
+
+# ── T47: the apt mirror is named, not guessed ────────────────────────
+# Unset means Ubuntu's own archive. Set, it rewrites the image's sources
+# before the first apt-get update — and the rewrite is checked against a
+# real sources file, not just the text of the Dockerfile.
+run_test "T47: apt mirror rewrites the image sources" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    mirror="http://azure.ports.ubuntu.com/ubuntu-ports/"
+    # Empty, not merely absent: CI names a mirror in the environment for
+    # every job, and this half of the test is about not having one.
+    export SAGENT_APT_MIRROR=""
+
+    # Unset: nothing about a mirror, and the default archive is left alone.
+    if "$1" dockerfile | grep -q SAGENT_APT_MIRROR; then
+        echo "a mirror layer appears with the setting unset" >&2
+        exit 1
+    fi
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+
+    # Set: the layer is there, and it changes the image.
+    out=$(SAGENT_APT_MIRROR="$mirror" "$1" dockerfile)
+    echo "$out" | grep -q "SAGENT_APT_MIRROR" || { echo "no mirror layer with the setting on" >&2; exit 1; }
+    echo "$out" | grep -qF "$mirror" || { echo "the mirror layer does not name the mirror" >&2; exit 1; }
+    with_mirror=$(SAGENT_APT_MIRROR="$mirror" "$1" version | sed -n "s/^Image hash: //p")
+    if [ "$with_mirror" = "$base" ]; then
+        echo "the image hash did not change with a mirror configured ($base)" >&2
+        exit 1
+    fi
+    # A value without a trailing slash is stored with one, so the rewritten
+    # URI never runs the mirror and the suite together.
+    SAGENT_APT_MIRROR="${mirror%/}" "$1" dockerfile | grep -qF "URIs: $mirror" \
+        || { echo "a mirror given without a trailing slash did not get one" >&2; exit 1; }
+
+    # The sed it emits, run against a stock Ubuntu sources file, rewrites
+    # every stanza: the archive, security, and the ports host an arm64 image
+    # uses. The fixture is written here rather than taken from the image,
+    # which may itself have been built through a mirror (CI builds are).
+    sed_line=$(echo "$out" | sed -n "s/^    \(sed -i -E .*\) \\\\$/\1/p")
+    if [ -z "$sed_line" ]; then
+        echo "could not find the sed the mirror layer runs, in:" >&2
+        echo "$out" | grep -A3 "named mirror" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm --user root "$SUITE_IMG" bash -ec "
+        cat > /tmp/stock.sources <<SRC
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: resolute resolute-updates
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: resolute-security
+
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: resolute
+SRC
+        $sed_line /tmp/stock.sources
+        if ! grep -q \"^URIs: $mirror\" /tmp/stock.sources; then
+            echo \"the rewrite changed nothing:\" >&2
+            cat /tmp/stock.sources >&2
+            exit 1
+        fi
+        if grep -E \"^URIs\" /tmp/stock.sources | grep -vq \"$mirror\"; then
+            echo \"a stanza still points somewhere else:\" >&2
+            grep -E \"^URIs\" /tmp/stock.sources >&2
+            exit 1
+        fi
+        [ \"\$(grep -c \"^URIs: $mirror\" /tmp/stock.sources)\" = 3 ]
+    "
+
+    # Anything that is not an http(s) URL is refused.
+    for bad in "ftp://mirror.example/ubuntu/" "not a url" "http://mirror example/"; do
+        if SAGENT_APT_MIRROR="$bad" "$1" version >/dev/null 2>&1; then
+            echo "accepted a bad mirror: $bad" >&2
+            exit 1
+        fi
+    done
+' _ "$SCLAUDE"
+
+# ── T48: an engine that dies mid-suite does not fail the job ─────────
+# The Rancher Desktop VM has lost its network with the suite half-run,
+# failing tests that had nothing to do with it. Such a failure is retried
+# once, out loud; a test that failed on its own merits is not.
+run_test "T48: a test is retried only when the engine went away" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t48.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    # shellcheck source=test_lib.sh
+    . "$(dirname "$1")/test_lib.sh"
+
+    # The signature is recognised, and an unrelated failure is not.
+    printf "[sclaude] ERROR: requested container engine is not responding: docker\n" > "$TMP/gone"
+    printf "assertion failed: 1 != 2\n" > "$TMP/real"
+    engine_went_away "$TMP/gone"
+    if engine_went_away "$TMP/real"; then
+        echo "a plain assertion failure was mistaken for a dead engine" >&2
+        exit 1
+    fi
+
+    # A test that fails once with that signature and passes next time is
+    # reported as a pass, having said RETRY; the counters move by one.
+    cat > "$TMP/flaky" <<FLAKY
+#!/bin/sh
+if [ -e "$TMP/ran" ]; then exit 0; fi
+touch "$TMP/ran"
+echo "[sclaude] ERROR: requested container engine is not responding: docker" >&2
+exit 1
+FLAKY
+    chmod +x "$TMP/flaky"
+    # Redirected, not captured: a command substitution would run run_test in
+    # a subshell and its counters would never reach this one.
+    PASS=0; FAIL=0
+    run_test "flaky" "$TMP/flaky" > "$TMP/out1"
+    out=$(cat "$TMP/out1")
+    case "$out" in *RETRY*PASS*) ;; *) echo "expected a loud retry then a pass, got: $out" >&2; exit 1 ;; esac
+    [ "$PASS" = 1 ]
+    [ "$FAIL" = 0 ]
+
+    # A test that just fails is reported once, with no retry.
+    cat > "$TMP/broken" <<BROKEN
+#!/bin/sh
+echo "assertion failed" >&2
+exit 1
+BROKEN
+    chmod +x "$TMP/broken"
+    PASS=0; FAIL=0
+    run_test "broken" "$TMP/broken" > "$TMP/out2"
+    out=$(cat "$TMP/out2")
+    case "$out" in *RETRY*) echo "a real failure was retried: $out" >&2; exit 1 ;; esac
+    [ "$FAIL" = 1 ]
+    [ "$PASS" = 0 ]
 ' _ "$SCLAUDE"
 
 print_results

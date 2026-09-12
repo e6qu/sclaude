@@ -62,6 +62,25 @@ run_with_timeout_capture() {
     return "$rc"
 }
 
+# Did this test fail because the engine went away underneath it? Container
+# engines on CI runners do fall over mid-suite: the Rancher Desktop VM has
+# lost its network with the suite half-run, failing tests that had nothing
+# to do with it.
+engine_went_away() {
+    grep -qiE "engine is not responding|cannot connect to the docker daemon|no network from containers|error during connect|connection refused.*docker" "$1"
+}
+
+# Wait, bounded, for the engine to answer again. Returns 1 if it never does,
+# which leaves the original failure standing.
+wait_for_engine() {
+    local engine="${ENGINE:-${SAGENT_CONTAINER_ENGINE:-docker}}" _
+    for _ in $(seq 1 24); do
+        if "$engine" info >/dev/null 2>&1; then return 0; fi
+        sleep 5
+    done
+    return 1
+}
+
 run_test() {
     local name="$1"; shift
     case " $SAGENT_TEST_SKIP " in
@@ -73,15 +92,26 @@ run_test() {
     printf "  %-55s " "$name"
     local output
     local output_file
+    local rc=0
     output_file=$(mktemp)
-    if run_with_timeout_capture "$output_file" "$@"; then
-        output=$(cat "$output_file")
-        rm -f "$output_file"
+    run_with_timeout_capture "$output_file" "$@" || rc=$?
+    # An engine that died takes unrelated tests with it. Say so out loud and
+    # give the test one more run once the engine answers again — never a
+    # silent retry, and never one for a test that failed on its own merits.
+    if [ "$rc" -ne 0 ] && engine_went_away "$output_file"; then
+        printf "RETRY(engine) "
+        if wait_for_engine; then
+            rc=0
+            : > "$output_file"
+            run_with_timeout_capture "$output_file" "$@" || rc=$?
+        fi
+    fi
+    output=$(cat "$output_file")
+    rm -f "$output_file"
+    if [ "$rc" -eq 0 ]; then
         printf "PASS\n"
         PASS=$((PASS + 1))
     else
-        output=$(cat "$output_file")
-        rm -f "$output_file"
         printf "FAIL\n"
         printf "    Output: %s\n" "${output:-(empty)}"
         FAIL=$((FAIL + 1))
