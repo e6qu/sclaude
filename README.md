@@ -162,6 +162,13 @@ inside. `SAGENT_SESSIONS=all` additionally shares `~/.claude/file-history`,
 so `/rewind` reaches edits made on the other side — that store is not per
 project, so it hands the sandbox state from every workspace.
 
+**Commits are yours.** Neither agent signs its work in the sandbox: no
+`Co-Authored-By` trailer naming the tool, no "Generated with" line, in commit
+messages or pull request descriptions. Claude Code is told through a policy
+file in the image, which nothing in the config volume can override; Codex has
+no local switch for it, so the rule goes into the standing instructions it
+already reads. `SAGENT_AI_ATTRIBUTION=1` puts the footers back.
+
 **Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
 `xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
 clipboard through the wrapper. Selecting in Claude Code's TUI copies to your
@@ -233,6 +240,7 @@ SAGENT_RUST_VERSION="stable"    # or none
 SAGENT_JAVA_VERSION="26"        # or none
 SAGENT_TOOLS="all"              # all, none, js, java, infra, cloud, or names
 SAGENT_APT_MIRROR=""            # Ubuntu mirror for image builds, default: the archive
+SAGENT_AI_ATTRIBUTION=0         # agent footers in commits and PRs, default 0 (off)
 ```
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a

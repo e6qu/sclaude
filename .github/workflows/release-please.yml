@@ -174,6 +174,12 @@ jobs:
     if: always() && needs.tag.result == 'success'
     strategy:
       fail-fast: false
+      # One publish at a time. ghcr answered a push with "unknown blob" while
+      # the other architecture was pushing to the same repository (v2.19.0:
+      # arm64 failed 13:20:28-13:23:50 while amd64 ran 13:20:26-13:25:31, and
+      # the same commit pushed cleanly at 13:26 once amd64 was done), which
+      # left a release holding one architecture and no manifest (#91).
+      max-parallel: 1
       matrix:
         include:
           - arch: amd64
@@ -219,6 +225,11 @@ jobs:
             --format '{{index .Config.Labels "sagent.version"}} {{index .Config.Labels "sagent.build_timestamp"}}' \
             | tee /dev/stderr | grep -qE '^[0-9a-f]{8} [0-9]{4}-'
           docker push "$IMAGE:$version-$ARCH"
+          # Read it back: a push that reported success but left the registry
+          # unable to serve the tag is exactly how #91 shipped a release with
+          # one architecture, and a manifest built on it would name an image
+          # nobody can pull.
+          docker manifest inspect "$IMAGE:$version-$ARCH" >/dev/null
 
   publish-manifest:
     needs: [tag, build-image]

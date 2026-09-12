@@ -584,6 +584,24 @@ EOF
     sed -n "/^# ---- Clipboard bridge/,/^# ---- End clipboard bridge/p" "$1" > "$TMP/bridge.sh"
     bash -c ". \"$TMP/bridge.sh\"; clipboard_bridge_serve \"$TMP/bridge\"" &
     AGENT=$!
+    # Wait for the agent to actually serve before asking the sandbox to use
+    # it: a backgrounded bash still has to start and reach its loop, and on a
+    # loaded runner the shim inside gave up first. One real request answered
+    # is the only proof that it is up.
+    ready=0
+    printf text > "$TMP/bridge/req-warmup.paste"
+    for _ in $(seq 1 100); do
+        if [ -e "$TMP/bridge/res-warmup.ok" ] || [ -e "$TMP/bridge/res-warmup.fail" ]; then
+            ready=1
+            break
+        fi
+        sleep 0.1
+    done
+    rm -f "$TMP/bridge/res-warmup.ok" "$TMP/bridge/res-warmup.fail" "$TMP/bridge/req-warmup.paste"
+    if [ "$ready" = 0 ]; then
+        echo "the clipboard agent never answered a request in 10s" >&2
+        exit 1
+    fi
     BRIDGE_HOST=$(cd "$TMP/bridge" && pwd -P)
     "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$BRIDGE_HOST:/run/sagent/clipboard:rw" "$SUITE_IMG" bash -ec "
         [ \"\$(pbpaste)\" = from-host ]
@@ -2224,5 +2242,71 @@ BROKEN
     [ "$FAIL" = 1 ]
     [ "$PASS" = 0 ]
 ' _ "$SCLAUDE"
+
+# ── T49: no agent attribution in commits or pull requests ────────────
+# Claude Code reads a policy file the config volume cannot override; Codex
+# has no local switch, so scodex puts it in the standing instructions it
+# already reads. Both are off by default and both come back with
+# SAGENT_AI_ATTRIBUTION=1.
+run_test "T49: agent attribution is off by default" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t49.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+
+    # The image the suite built carries the policy, and it says what it should.
+    "$ENGINE" run --rm "$SUITE_IMG" bash -ec "
+        [ -f /etc/claude-code/managed-settings.json ]
+        grep -q \"includeCoAuthoredBy\" /etc/claude-code/managed-settings.json
+        grep -q false /etc/claude-code/managed-settings.json
+        python3 -m json.tool /etc/claude-code/managed-settings.json >/dev/null
+    "
+    # Asking for attribution leaves the policy out, and is a different image.
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+    on=$(SAGENT_AI_ATTRIBUTION=1 "$1" version | sed -n "s/^Image hash: //p")
+    [ "$base" != "$on" ]
+    if SAGENT_AI_ATTRIBUTION=1 "$1" dockerfile | grep -q managed-settings; then
+        echo "the policy is still baked in with SAGENT_AI_ATTRIBUTION=1" >&2
+        exit 1
+    fi
+    # Anything but 0 or 1 is refused.
+    if SAGENT_AI_ATTRIBUTION=maybe "$1" version >/dev/null 2>&1; then
+        echo "an invalid SAGENT_AI_ATTRIBUTION was accepted" >&2
+        exit 1
+    fi
+
+    # Codex: the staged instructions gain the rule, the host file does not.
+    # A real run reaches the volume, which is the end-to-end proof.
+    mkdir -p "$TMP/codex"
+    printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
+    before=$(cat "$TMP/codex/AGENTS.md")
+    CODEX_HOME="$TMP/codex" "$2" --no-yolo --help >/dev/null
+    [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
+    "$ENGINE" run --rm --user root -v scodex-config:/c "$SUITE_IMG" bash -ec "
+        grep -q \"Be brief.\" /c/AGENTS.md
+        grep -qi \"Do not sign your work\" /c/AGENTS.md
+    "
+
+    # The other half of the switch is checked against the staging function
+    # itself, straight from the wrapper. Running scodex with the setting
+    # flipped would ask for an image built with the other policy, and that
+    # is a full build on a CI runner, for an answer this gives exactly.
+    awk "/^stage_codex_config_files\\(\\)/,/^}\$/" "$2" > "$TMP/stage.sh"
+    for want in 0 1; do
+        rm -rf "$TMP/staged"; mkdir -p "$TMP/staged/config"
+        printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
+        ( CODEX_HOME="$TMP/codex" SAGENT_AI_ATTRIBUTION=$want
+          . "$TMP/stage.sh"
+          stage_codex_config_files "$TMP/staged" )
+        grep -q "Be brief." "$TMP/staged/config/AGENTS.md"
+        if [ "$want" = 0 ]; then
+            grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"
+        elif grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"; then
+            echo "the rule was staged with SAGENT_AI_ATTRIBUTION=1" >&2
+            exit 1
+        fi
+        [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
+    done
+' _ "$SCLAUDE" "$SCODEX"
 
 print_results
