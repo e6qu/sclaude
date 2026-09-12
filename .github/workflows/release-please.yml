@@ -218,7 +218,21 @@ jobs:
           docker image inspect "$IMAGE:$version-$ARCH" \
             --format '{{index .Config.Labels "sagent.version"}} {{index .Config.Labels "sagent.build_timestamp"}}' \
             | tee /dev/stderr | grep -qE '^[0-9a-f]{8} [0-9]{4}-'
-          docker push "$IMAGE:$version-$ARCH"
+          # ghcr answers a push with "unknown blob" now and then, more often
+          # since the image grew and both arch jobs push shared layers at the
+          # same moment. A push is idempotent, so try again before failing a
+          # release that has already been tagged.
+          for attempt in 1 2 3; do
+            if docker push "$IMAGE:$version-$ARCH"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "push failed three times" >&2
+              exit 1
+            fi
+            echo "push attempt $attempt failed; retrying in 20s" >&2
+            sleep 20
+          done
 
   publish-manifest:
     needs: [tag, build-image]
@@ -240,8 +254,18 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          docker buildx imagetools create -t "$IMAGE:$version" \
-            "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create -t "$IMAGE:$version" \
+              "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "manifest creation failed three times" >&2
+              exit 1
+            fi
+            echo "manifest attempt $attempt failed; retrying in 20s" >&2
+            sleep 20
+          done
           docker buildx imagetools inspect "$IMAGE:$version" | tee inspect.txt
           grep -q 'linux/amd64' inspect.txt
           grep -q 'linux/arm64' inspect.txt
