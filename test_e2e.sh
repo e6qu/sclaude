@@ -2276,6 +2276,7 @@ run_test "T49: agent attribution is off by default" bash -ec '
     fi
 
     # Codex: the staged instructions gain the rule, the host file does not.
+    # A real run reaches the volume, which is the end-to-end proof.
     mkdir -p "$TMP/codex"
     printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
     before=$(cat "$TMP/codex/AGENTS.md")
@@ -2285,14 +2286,27 @@ run_test "T49: agent attribution is off by default" bash -ec '
         grep -q \"Be brief.\" /c/AGENTS.md
         grep -qi \"Do not sign your work\" /c/AGENTS.md
     "
-    # With attribution on, the rule is not added.
-    printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
-    CODEX_HOME="$TMP/codex" SAGENT_AI_ATTRIBUTION=1 "$2" --no-yolo --help >/dev/null
-    if "$ENGINE" run --rm --user root -v scodex-config:/c "$SUITE_IMG" \
-        grep -qi "Do not sign your work" /c/AGENTS.md; then
-        echo "the rule was staged with SAGENT_AI_ATTRIBUTION=1" >&2
-        exit 1
-    fi
+
+    # The other half of the switch is checked against the staging function
+    # itself, straight from the wrapper. Running scodex with the setting
+    # flipped would ask for an image built with the other policy, and that
+    # is a full build on a CI runner, for an answer this gives exactly.
+    awk "/^stage_codex_config_files\\(\\)/,/^}\$/" "$2" > "$TMP/stage.sh"
+    for want in 0 1; do
+        rm -rf "$TMP/staged"; mkdir -p "$TMP/staged/config"
+        printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
+        ( CODEX_HOME="$TMP/codex" SAGENT_AI_ATTRIBUTION=$want
+          . "$TMP/stage.sh"
+          stage_codex_config_files "$TMP/staged" )
+        grep -q "Be brief." "$TMP/staged/config/AGENTS.md"
+        if [ "$want" = 0 ]; then
+            grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"
+        elif grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"; then
+            echo "the rule was staged with SAGENT_AI_ATTRIBUTION=1" >&2
+            exit 1
+        fi
+        [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
+    done
 ' _ "$SCLAUDE" "$SCODEX"
 
 print_results
