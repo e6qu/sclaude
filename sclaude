@@ -21,6 +21,9 @@ SESSIONS_PER_PROJECT=true
 # file-history holds the file snapshots /rewind restores.
 SESSIONS_EXTRA_DIRS=(file-history)
 YOLO_FLAG="--dangerously-skip-permissions"
+# Subcommands that manage the CLI rather than run a session; they get no
+# yolo flag. Anything else in first position is a prompt.
+NO_YOLO_SUBCOMMANDS="agents attach auth auto-mode doctor gateway import install logs mcp plugin plugins project respawn rm setup-token stop kill ultrareview update upgrade"
 WRAPPER_VERSION="2.19.1" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
@@ -3369,7 +3372,11 @@ run_tool() {
             ;;
     esac
 
-    if [ "$YOLO" = true ]; then
+    # `sclaude mcp add ...` is `claude mcp add ...` in the sandbox: a
+    # management subcommand, not a session, so no yolo flag.
+    local first="${ARGS[0]:-}" yolo="$YOLO"
+    case " $NO_YOLO_SUBCOMMANDS " in *" $first "*) yolo=false ;; esac
+    if [ "$yolo" = true ]; then
         tool_args=("$YOLO_FLAG" "${ARGS[@]+"${ARGS[@]}"}")
     else
         tool_args=("${ARGS[@]+"${ARGS[@]}"}")

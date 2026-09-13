@@ -32,7 +32,7 @@ Linux, against Docker or Podman.
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `volumes` report | No literal `-e` in output; the disk usage report lists the image, every volume with a size, and the caches total | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
-| T15: Temp file cleanup on failure | No leaked temp files after failed build (searches `$TMPDIR`) | #1, #73 |
+| T15: Temp file cleanup on failure | A stub engine fails the build; the wrapper's private `$TMPDIR` is empty afterwards. No real build on any platform | #1, #73, #98 |
 | T16: Shebang portability | Script runs via `env bash` | #18 |
 | T17: scodex version command | Codex wrapper smoke test | #40 |
 | T17b: scodex exec --help | Inner Codex CLI loads config without errors | -- |
@@ -83,6 +83,8 @@ Linux, against Docker or Podman.
 | T47: Apt mirror rewrites the image sources | Unset, no mirror layer and the default archive; set, the layer appears, the image hash changes, a missing trailing slash is added, and the `sed` it emits rewrites every stanza of a real sources file (security and ports included); a non-URL is refused | -- |
 | T48: A test is retried only when the engine went away | The dead-engine signature is recognised and a plain assertion failure is not; a test that fails that way once is retried and reported as a pass, saying RETRY; a real failure is reported once, unretried | -- |
 | T49: Agent attribution is off by default | The image carries Claude Code's policy file with `includeCoAuthoredBy` false and valid JSON; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; an invalid value is refused; the Codex instructions staged for the sandbox gain the rule while the host file is untouched, and do not with attribution on | -- |
+| T50: mcp subcommand runs without the yolo flag | With a stub engine recording argv, `mcp list` gets no yolo flag from either wrapper while a prompt and `codex exec` still do; for real, a server added with `sclaude mcp add` is listed on the next run and gone after `mcp remove` | -- |
+| T51: `scodex mcp add` persists under a host config.toml | A server added inside is still there on the next run while the host `config.toml` is unchanged, and gone once the host file changes, which then wins | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -154,8 +156,9 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`); builds a trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) via the config file, which also exercises the "none" paths |
-| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, skips and trimmed image as test-macos (Rancher Desktop shares only `$HOME`) |
+| build-macos-image | Builds the trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) once on Linux for the macOS runners' uid/gid, and publishes it as an artifact (#98) |
+| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Loads the prebuilt image and checks it is the one the wrapper there computes. Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
+| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, image and skips as test-macos (Rancher Desktop shares only `$HOME`) |
 | test-devcontainers | UID-1000 docker-in-docker dev container, building the dev containers and then running the whole suite inside |
 
 T27 inside each job adds one more nesting level (nested podman in the

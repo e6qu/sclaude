@@ -311,17 +311,36 @@ else
     skip_test "T14: zsh invocation" "zsh not installed"
 fi
 
-# ── T15: temp file cleanup on build failure ───────────────────────────
+# ── T15: temp file cleanup on build failure (#1) ─────────────────────
+# A stub engine fails the build, so this tests the failure path it is named
+# for and builds nothing: a real `--build` on a VM that loaded its image
+# rebuilds from scratch (#98).
 run_test "T15: no leaked temp files" bash -ec '
+    tmp=$(mktemp -d)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run) cat >/dev/null; echo TLS-OK; exit 0 ;;
+    build) echo "stub: build failed" >&2; exit 1 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
     # A private TMPDIR for the wrapper (mktemp honors it), so nothing else on
     # the machine can write into the directory under test.
-    PRIVATE_TMP=$(mktemp -d)
-    trap "rm -rf \"$PRIVATE_TMP\"" EXIT
-    TMPDIR="$PRIVATE_TMP" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
-    LEAKED=$(find "$PRIVATE_TMP" -mindepth 1 | wc -l)
-    if [ "$LEAKED" -gt 0 ]; then
-        echo "Temp files leaked:" >&2
-        find "$PRIVATE_TMP" -mindepth 1 >&2
+    mkdir -p "$tmp/private"
+    if TMPDIR="$tmp/private" SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" \
+        "$1" --build >"$tmp/out" 2>&1; then
+        echo "the build should have failed" >&2
+        exit 1
+    fi
+    grep -q "sandbox image build failed" "$tmp/out"
+    if [ -n "$(find "$tmp/private" -mindepth 1)" ]; then
+        echo "Temp files leaked after a failed build:" >&2
+        find "$tmp/private" -mindepth 1 >&2
         exit 1
     fi
 ' _ "$SCLAUDE"
@@ -2198,5 +2217,78 @@ run_test "T49: agent attribution is off by default" bash -ec '
         [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
     done
 ' _ "$SCLAUDE" "$SCODEX"
+
+# ── T50: `mcp` and other management subcommands get no yolo flag ─────
+# The flag belongs to a session. A stub engine records the argv the tool
+# container is started with; a real run then shows an added server persists.
+run_test "T50: mcp subcommand runs without the yolo flag" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t50.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    for w in "$1" "$2"; do
+        flag=$(grep -m1 "^YOLO_FLAG=" "$w" | cut -d\" -f2)
+        # A management subcommand: no flag.
+        "$w" mcp list | grep "STUB-RUN" | tail -1 > "$tmp/argv"
+        grep -q " mcp list" "$tmp/argv"
+        if grep -qF -- "$flag" "$tmp/argv"; then
+            echo "$(basename "$w"): yolo flag passed to mcp: $(cat "$tmp/argv")" >&2
+            exit 1
+        fi
+        # A prompt: the flag, as before.
+        "$w" "fix the bug" | grep "STUB-RUN" | tail -1 > "$tmp/argv"
+        grep -qF -- "$flag" "$tmp/argv"
+    done
+    # Codex sessions keep it too.
+    "$2" exec "query" | grep "STUB-RUN" | tail -1 | grep -qF -- "--dangerously-bypass-approvals-and-sandbox"
+
+    # For real: a server added through the wrapper is there on the next run,
+    # so it lives in the config volume.
+    unset SAGENT_CONTAINER_ENGINE
+    "$1" mcp add --transport http --scope user sagent-t50 https://example.invalid/mcp >/dev/null 2>&1
+    "$1" mcp list 2>/dev/null | grep -q "sagent-t50"
+    "$1" mcp remove --scope user sagent-t50 >/dev/null 2>&1
+    if "$1" mcp list 2>/dev/null | grep -q "sagent-t50"; then
+        echo "mcp remove left the server behind" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE" "$SCODEX"
+
+# ── T51: Codex config edited in the sandbox survives the host sync ───
+# The host config.toml used to be copied over the sandbox'"'"'s on every run,
+# so a server added with `scodex mcp add` was gone by the next one. The host
+# copy now replaces it only when the host copy changed.
+run_test "T51: scodex mcp add persists under a host config.toml" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t51.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    mkdir -p "$tmp/codex"
+    printf "model = \"gpt-5\"\n" > "$tmp/codex/config.toml"
+    export SAGENT_SKIP_RELEASE_CHECK=1 CODEX_HOME="$tmp/codex"
+    "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
+    "$1" mcp add sagent-t51 -- echo hi >/dev/null 2>&1
+    "$1" mcp list 2>/dev/null | grep -q sagent-t51
+    # A run with the host file unchanged keeps the sandbox'"'"'s edit.
+    "$1" mcp list 2>/dev/null | grep -q sagent-t51
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5\"" /c/config.toml
+    # A changed host file wins, edits and all.
+    printf "model = \"gpt-5-mini\"\n" > "$tmp/codex/config.toml"
+    "$1" --no-yolo exec --help >/dev/null 2>&1
+    if "$1" mcp list 2>/dev/null | grep -q sagent-t51; then
+        echo "a changed host config.toml did not replace the sandbox copy" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5-mini\"" /c/config.toml
+' _ "$SCODEX"
 
 print_results
