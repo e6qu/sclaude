@@ -115,23 +115,24 @@ sclaude volumes
 
 ### Reset all data
 
+Deletes all persistent data — credentials, packages, preferences:
+
 ```bash
-# Deletes ALL persistent data (credentials, packages, preferences)
 sclaude reset
 ```
 
 ### By hand
 
+List, inspect or remove the volumes directly:
+
 ```bash
-# List volumes
 docker volume ls | grep -E 'sagent-|sclaude-|scodex-'
-
-# Inspect a specific volume
 docker volume inspect sclaude-config
-
-# Remove specific volume
 docker volume rm sagent-apt-cache
+```
 
-# Remove all sclaude volumes
+Remove all of them:
+
+```bash
 docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers
 ```

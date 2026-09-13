@@ -4,10 +4,7 @@ on:
   push:
     branches:
       - main
-  # Finish a release whose publishing did not complete. release-please can
-  # create the release and then fail on a transient GitHub API error, which
-  # skips every job below it and leaves a release with no wrappers and no
-  # images. Run this with that tag to publish what is missing.
+  # Finish a release whose publishing stopped part way (#81).
   workflow_dispatch:
     inputs:
       tag:
@@ -18,11 +15,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # Tagging a release also relabels its pull request (autorelease: pending ->
-  # tagged), and labels go through the issues API. Without this the action
-  # reports the failure against the release endpoint it was working on, which
-  # is how v2.15.1 failed three times while the token could create releases
-  # perfectly well (checked with a throwaway release from a workflow).
+  # Relabelling the release PR goes through the issues API; without this the
+  # action blames the release endpoint instead.
   issues: write
 
 # Serialize runs: two quick merges to main must not race each other's
@@ -77,16 +71,12 @@ jobs:
 
   upload-assets:
     needs: tag
-    # always(), not just the result check: on a manual run release-please is
-    # skipped, and GitHub carries that skip past `tag` (which survives it with
-    # always()) to everything below unless each job opts out the same way.
+    # always(): a skipped release-please would otherwise skip everything below.
     if: always() && needs.tag.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      # Check out the TAG, not github.sha: when merges land back-to-back, the
-      # run that creates the release can be the one triggered by an earlier
-      # commit, and assets built from that checkout predate the version-bump
-      # commit (shipped mis-stamped wrappers on v2.6.3).
+      # The tag, not github.sha: back-to-back merges shipped mis-stamped
+      # wrappers once (#67).
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.tag.outputs.name }}
@@ -134,10 +124,7 @@ jobs:
 
           gh release edit "$TAG" --notes "${EXISTING}${INSTALL_INSTRUCTIONS}"
 
-      # Verify the published assets pass the exact checks the wrapper
-      # self-updater applies (plus a bash syntax check), so a broken release —
-      # e.g. release-please failing to stamp WRAPPER_VERSION — is caught here
-      # instead of on users' machines.
+      # The checks the self-updater applies, so a broken asset is caught here.
       - name: Verify published assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,21 +142,14 @@ jobs:
             echo "$asset: shebang, SCRIPT_NAME, WRAPPER_VERSION=$expected_version, syntax OK"
           done
 
-  # The shared sandbox image, built natively per architecture from the
-  # released wrapper's own Dockerfile (so it is byte-for-byte what a wrapper
-  # run by uid/gid 1000 builds), then joined under one tag as a multi-arch
-  # manifest. Tags: <version>-amd64, <version>-arm64, <version>; never
-  # latest, so nothing moves under a user.
+  # The image, built natively per architecture from the released wrapper's
+  # Dockerfile. Tags: <version>-amd64, <version>-arm64, <version>; never latest.
   build-image:
     needs: tag
     if: always() && needs.tag.result == 'success'
     strategy:
       fail-fast: false
-      # One publish at a time. ghcr answered a push with "unknown blob" while
-      # the other architecture was pushing to the same repository (v2.19.0:
-      # arm64 failed 13:20:28-13:23:50 while amd64 ran 13:20:26-13:25:31, and
-      # the same commit pushed cleanly at 13:26 once amd64 was done), which
-      # left a release holding one architecture and no manifest (#91).
+      # One push at a time: two at once got "unknown blob" from ghcr (#91).
       max-parallel: 1
       matrix:
         include:
@@ -216,10 +196,7 @@ jobs:
             --format '{{index .Config.Labels "sagent.version"}} {{index .Config.Labels "sagent.build_timestamp"}}' \
             | tee /dev/stderr | grep -qE '^[0-9a-f]{8} [0-9]{4}-'
           docker push "$IMAGE:$version-$ARCH"
-          # Read it back: a push that reported success but left the registry
-          # unable to serve the tag is exactly how #91 shipped a release with
-          # one architecture, and a manifest built on it would name an image
-          # nobody can pull.
+          # Read it back, so a manifest is never built on a tag nobody can pull.
           docker manifest inspect "$IMAGE:$version-$ARCH" >/dev/null
 
   publish-manifest:

@@ -99,8 +99,13 @@ installed packages in the sandbox are lost.
 From the repo root on macOS or Linux:
 
 ```bash
-bash test_e2e.sh                                # against Docker (default)
-SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh # against Podman
+bash test_e2e.sh
+```
+
+Against Podman instead of Docker:
+
+```bash
+SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 ```
 
 Test bodies run under `bash -ec`, so every command in a test is an assertion
@@ -118,15 +123,17 @@ a slow builder.
 
 ### Testing Linux from a macOS host
 
-Any Linux VM with a container engine works. Two options that need no extra
-setup beyond their own tooling:
+Any Linux VM with a container engine works. Rootless Podman inside the
+Podman machine VM (SELinux-enforcing Fedora CoreOS):
 
 ```bash
-# Rootless Podman inside the Podman machine VM (SELinux-enforcing Fedora CoreOS)
 podman machine ssh --username core podman-machine-default \
     'SAGENT_CONTAINER_ENGINE=podman bash /path/to/sclaude/test_e2e.sh'
+```
 
-# Docker inside this repo's docker-in-docker devcontainer (UID-1000 Ubuntu)
+Docker inside this repo's docker-in-docker dev container (UID-1000 Ubuntu):
+
+```bash
 npm install -g @devcontainers/cli
 devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . bash /workspaces/sclaude/test_e2e.sh

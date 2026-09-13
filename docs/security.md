@@ -26,8 +26,11 @@ Security analysis of the shared Docker sandbox for running Claude Code through
 ### Layer 1: Filesystem Isolation
 
 #### Workspace Mount
+
+`$(pwd -P)` is mounted at `$(pwd)`:
+
 ```bash
--v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw"   # $(pwd -P) mounted at $(pwd)
+-v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw"
 ```
 
 **Protection**: Uses the absolute path, mounted at the same location in the
@@ -314,11 +317,7 @@ Design choices, safest first:
 
 ### Layer 7: Docker Socket NOT Mounted
 
-**Critical**:
-```bash
-# We NEVER mount docker socket:
-# -v /var/run/docker.sock:/var/run/docker.sock  ❌ DANGEROUS
-```
+**Critical**: the engine socket (`/var/run/docker.sock`) is never mounted.
 
 **Why This Matters**:
 - Docker socket = root-equivalent host access

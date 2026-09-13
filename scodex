@@ -48,21 +48,15 @@ PIP_VOLUME="sagent-pip"
 APT_CACHE_VOLUME="sagent-apt-cache"
 APT_LISTS_VOLUME="sagent-apt-lists"
 CONTAINERS_VOLUME="sagent-containers"
-# XDG data: what `uv tool install` installs, the Pythons uv manages, and
-# anything else a tool keeps in ~/.local/share. Its own volume because the
-# pip volume around it is cleared on a Python change, and none of this
-# belongs to the image's Python.
+# ~/.local/share (uv tools, uv-managed Pythons): its own volume, since the
+# pip volume around it is cleared on a Python change.
 SHARE_VOLUME="sagent-share"
 
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 
-# Optional config file: plain bash sourced at startup. May set the tunables
-# above (MEMORY_LIMIT, CPU_LIMIT, PIDS_LIMIT, PIDS_LIMIT_NESTED,
-# ENGINE_TIMEOUT_SECONDS) and defaults for the SAGENT_* settings below.
-# Environment variables and command-line flags take precedence over the file.
-# Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
-# variables, so `for x in $list` would see one item.
+# The config file is sourced; the environment wins over it. Arrays, not
+# strings: zsh does not word-split unquoted variables (T14).
 SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
@@ -127,19 +121,14 @@ validate_version_setting SAGENT_JAVA_VERSION "$JAVA_VERSION" '^(none|[0-9]+)$' '
 if [ -n "${SAGENT_GIT_PROTOCOL:-}" ]; then
     validate_version_setting SAGENT_GIT_PROTOCOL "$SAGENT_GIT_PROTOCOL" '^(ssh|https)$' 'ssh or https'
 fi
-# Where the image's Ubuntu packages come from. Unset means Ubuntu's own
-# archive, which is right nearly everywhere and slow from some places (a CI
-# runner next to a mirror, most of all). The value has to match the
-# architecture being built: amd64 images pull from an archive mirror, arm64
-# images from a ubuntu-ports one.
+# Unset means Ubuntu's own archive. The mirror must match the architecture
+# built for: amd64 uses an archive mirror, arm64 a ubuntu-ports one.
 if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
     validate_version_setting SAGENT_APT_MIRROR "$SAGENT_APT_MIRROR" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/'
     case "$SAGENT_APT_MIRROR" in */) ;; *) SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR/" ;; esac
 fi
-# Whether commits and pull requests made in the sandbox carry the agent's
-# own attribution ("Co-Authored-By: Claude", "Generated with Codex" and the
-# like). Off by default: the work is the user's, and a footer naming the
-# tool belongs in a project that asked for it.
+# Agent footers in commits and PRs ("Co-Authored-By: Claude"). Off by
+# default: the work is the user's.
 if [ -n "${SAGENT_AI_ATTRIBUTION:-}" ]; then
     validate_version_setting SAGENT_AI_ATTRIBUTION "$SAGENT_AI_ATTRIBUTION" '^[01]$' '0 or 1'
 fi
@@ -147,20 +136,14 @@ fi
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
 fi
-# SAGENT_SESSIONS=0 keeps this workspace's session transcripts out of the
-# sandbox; sessions started inside then stay inside. "all" additionally
-# shares the flat stores in SESSIONS_EXTRA_DIRS, which hold state from every
-# workspace, not just this one.
+# 0: no transcripts shared. all: also SESSIONS_EXTRA_DIRS, which hold state
+# from every workspace.
 if [ -n "${SAGENT_SESSIONS:-}" ]; then
     validate_version_setting SAGENT_SESSIONS "$SAGENT_SESSIONS" '^(0|1|all)$' '0, 1, or all'
 fi
 
-# Optional tooling baked into the image, all at their latest release as of
-# the build. SAGENT_TOOLS selects by name or group (comma/space separated):
-# "all" (default), "none", a group from SAGENT_TOOL_GROUPS, or explicit
-# names. Java tools need a JDK: with SAGENT_JAVA_VERSION=none they drop out
-# of "all"/"java" silently but naming one explicitly is an error.
-# Registry rows: name|group|description.
+# Optional tooling, latest release at build time. SAGENT_TOOLS names tools
+# or groups; Java tools drop out of groups without a JDK. Rows: name|group|description.
 SAGENT_TOOL_REGISTRY='typescript|js|TypeScript compiler (tsc)
 tsx|js|run TypeScript files directly
 bun|js|Bun runtime and package manager
@@ -235,13 +218,8 @@ EOF
 resolve_tools "$SAGENT_TOOLS"
 tool_selected() { case " $TOOLS_SELECTED " in *" $1 "*) return 0 ;; esac; return 1; }
 
-# Extra trust anchors for the sandbox image. Corporate networks often run a
-# TLS-inspecting proxy whose CA the host trusts (macOS keychain, Linux system
-# store) but a fresh Ubuntu image does not: Docker Desktop and Rancher Desktop
-# trust the host's CAs for image pulls, yet every `RUN curl`/`npm install` in
-# the build and every HTTPS request from inside the sandbox fails with
-# "unable to get local issuer certificate". SAGENT_CA_BUNDLE names a PEM file
-# (one or more certificates) that gets baked into the image's trust store.
+# A PEM bundle baked into the image's trust store: a TLS-inspecting proxy's
+# CA, which the host trusts and a fresh Ubuntu image does not.
 CA_BUNDLE_PATH="${SAGENT_CA_BUNDLE:-}"
 CA_BUNDLE_CERT_COUNT=0
 if [ -n "$CA_BUNDLE_PATH" ]; then
@@ -346,18 +324,13 @@ select_engine() {
     return 1
 }
 
-# The command name does not identify the engine: a `docker` command can be
-# podman's CLI shim (podman-docker), and a real docker CLI can talk to a podman
-# server through the docker-compat socket (DOCKER_HOST). Build/export semantics
-# depend on the actual CLI and server, so identify both once.
+# `docker` may be podman's shim, and a real docker CLI may talk to a podman
+# server; build and export semantics depend on both, so identify both once.
 detect_engine_flavor() {
     local version_output client_section server_section
 
-    # `--version` is useless here: podman invoked as `docker` emulates docker's
-    # one-line version string. The plain `version` output is honest on both
-    # sides — "Podman Engine" appears in the Client section for the podman CLI
-    # (under any command name) and in the Server section when the socket is
-    # served by podman (via docker's compat components or podman's own output).
+    # `version`, not `--version`: podman as `docker` emulates the one-line
+    # form, but "Podman Engine" shows in the Client and Server sections.
     version_output=$("$ENGINE_CMD" version 2>/dev/null || true)
     client_section=$(printf '%s\n' "$version_output" | sed -n '1,/^Server/p')
     server_section=$(printf '%s\n' "$version_output" | sed -n '/^Server/,$p')
@@ -377,11 +350,8 @@ detect_engine_flavor() {
         ENGINE_SERVER_FLAVOR="$ENGINE_CLI_FLAVOR"
     fi
 
-    # A rootless daemon maps the container's non-root UIDs to subordinate
-    # UIDs, so the sandbox user (the host UID inside the image) is a stranger
-    # to the workspace bind mount: unreadable when 0700, read-only otherwise
-    # (#75). Podman's --userns=keep-id maps the invoking user onto that UID;
-    # the docker CLI has no way to request it, so that combination is refused.
+    # A rootless daemon maps the sandbox user to a subordinate UID, which
+    # cannot use the workspace (#75); podman's keep-id fixes that, docker cannot.
     ENGINE_ROOTLESS=false
     USERNS_ARGS=()
     if [ "$ENGINE_CLI_FLAVOR" = "podman" ]; then
@@ -412,22 +382,16 @@ DOCKERFILE_HEAD
 ENV DEBIAN_FRONTEND=noninteractive
 DOCKERFILE_END
 
-    # Claude Code reads a policy file at this path and it outranks anything
-    # in the config volume, so the setting holds however the sandbox was used
-    # before. Codex has no local switch for its own attribution (the flag it
-    # carries travels with the account), so scodex tells it in the standing
-    # instructions it already reads instead.
+    # A policy file outranks anything in the config volume. Codex has no local
+    # switch; scodex adds the rule to its standing instructions instead.
     if [ "${SAGENT_AI_ATTRIBUTION:-0}" = "0" ]; then
         printf '\n# No agent attribution in commits or pull requests.\n'
         printf 'RUN mkdir -p /etc/claude-code \\\n'
         printf '    && printf %%s "{\\"includeCoAuthoredBy\\": false}" > /etc/claude-code/managed-settings.json\n'
     fi
 
-    # Ubuntu's own archive is the default. A mirror is worth naming when the
-    # builder sits next to one: an index that takes ten minutes from the
-    # archive arrives in seconds from a mirror in the same datacentre. The
-    # rewrite is checked, so a sources layout this does not understand fails
-    # the build instead of quietly building from the slow default.
+    # The rewrite is checked: a sources layout it does not understand fails
+    # the build rather than quietly using the slow default.
     if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
         printf '\n# Ubuntu packages come from a named mirror (SAGENT_APT_MIRROR).\n'
         printf 'RUN set -eux; \\\n'
@@ -448,12 +412,9 @@ RUN apt-get update && apt-get install -y \
     && ln -s /usr/bin/batcat /usr/local/bin/bat
 DOCKERFILE_END
 
-    # Trust anchors go in before the first HTTPS fetch. One file per
-    # certificate under /usr/local/share/ca-certificates (update-ca-certificates
-    # indexes files, not bundles) feeds curl, apt, git, Python's ssl module and
-    # podman via the system store. Tools that keep their own store get the
-    # merged bundle explicitly: Node/npm and the Claude CLI (NODE_EXTRA_CA_CERTS),
-    # the Codex CLI (SSL_CERT_FILE), requests and pip.
+    # Before the first HTTPS fetch. One file per certificate for the system
+    # store (update-ca-certificates indexes files); the merged bundle for
+    # tools with their own store (Node, Codex, requests, pip).
     if [ -n "$CA_BUNDLE_PATH" ]; then
         cat <<'DOCKERFILE_END'
 
@@ -556,11 +517,9 @@ ENV JAVA_HOME=/opt/java
 DOCKERFILE_END
     fi
 
-    # Java build tools and framework CLIs, latest stable at build time: Maven
-    # and the Spring Boot CLI resolve the highest plain X.Y.Z from Maven
-    # Central's metadata (its "release" pointer can be an RC or milestone),
-    # Gradle from gradle.org's current-version endpoint, the Quarkus CLI from
-    # its Maven Central release (the runnable uber jar behind a launcher).
+    # Latest stable: Maven and Spring from the highest X.Y.Z in Maven Central's
+    # metadata (its "release" pointer can be an RC), Gradle and Quarkus from
+    # their own pointers.
     if tool_selected maven || tool_selected gradle || tool_selected quarkus || tool_selected spring; then
         local -a java_checks=()
         printf '\n# Java build tools and framework CLIs, latest stable at build time.\nRUN set -eux; \\\n'
@@ -617,12 +576,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 DOCKERFILE_END
 
-    # The selected JavaScript/TypeScript tooling, each at its latest release.
-    # React, Next.js, htmx and shadcn components are project dependencies
-    # these scaffolders pull in. yarn and pnpm come through corepack, which
-    # serves whatever version a project's packageManager field declares (Node
-    # no longer bundles corepack). The two agent CLIs are deliberately not
-    # here: they release almost daily and go in the last layer instead.
+    # yarn and pnpm come through corepack (Node no longer bundles it). The
+    # agent CLIs release almost daily and go in the last layer instead.
     local -a npm_tools=()
     local tool
     for tool in typescript tsx bun corepack create-next-app create-vite shadcn; do
@@ -870,11 +825,8 @@ USER agent
 DOCKERFILE_END
 }
 
-# The cloud and infrastructure tooling, each at its latest release as of the
-# build and fetched for the image's own architecture. These sit as low in the
-# file as they can: changing the selection rebuilds them and the agent-CLI
-# layer above, never the toolchains below. An architecture a vendor does not
-# publish for fails the build rather than quietly leaving the tool out.
+# Cloud and infrastructure tools, latest release, for the image's own
+# architecture. Placed low so a selection change never rebuilds a toolchain.
 emit_extra_tools() {
     if tool_selected kubectl; then
         cat <<'DOCKERFILE_END'
@@ -995,10 +947,8 @@ DOCKERFILE_END
     fi
 }
 
-# The hash covers image content only: the Dockerfile, the UID/GID build args
-# and the CA bundle that gets COPYed in. Runtime limits (memory/cpu/pids) are
-# container run flags — including them here forced a full rebuild whenever a
-# limit was tuned.
+# Image content only: Dockerfile, UID/GID, CA bundle. Runtime limits are run
+# flags; hashing them forced a rebuild per tweak (#62).
 get_version_hash() {
     {
         get_dockerfile_content
@@ -1013,11 +963,8 @@ get_version_hash() {
 VERSION_HASH=$(get_version_hash)
 IMAGE_NAME="${IMAGE_REPO}:${VERSION_HASH}"
 
-# The build metadata (version hash and build time) that `version` and
-# `doctor` read back. Labels, not a file: a RUN writing a file is a new
-# filesystem layer on every build, and one new layer costs a full image
-# export and unpack (minutes on a VM-backed engine) even when every other
-# layer was cached.
+# Labels, not a file: a RUN writing a file is a new layer, and one new layer
+# costs a full image export even when everything else was cached.
 dockerfile_metadata_block() {
     local build_timestamp
     build_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -1033,12 +980,8 @@ image_metadata() {
         --format '{"version": "{{index .Config.Labels "sagent.version"}}", "build_timestamp": "{{index .Config.Labels "sagent.build_timestamp"}}"}' 2>/dev/null || true
 }
 
-# `dockerfile`: print the Dockerfile a build would use, for building the
-# image elsewhere (the release workflow publishes it for both
-# architectures). SAGENT_IMAGE_UID/SAGENT_IMAGE_GID pick the user the
-# image is built for when it is not the one running this; the version hash
-# in the metadata follows, so the printed file is what a wrapper run by
-# that user would build. Pass the same ids as USER_UID/USER_GID build args.
+# The Dockerfile a build would use, for building elsewhere (the release
+# workflow). SAGENT_IMAGE_UID/GID re-key the hash to the user it is built for.
 dockerfile_command() {
     if [ -n "${SAGENT_IMAGE_UID:-}" ] || [ -n "${SAGENT_IMAGE_GID:-}" ]; then
         HOST_UID="${SAGENT_IMAGE_UID:-$HOST_UID}"
@@ -1067,12 +1010,9 @@ build_image() {
         echo "[$SCRIPT_NAME] Building shared sandbox image (version: $VERSION_HASH)..." >&2
     fi
 
-    # Export semantics depend on engine flavor. A real docker CLI on a docker
-    # server builds via buildx, and a docker-container/cloud builder keeps the
-    # result in the build cache unless --load exports it to the image store. A
-    # real docker CLI on a podman server cannot use buildx: select the classic
-    # builder endpoint podman implements (DOCKER_BUILDKIT=0), which takes no
-    # --load. A podman CLI always loads locally and has no such flag.
+    # docker on docker: buildx needs --load or a container builder keeps the
+    # result in its cache (#54). docker on podman: no buildx, so the classic
+    # builder (DOCKER_BUILDKIT=0), which takes no --load. podman: neither.
     local -a build_env=()
     if [ "$ENGINE_CLI_FLAVOR" = "docker" ]; then
         if [ "$ENGINE_SERVER_FLAVOR" = "docker" ]; then
@@ -1082,11 +1022,8 @@ build_image() {
         fi
     fi
 
-    # Build from a fresh temp directory holding only the Dockerfile and the
-    # optional CA bundle: using the wrapper's own directory as context would tar
-    # and send everything next to the installed script (e.g. all of
-    # /usr/local/bin, or a repo checkout with its .git) to the daemon on every
-    # build.
+    # A fresh context with only the Dockerfile and the CA bundle; the
+    # wrapper's own directory would send everything beside it to the daemon (#50).
     temp_context=$(mktemp -d)
     TEMP_FILES+=("$temp_context")
     temp_dockerfile="$temp_context/Dockerfile"
@@ -1126,10 +1063,8 @@ build_image() {
     echo "[$SCRIPT_NAME] Shared sandbox image ready" >&2
 }
 
-# Copy the CA bundle into the build context: the merged file for tools that
-# take a single bundle path, plus one .crt per certificate because Debian's
-# update-ca-certificates registers each file as one certificate (a multi-cert
-# file would only contribute its first certificate to the hashed store).
+# The merged bundle for tools that take one path, plus one .crt per
+# certificate: update-ca-certificates registers one certificate per file.
 stage_ca_bundle() {
     local context="$1"
     local split_dir="$context/sagent-ca"
@@ -1468,11 +1403,9 @@ config_command() {
     esac
 }
 
-# Write a command's whole output in one go. A reader like `| grep -q` or
-# `| head` closes the pipe as soon as it has what it wants, and a command
-# still writing into it dies with "write error: Broken pipe". For the short,
-# non-progressive commands only: doctor prints each check as it finishes,
-# which is worth more than being pipe-proof.
+# Write the whole output at once: `| grep -q` closes the pipe early and a
+# command still writing dies with "Broken pipe" (#88). Not for doctor, which
+# prints as it goes.
 print_whole() {
     local out rc=0
     out=$("$@") || rc=$?
@@ -1532,10 +1465,8 @@ Change with: $SCRIPT_NAME tools enable|disable NAME... (names or groups all, non
                     enable)
                         if [ -z "${current##* "$name" *}" ]; then new="$new,$name"; continue; fi
                         for item in "$@"; do
-                            # A group cannot pull in Java tools when there is
-                            # no JDK: resolve_tools would then reject the list
-                            # and blame the user for a name they never typed.
-                            # Naming one outright still gets that error.
+                            # A group skips Java tools without a JDK; naming
+                            # one outright still errors.
                             case "$item" in
                                 all | java)
                                     [ "$group" = java ] && [ "$JAVA_VERSION" = none ] && continue
@@ -1648,11 +1579,9 @@ add_dir_to_shell_file() {
     echo "  added $dir to PATH in $file"
 }
 
-# An install in a directory this user cannot write needed sudo to get there
-# and would need it for every update. Move it into the user's own bin
-# directory, which needs sudo once more to remove what is left behind.
-# Skipped for a git checkout, a writable directory (#87), and with
-# SAGENT_SKIP_MIGRATION=1.
+# An install this user cannot write needs sudo for every update: move it to
+# the user's bin directory, once. Skipped for checkouts, writable
+# directories (#87) and SAGENT_SKIP_MIGRATION=1.
 migrate_system_install() {
     local script_path script_dir target name failed=""
     [ "${SAGENT_SKIP_MIGRATION:-}" = "1" ] && return 0
@@ -1660,10 +1589,7 @@ migrate_system_install() {
     script_dir="$(dirname "$script_path")"
     case "$script_dir" in "$HOME"/*) return 0 ;; esac
     git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 && return 0
-    # Only a directory this user cannot write needs sudo to update. Somewhere
-    # deliberately chosen and writable (/opt/bin, a shared /srv/tools/bin) is
-    # not ours to relocate: moving it would empty the directory the user put
-    # on PATH and leave the old location dead (#87).
+    # A writable directory was chosen on purpose; moving it would empty it (#87).
     [ -w "$script_dir" ] && return 0
     target="$(default_install_dir)"
     [ "$script_dir" = "$target" ] && return 0
@@ -1936,10 +1862,9 @@ EOF
 
 DOCTOR_PASS=0; DOCTOR_WARN=0; DOCTOR_FAIL=0
 
-# Run the fetch a build step runs (curl to cli.github.com) inside the plain
-# base image, with $1 applied as an extra CA bundle the way the build applies
-# it (/dev/null for none). Prints a status line (TLS-OK, TLS-FAIL, APT-FAILED,
-# PROBE-FAILED) and, on TLS-FAIL, the issuer of the chain the network presents.
+# The fetch a build step makes, inside the plain base image, with $1 as the
+# CA bundle (/dev/null for none). Prints TLS-OK, TLS-FAIL (plus the issuer),
+# APT-FAILED or PROBE-FAILED.
 build_tls_probe() {
     local bundle_in="$1" out status issuer free
     # shellcheck disable=SC2016
@@ -1991,11 +1916,9 @@ export_host_trust_store() {
     return 0
 }
 
-# Before any build: detect TLS interception on this network and fix it from
-# the host's own trust store, so install and update need nothing from the
-# user (#77). Facts drive every branch: the probe's result and what the host
-# trust store contains. Nothing degrades silently; the one retry (a mirror
-# that dropped a connection) says so and still fails loudly the second time.
+# Before any build: detect TLS interception and take the CA from the host
+# trust store (#77). One announced retry for a dropped apt connection; every
+# other failure stops here.
 ensure_build_tls() {
     local result status issuer candidate count bundle_dir free
     echo "[$SCRIPT_NAME] Checking that build steps can fetch over HTTPS from this network..." >&2
@@ -2387,10 +2310,8 @@ install_wrapper_file() {
     fi
 }
 
-# Print what changed between the installed version and $1 (a tag like
-# v2.17.0), read from the CHANGELOG at that tag: one line per merged pull
-# request, with its URL. release-please's own release PRs never appear there
-# — the entries point at the PR that made the change.
+# The CHANGELOG entries between the installed version and tag $1, one line
+# per merged PR with its URL.
 print_release_notes() {
     local tag="$1" notes
     if ! command -v curl >/dev/null 2>&1; then
@@ -2443,10 +2364,8 @@ print_release_notes() {
     printf '%s\n' "$notes" >&2
 }
 
-# Self-update the running wrapper (and its paired wrapper if present) to the
-# latest release. Downloads both assets first; only installs after both
-# downloads succeed. Re-execs the new wrapper to complete the update. Returns
-# non-zero if any download or install step failed.
+# Replace this wrapper and its pair with the latest release, downloading
+# both before installing either, then re-exec the new one.
 self_update_wrapper() {
     local latest_tag script_path script_dir paired_name paired_path
     local tmp_self tmp_paired=""
@@ -2467,10 +2386,7 @@ self_update_wrapper() {
         paired_path="$script_dir/$paired_name"
     fi
 
-    # A wrapper that resolves into a git checkout is a source install
-    # (`install` links a checkout rather than copying it). Overwriting it with
-    # a release asset would clobber the user's working tree, so skip the
-    # wrapper download and let the image rebuild proceed.
+    # A checkout is the user's working tree (#52): rebuild the image only.
     if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] Wrapper runs from a git checkout ($script_dir); skipping wrapper self-update." >&2
         echo "[$SCRIPT_NAME] Update the checkout with: git -C \"$script_dir\" pull" >&2
@@ -2582,10 +2498,8 @@ probe_image_tool_version() {
         | head -1 || true
 }
 
-# Returns 0 if the current image is missing or its Claude/Codex CLIs lag behind the latest
-# published npm versions. Returns 1 (no rebuild needed) when both match. Any error along the
-# way (no curl, image probe fails, npm unreachable) defaults to "rebuild needed" so we never
-# silently skip a real update.
+# 0 when the image is missing or its CLIs lag npm; 1 when both are current.
+# Anything unknown counts as "rebuild".
 needs_image_rebuild() {
     local image_claude image_codex npm_claude npm_codex
 
@@ -2621,10 +2535,7 @@ needs_image_rebuild() {
     return 0
 }
 
-# Confirm a build succeeded by re-inspecting the image tag and verifying both inner
-# CLIs run inside the rebuilt image. The image is shared between sclaude and scodex,
-# so a broken Claude install in `scodex update` is just as bad as a broken Codex
-# install in `sclaude update` — verify both regardless of which wrapper was invoked.
+# Both CLIs and gh must run in the rebuilt image: it is shared by both wrappers.
 verify_image_built() {
     local claude_version codex_version gh_version
     if ! "$ENGINE_CMD" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
@@ -2807,11 +2718,9 @@ session_extra_paths() {
     done
 }
 
-# The mount that makes host and sandbox share one set of session files, so a
-# session started on either side can be resumed on the other. A bind mount,
-# not a copy: copying would strand whichever side wrote last.
-# The same directory, mounted where the pre-run helper can reach it, plus
-# the path inside the config volume it takes over from.
+# The session directory as the pre-run helper sees it, plus the config-volume
+# path it takes over from. A bind mount, not a copy: a copy would strand
+# whichever side wrote last.
 SESSION_SYNC_ARGS=()
 SESSION_VOLUME_DIR=""
 SESSION_EXTRA_NAMES=""
@@ -2865,12 +2774,8 @@ EOF
 
 # ---- Host state carried into the sandbox: git config, gh login ----
 
-# Keys of the host's global git config that must not reach the sandbox:
-# credential helpers, signing keys, editors, pagers, diff/merge tools and
-# daemons that exist on the host only, and settings that hold host paths.
-# Prefix match on the key git prints (section and name lowercased); a
-# trailing dot covers a whole section. Everything else (identity, aliases,
-# pull/push/rebase preferences, colors, LFS filters) is carried over.
+# Host-only git keys (credential helpers, signing, editors, tools, host
+# paths), matched by prefix; a trailing dot covers a section.
 HOST_GIT_SKIP_KEYS="credential. gpg. commit.gpgsign tag.gpgsign user.signingkey core.editor core.pager core.sshcommand core.hookspath core.excludesfile core.attributesfile core.askpass core.fsmonitor sequence.editor merge.tool merge.guitool mergetool. diff.tool diff.guitool diff.external difftool. pager. interactive.difffilter http.sslcainfo http.sslcapath http.sslcert http.sslkey http.cookiefile maintenance. url. include. includeif. sendemail. gui. guitool."
 
 host_git_key_skipped() {
@@ -2881,10 +2786,8 @@ host_git_key_skipped() {
     return 1
 }
 
-# The identity git uses in the workspace, "Name <email>" or empty. Read in
-# the workspace, not from the global config alone: a conditional include
-# (the usual work/personal split) or a repo-local value is what git actually
-# commits as, and a global read outside the repo never sees either.
+# "Name <email>" as git resolves it in the workspace: a conditional include
+# or repo-local value is invisible to a global read (#79).
 host_git_identity() {
     local dir name email
     command -v git >/dev/null 2>&1 || return 0
@@ -2896,11 +2799,8 @@ host_git_identity() {
     fi
 }
 
-# Stage the host's global git config for the sandbox home as git's XDG-level
-# file, minus the host-only keys above; git writes it so quoting and
-# multi-valued keys survive. ~/.gitconfig in the sandbox is read after this
-# file and holds sandbox-only settings. The host's global excludes file goes
-# in as git's default ignore location.
+# The host's global config, minus host-only keys, as the sandbox's XDG git
+# config (~/.gitconfig is read after it and holds sandbox-only settings).
 stage_host_git_config() {
     local dir="$1" cfg entry key value excludes name email
     cfg="$dir/home/.config/git/config"
@@ -2920,11 +2820,8 @@ stage_host_git_config() {
         host_git_key_skipped "$key" && continue
         git config --file "$cfg" --add "$key" "$value" 2>/dev/null || true
     done
-    # An identity that only a conditional include or the repo itself
-    # provides is not in the lines above (include.* and includeIf.* are
-    # host-only keys, and the sandbox has no such paths), but it is what git
-    # commits as here, so carry it over. A repo-local value still wins
-    # inside the sandbox: the workspace's .git/config is mounted with it.
+    # An identity from a conditional include or the repo is not in the lines
+    # above but is what git commits as here (#79).
     if ! git config --file "$cfg" --get user.name >/dev/null 2>&1; then
         name=$(git -C "${WORKSPACE_PATH:-$PWD}" config --get user.name 2>/dev/null || true)
         [ -n "$name" ] && git config --file "$cfg" user.name "$name"
@@ -2992,11 +2889,8 @@ git_protocol_source() {
     fi
 }
 
-# Stage the host's gh logins for the sandbox home: a hosts.yml carrying the
-# token for each host gh is logged in to, with the git protocol in effect.
-# Every host gets git's gh credential helper (github.com has it in the image
-# too); with https, SSH remotes for the host are rewritten to HTTPS so the
-# token serves them.
+# A hosts.yml with the token per host gh is logged in to; each host gets
+# git's gh credential helper, and with https its SSH remotes are rewritten.
 stage_host_gh_auth() {
     local dir="$1" cfg host user token proto
     cfg="$dir/home/.config/git/config"
@@ -3025,11 +2919,8 @@ $(host_gh_logins)
 EOF
 }
 
-# The host's SSH client files, for the ssh protocol: keys, config,
-# known_hosts and the rest of the regular files in ~/.ssh. config loses the
-# macOS-only UseKeychain option (Linux ssh rejects it) and absolute home
-# paths become ~ so IdentityFile lines resolve in the sandbox. A manifest of
-# what was synced lets the next run remove exactly these files again.
+# ~/.ssh for the ssh protocol. config loses macOS's UseKeychain and $HOME
+# becomes ~; a manifest lets the next run remove exactly these files.
 host_ssh_dir() { printf '%s' "$HOME/.ssh"; }
 
 host_ssh_key_count() {
@@ -3061,13 +2952,9 @@ stage_host_ssh() {
     done
 }
 
-# Container-side step of the sync, run as root with the home volume at
-# /vol-rootfs and the staged tree at /tmp/sync. The synced git files mirror
-# the host on every run (a stale one is removed when the host no longer has
-# it); ~/.gitconfig is created so a sandbox-side `git config --global`
-# lands there and wins over the synced file. gh's hosts.yml is replaced
-# only when the host has a login, so a login made inside the sandbox
-# stays until there is one on the host.
+# Container side, as root: synced git files mirror the host each run,
+# ~/.gitconfig exists for sandbox-side settings, and gh's hosts.yml is
+# replaced only when the host has a login.
 home_state_sync_script() {
     cat <<'EOF'
             mkdir -p /vol-rootfs/.config/git
@@ -3154,10 +3041,8 @@ sync_state() {
     local stage
     read_credentials
 
-    # Everything the sandbox takes from the host goes over stdin as one tar
-    # of a staged tree (config/ for the tool's config volume, home/ for the
-    # shared home volume): a host bind mount is denied on SELinux-enforcing
-    # hosts (Fedora/RHEL + podman) and breaks on paths containing colons.
+    # One tar over stdin (config/ and home/): a host bind mount is denied on
+    # SELinux hosts and breaks on paths with colons (#57).
     stage=$(mktemp -d)
     TEMP_FILES+=("$stage")
     mkdir -p "$stage/config" "$stage/home"
@@ -3192,11 +3077,8 @@ sync_state() {
         bash -c '
             TARGET_UID='"$HOST_UID"'
             TARGET_GID='"$HOST_GID"'
-            # Cache volumes carry a stamp of the toolchain they were filled
-            # for. A changed stamp means the contents are for another
-            # Python/Node/Ubuntu (pip site-packages are per minor version,
-            # npm native addons per Node ABI, apt and podman state per
-            # release): clear them so the upgrade needs nothing from the user.
+            # Cache volumes are stamped with the toolchain they were filled
+            # for; another toolchain means their contents are stale (#76).
             stamp_volume() {
                 local dir="$1" expected="$2" what="$3" current
                 current=$(cat "$dir/.sagent-stamp" 2>/dev/null || true)
@@ -3208,10 +3090,8 @@ sync_state() {
                     printf "%s\n" "$expected" > "$dir/.sagent-stamp"
                 fi
             }
-            # ~/.local/share used to sit inside the pip volume, which is
-            # cleared whenever the image Python changes. Move what is there
-            # into its own volume the first time that volume is mounted, so
-            # `update` is all an existing install needs.
+            # ~/.local/share used to live in the pip volume (#84); move it
+            # into its own the first time that one is mounted.
             if [ -d /vol-pip/share ] && [ -z "$(ls -A /vol-share 2>/dev/null)" ] && [ -n "$(ls -A /vol-pip/share 2>/dev/null)" ]; then
                 echo "['"$SCRIPT_NAME"'] Moving ~/.local/share (uv tools and uv-managed Pythons) into the sagent-share volume, where a Python change no longer clears it" >&2
                 if (cd /vol-pip/share && tar -cf - .) | (cd /vol-share && tar -xf -); then
@@ -3234,14 +3114,9 @@ sync_state() {
             mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial
             chown -R root:root /vol-apt-cache /vol-apt-lists
             chmod 755 /vol-apt-cache /vol-apt-cache/archives /vol-apt-lists
-            # -m: do not restore mtimes. The staged files are copies remade
-            # on every run, and a host clock a fraction of a second ahead of
-            # the VM the engine runs in made GNU tar warn that every one of
-            # them had a time stamp in the future.
-            # State the sandbox recorded before sharing existed lives in the
-            # config volume, where the host mount is about to hide it. Move
-            # it out once, so nothing is stranded on either side. Anything
-            # the host already has wins: it is the copy both sides can see.
+            # Sessions recorded before sharing existed sit in the config
+            # volume, where the host mount hides them: move them out once.
+            # What the host already has wins.
             move_out() {
                 vol_dir="$1"
                 host_dir="$2"
@@ -3300,12 +3175,8 @@ validate_workspace() {
         exit 1
     fi
 
-    # Logical path (what the user sees, and what the tool's per-directory
-    # session state is keyed on) becomes the mount target; the physical path
-    # (symlinks resolved) is the mount source. Engines that run in a VM only
-    # resolve paths against their shared mounts: on macOS /tmp is a symlink to
-    # /private/tmp, and podman machine shares /private but not /tmp, so a
-    # workspace under /tmp (or any symlinked directory) mounted empty (#71).
+    # Logical path as mount target (session state is keyed on it), physical
+    # path as source: VM engines only resolve their shared mounts (#71).
     WORKSPACE_PATH="$(pwd)"
     WORKSPACE_HOST_PATH="$(pwd -P)"
     if [ "$WORKSPACE_PATH" = "/" ] || [ "$WORKSPACE_HOST_PATH" = "/" ]; then
@@ -3320,14 +3191,9 @@ validate_workspace() {
         exit 1
     fi
 
-    # VM-backed engines share only a few host directories with their VM; any
-    # other host path bind-mounts as an empty directory. Rancher Desktop and
-    # colima are identifiable by the docker context they install and document
-    # their default shares (the home directory plus one /tmp subdirectory), so
-    # refuse instead of handing the agent an empty workspace (#74). Extra
-    # shares configured in the tool (Rancher Desktop's lima override.yaml,
-    # colima's mounts) are not visible here; SAGENT_SKIP_SHARE_CHECK=1 skips
-    # the check for those setups.
+    # Rancher Desktop and colima share only $HOME and one /tmp subdirectory
+    # with their VM; anything else mounts empty (#74). Extra shares are not
+    # visible here: SAGENT_SKIP_SHARE_CHECK=1.
     local context="" tool="" extra_share="" home_host
     if [ "$ENGINE_CLI_FLAVOR" = "docker" ] && [ "${SAGENT_SKIP_SHARE_CHECK:-}" != "1" ]; then
         context="$("$ENGINE_CMD" context show 2>/dev/null || true)"
@@ -3359,10 +3225,8 @@ build_docker_tty_flags() {
     fi
 }
 
-# `shell`: a bash shell in the sandbox. Attaches to the sandbox already
-# running for this workspace when there is one (the agent's live environment,
-# same container), otherwise starts a fresh sandbox with the same mounts and
-# volumes. Extra arguments go to bash (e.g. -c 'cmd').
+# bash in the sandbox: attached to the one running for this workspace, or a
+# fresh one with the same mounts. Extra arguments go to bash.
 open_shell() {
     local running
     running=$("$ENGINE_CMD" ps --filter "label=sagent.workspace=$WORKSPACE_PATH" --filter status=running --format '{{.ID}}' 2>/dev/null | head -1)
@@ -3377,10 +3241,8 @@ open_shell() {
 
 # ---- Clipboard bridge: the host's clipboard for the sandbox ----
 
-# What the host can do with its clipboard: pbcopy/pbpaste/osascript on
-# macOS; wl-copy/wl-paste on a Wayland session, xclip on an X session, on
-# Linux. Empty means no clipboard here (a headless Linux host): the sandbox
-# then copies through the terminal (OSC 52) and cannot paste.
+# macos, wayland, x11, or empty for a headless host (copies then go out as
+# OSC 52 and reads fail).
 host_clipboard_kind() {
     if [ "$(uname -s)" = "Darwin" ]; then
         printf 'macos'
@@ -3449,10 +3311,8 @@ host_clipboard_paste() {
     esac
 }
 
-# The clipboard agent: serves requests the sandbox's clipboard shims drop
-# into the bridge directory (req-ID.copy holds text to copy; req-ID.paste
-# names a target and is answered with res-ID.ok or res-ID.fail). Files land
-# by rename, so a request is complete when it is visible. Runs until killed.
+# Serves req-ID.copy (text to copy) and req-ID.paste (a target, answered with
+# res-ID.ok or res-ID.fail). Files land by rename, so visible means complete.
 clipboard_bridge_serve() {
     local dir="$1" parent=$$ f id target
     # $$ is the wrapper's pid even in this background subshell: stop with it
@@ -3486,12 +3346,8 @@ clipboard_bridge_serve() {
     done
 }
 
-# Start the agent for this run and set the mount and environment the
-# sandbox needs to use it. The bridge directory lives under the cache
-# directory (in the home directory, which VM-backed engines share), 700, and
-# is removed with the run. WAYLAND_DISPLAY names no compositor; it is what
-# makes the Claude CLI use the wl-copy/wl-paste shims instead of relying on
-# OSC 52 alone. SAGENT_CLIPBOARD=0 leaves all of this out.
+# The per-run spool lives under ~/.cache (shared with VM engines), mode 700.
+# WAYLAND_DISPLAY names no compositor; it makes the Claude CLI use the shims.
 CLIPBOARD_BRIDGE_PID=""
 CLIPBOARD_BRIDGE_ARGS=()
 start_clipboard_bridge() {
@@ -3567,11 +3423,8 @@ run_tool() {
         esac
     fi
 
-    # --docker mode: nested rootless podman needs the fuse and tun devices and
-    # an unfiltered syscall table (mount and user-namespace syscalls that the
-    # default seccomp profile only allows with CAP_SYS_ADMIN). Capabilities stay
-    # dropped and the host engine socket is never exposed; nested containers
-    # live entirely inside the sandbox.
+    # Nested podman needs fuse, tun and the syscalls seccomp/AppArmor block
+    # inside user namespaces. Capabilities stay dropped; no host socket.
     if [ "$DOCKER_TOOLING" = true ]; then
         nested_args=(--device /dev/fuse --device /dev/net/tun --security-opt seccomp=unconfined --security-opt apparmor=unconfined)
         pids_limit="$PIDS_LIMIT_NESTED"
@@ -3580,15 +3433,9 @@ run_tool() {
     start_clipboard_bridge
     build_session_mount_args
 
-    # label=disable: on SELinux-enforcing hosts (Fedora/RHEL + podman) the
-    # workspace bind mount is otherwise unreadable without relabeling host files.
-    # The terminal identity variables (which emulator, its version, color
-    # depth) are forwarded when set: the CLIs use them to pick the keyboard
-    # protocol (Shift+Enter), emit clickable hyperlinks, and name the right
-    # modifier for text selection while their mouse tracking is on (Option in
-    # iTerm2). Docker passes a bare -e only when the variable exists on the
-    # host. LANG is not forwarded: the image sets C.UTF-8, which it has.
-    # Not exec'd: the clipboard agent runs alongside and stops with the run.
+    # label=disable: SELinux hosts cannot read the workspace otherwise (#57).
+    # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
+    # exec'd: the clipboard agent stops with the run.
     local rc=0
     "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
