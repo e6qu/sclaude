@@ -121,6 +121,21 @@ When a PR with conventional commits merges to `main`, release-please automatical
 1. Opens a release PR with updated CHANGELOG.md and version bump
 2. When the release PR merges, creates a GitHub release with the `sclaude` and `scodex` scripts attached, then builds and publishes the per-architecture images and their manifest
 
+### The release PR's checks sit waiting
+
+The release PR is opened by `github-actions[bot]`, and GitHub holds workflow
+runs from bot-authored pull requests until someone approves them. Nothing
+runs until you press **Approve and run** on the PR's checks — including the
+one job that is meant to run there, `what-ran`, which states that the test
+jobs are skipped on purpose. Left unapproved, the run eventually goes red
+and the PR looks broken when it is not.
+
+One click per release. If that gets old, giving release-please a personal
+access token instead of `GITHUB_TOKEN` makes the PR come from a human
+account and its checks start on their own; loosening the approval policy
+repo-wide would also do it, at the cost of letting fork pull requests run
+without review.
+
 ### When a release does not finish
 
 Releasing has several steps, and a failure part way leaves a release that

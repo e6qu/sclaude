@@ -9,6 +9,29 @@ TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
 # platform is slow enough that a test's cost outweighs its added coverage
 # there. Skipped tests are reported as SKIP, never silently dropped.
 SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
+# How much of a failed test's capture to print. Tests run traced, so the
+# tail of it holds the commands that led to the failure.
+FAIL_OUTPUT_LINES="${FAIL_OUTPUT_LINES:-30}"
+# Run one slice of the suite: "2/3" runs every third test starting from the
+# second. CI splits a slow platform's suite across parallel runners this way.
+# Each runner has its own engine and volumes, so the slices cannot touch each
+# other's state. Numbering counts every test in file order, skipped or not,
+# so every slice agrees on which test is which.
+SAGENT_TEST_SHARD="${SAGENT_TEST_SHARD:-}"
+TEST_INDEX=0
+SHARDED_OUT=0
+if [ -n "$SAGENT_TEST_SHARD" ]; then
+    case "$SAGENT_TEST_SHARD" in
+        [1-9]/[1-9] | [1-9]/[1-9][0-9]) ;;
+        *) echo "SAGENT_TEST_SHARD=\"$SAGENT_TEST_SHARD\" is not k/n" >&2; exit 1 ;;
+    esac
+    SHARD_K=${SAGENT_TEST_SHARD%/*}
+    SHARD_N=${SAGENT_TEST_SHARD#*/}
+    if [ "$SHARD_K" -gt "$SHARD_N" ]; then
+        echo "SAGENT_TEST_SHARD=\"$SAGENT_TEST_SHARD\": slice $SHARD_K of $SHARD_N does not exist" >&2
+        exit 1
+    fi
+fi
 
 terminate_process_tree() {
     local pid="$1"
@@ -32,7 +55,18 @@ run_with_timeout_capture() {
     local timer_child
     local rc
 
-    "$@" >"$output_file" 2>&1 &
+    # Trace the test's own shell, so a failure names the command that failed
+    # instead of reporting nothing: 59 commands in the suite send their own
+    # output away. `bash -x` on this one shell, and nothing more. SHELLOPTS in
+    # the environment would switch tracing on in every descendant bash — the
+    # wrappers included — and the tests that read a wrapper's stderr would
+    # see the trace and fail (#97). BASH_XTRACEFD, which would keep the trace
+    # off stderr altogether, does not exist in the bash 3.2 macOS ships.
+    local -a traced=("$@")
+    if [ "${traced[0]}" = bash ]; then
+        traced=(bash -x "${traced[@]:1}")
+    fi
+    "${traced[@]}" >"$output_file" 2>&1 &
     cmd_pid=$!
     (
         sleep "$TEST_TIMEOUT_SECONDS"
@@ -83,14 +117,18 @@ wait_for_engine() {
 
 run_test() {
     local name="$1"; shift
+    TEST_INDEX=$((TEST_INDEX + 1))
+    if [ -n "$SAGENT_TEST_SHARD" ] && [ $(( (TEST_INDEX - 1) % SHARD_N + 1 )) -ne "$SHARD_K" ]; then
+        SHARDED_OUT=$((SHARDED_OUT + 1))
+        return 0
+    fi
     case " $SAGENT_TEST_SKIP " in
         *" ${name%%:*} "*)
-            skip_test "$name" "SAGENT_TEST_SKIP"
+            report_skip "$name" "SAGENT_TEST_SKIP"
             return 0
             ;;
     esac
     printf "  %-55s " "$name"
-    local output
     local output_file
     local rc=0
     output_file=$(mktemp)
@@ -106,19 +144,41 @@ run_test() {
             run_with_timeout_capture "$output_file" "$@" || rc=$?
         fi
     fi
-    output=$(cat "$output_file")
-    rm -f "$output_file"
+    local lines
+    lines=$(wc -l < "$output_file" | tr -d " ")
     if [ "$rc" -eq 0 ]; then
+        rm -f "$output_file"
         printf "PASS\n"
         PASS=$((PASS + 1))
     else
         printf "FAIL\n"
-        printf "    Output: %s\n" "${output:-(empty)}"
+        if [ ! -s "$output_file" ]; then
+            printf "    Output: (none — the test wrote nothing and was not traced)\n"
+        elif [ "$lines" -gt "$FAIL_OUTPUT_LINES" ]; then
+            printf "    Output (last %s of %s lines):\n" "$FAIL_OUTPUT_LINES" "$lines"
+            tail -"$FAIL_OUTPUT_LINES" "$output_file" | sed "s/^/      /"
+        else
+            printf "    Output:\n"
+            sed "s/^/      /" "$output_file"
+        fi
+        rm -f "$output_file"
         FAIL=$((FAIL + 1))
     fi
 }
 
+# A test that cannot run here (zsh not installed) still holds its place in
+# the numbering, or every test after it would land in a different slice on
+# a runner that has zsh than on one that does not.
 skip_test() {
+    TEST_INDEX=$((TEST_INDEX + 1))
+    if [ -n "$SAGENT_TEST_SHARD" ] && [ $(( (TEST_INDEX - 1) % SHARD_N + 1 )) -ne "$SHARD_K" ]; then
+        SHARDED_OUT=$((SHARDED_OUT + 1))
+        return 0
+    fi
+    report_skip "$@"
+}
+
+report_skip() {
     local name="$1" reason="$2"
     printf "  %-55s SKIP (%s)\n" "$name" "$reason"
     SKIP=$((SKIP + 1))
@@ -127,6 +187,9 @@ skip_test() {
 print_results() {
     echo ""
     echo "=== Results ==="
+    if [ -n "$SAGENT_TEST_SHARD" ]; then
+        echo "  Slice:   $SAGENT_TEST_SHARD ($SHARDED_OUT tests belong to other slices)"
+    fi
     echo "  Passed:  $PASS"
     echo "  Failed:  $FAIL"
     echo "  Skipped: $SKIP"

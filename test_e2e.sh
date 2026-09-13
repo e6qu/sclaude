@@ -78,9 +78,11 @@ run_test "T04b: --docker flags" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" versi
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
+    # The suite's own image, not one pulled from Docker Hub: a peek into a
+    # volume should not depend on a registry, its rate limit or the VM's DNS.
     run_test "T05: credential sync (macOS)" bash -ec '
-        SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null 2>&1
-        "$ENGINE" run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
+        SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
+        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$SUITE_IMG" ls /c/ >/dev/null
     ' _ "$SCLAUDE"
 else
     run_test "T05: credential sync (Linux)" bash -ec '
@@ -98,7 +100,7 @@ else
                     printf \"%s\" \"\$CREDS\" > /vol-config/.credentials.json
                 fi
             "
-        "$ENGINE" run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
+        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$IMG" cat /c/.credentials.json | grep -q test_cred
     ' _ "$SCLAUDE"
 fi
 
@@ -143,11 +145,11 @@ run_test "T06: volume permissions" bash -ec '
 
 # ── T07: volume persistence ──────────────────────────────────────────
 run_test "T07: volume persistence" bash -ec '
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         sh -c "echo sagent-test-marker > /home/agent/.test_persist"
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         cat /home/agent/.test_persist | grep -q sagent-test-marker
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         rm -f /home/agent/.test_persist
 '
 
@@ -252,7 +254,7 @@ run_test "T11: PID limit (fork bomb)" bash -ec '
         TIMEOUT_CMD="gtimeout 15"
     fi
     # Run a fork bomb in a PID-limited container; it must not escape
-    $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 alpine \
+    $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 "$SUITE_IMG" \
         sh -c "for i in \$(seq 1 200); do sleep 999 & done" 2>&1 || true
     true
 '
@@ -584,6 +586,24 @@ EOF
     sed -n "/^# ---- Clipboard bridge/,/^# ---- End clipboard bridge/p" "$1" > "$TMP/bridge.sh"
     bash -c ". \"$TMP/bridge.sh\"; clipboard_bridge_serve \"$TMP/bridge\"" &
     AGENT=$!
+    # Wait for the agent to actually serve before asking the sandbox to use
+    # it: a backgrounded bash still has to start and reach its loop, and on a
+    # loaded runner the shim inside gave up first. One real request answered
+    # is the only proof that it is up.
+    ready=0
+    printf text > "$TMP/bridge/req-warmup.paste"
+    for _ in $(seq 1 100); do
+        if [ -e "$TMP/bridge/res-warmup.ok" ] || [ -e "$TMP/bridge/res-warmup.fail" ]; then
+            ready=1
+            break
+        fi
+        sleep 0.1
+    done
+    rm -f "$TMP/bridge/res-warmup.ok" "$TMP/bridge/res-warmup.fail" "$TMP/bridge/req-warmup.paste"
+    if [ "$ready" = 0 ]; then
+        echo "the clipboard agent never answered a request in 10s" >&2
+        exit 1
+    fi
     BRIDGE_HOST=$(cd "$TMP/bridge" && pwd -P)
     "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$BRIDGE_HOST:/run/sagent/clipboard:rw" "$SUITE_IMG" bash -ec "
         [ \"\$(pbpaste)\" = from-host ]
@@ -931,8 +951,8 @@ run_test "T20: scodex config sync" bash -ec '
     printf "%s\n" "model = \"gpt-5\"" > "$TMP_CODEX_HOME/config.toml"
     "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
     CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
-    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/auth.json 2>/dev/null | grep -q test_codex_auth
-    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/config.toml 2>/dev/null | grep -q "model"
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/auth.json | grep -q test_codex_auth
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/config.toml | grep -q "model"
 ' _ "$SCODEX"
 
 # ── T21: release check is non-fatal and cache-safe ───────────────────
@@ -2078,6 +2098,8 @@ STUB
 # dozens of orphans per job.
 run_test "T46: timeout helper reaps its own timer" bash -ec '
     marker=4813
+    # A slice setting from CI would slice these nested tests away too.
+    unset SAGENT_TEST_SHARD SAGENT_TEST_SKIP
     # shellcheck source=test_lib.sh
     TEST_TIMEOUT_SECONDS=$marker
     . "$(dirname "$1")/test_lib.sh"
@@ -2179,6 +2201,8 @@ SRC
 run_test "T48: a test is retried only when the engine went away" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t48.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
+    # A slice setting from CI would slice these nested tests away too.
+    unset SAGENT_TEST_SHARD SAGENT_TEST_SKIP
     # shellcheck source=test_lib.sh
     . "$(dirname "$1")/test_lib.sh"
 
@@ -2224,5 +2248,71 @@ BROKEN
     [ "$FAIL" = 1 ]
     [ "$PASS" = 0 ]
 ' _ "$SCLAUDE"
+
+# ── T49: no agent attribution in commits or pull requests ────────────
+# Claude Code reads a policy file the config volume cannot override; Codex
+# has no local switch, so scodex puts it in the standing instructions it
+# already reads. Both are off by default and both come back with
+# SAGENT_AI_ATTRIBUTION=1.
+run_test "T49: agent attribution is off by default" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t49.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+
+    # The image the suite built carries the policy, and it says what it should.
+    "$ENGINE" run --rm "$SUITE_IMG" bash -ec "
+        [ -f /etc/claude-code/managed-settings.json ]
+        grep -q \"includeCoAuthoredBy\" /etc/claude-code/managed-settings.json
+        grep -q false /etc/claude-code/managed-settings.json
+        python3 -m json.tool /etc/claude-code/managed-settings.json >/dev/null
+    "
+    # Asking for attribution leaves the policy out, and is a different image.
+    base=$("$1" version | sed -n "s/^Image hash: //p")
+    on=$(SAGENT_AI_ATTRIBUTION=1 "$1" version | sed -n "s/^Image hash: //p")
+    [ "$base" != "$on" ]
+    if SAGENT_AI_ATTRIBUTION=1 "$1" dockerfile | grep -q managed-settings; then
+        echo "the policy is still baked in with SAGENT_AI_ATTRIBUTION=1" >&2
+        exit 1
+    fi
+    # Anything but 0 or 1 is refused.
+    if SAGENT_AI_ATTRIBUTION=maybe "$1" version >/dev/null 2>&1; then
+        echo "an invalid SAGENT_AI_ATTRIBUTION was accepted" >&2
+        exit 1
+    fi
+
+    # Codex: the staged instructions gain the rule, the host file does not.
+    # A real run reaches the volume, which is the end-to-end proof.
+    mkdir -p "$TMP/codex"
+    printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
+    before=$(cat "$TMP/codex/AGENTS.md")
+    CODEX_HOME="$TMP/codex" "$2" --no-yolo --help >/dev/null
+    [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
+    "$ENGINE" run --rm --user root -v scodex-config:/c "$SUITE_IMG" bash -ec "
+        grep -q \"Be brief.\" /c/AGENTS.md
+        grep -qi \"Do not sign your work\" /c/AGENTS.md
+    "
+
+    # The other half of the switch is checked against the staging function
+    # itself, straight from the wrapper. Running scodex with the setting
+    # flipped would ask for an image built with the other policy, and that
+    # is a full build on a CI runner, for an answer this gives exactly.
+    awk "/^stage_codex_config_files\\(\\)/,/^}\$/" "$2" > "$TMP/stage.sh"
+    for want in 0 1; do
+        rm -rf "$TMP/staged"; mkdir -p "$TMP/staged/config"
+        printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
+        ( CODEX_HOME="$TMP/codex" SAGENT_AI_ATTRIBUTION=$want
+          . "$TMP/stage.sh"
+          stage_codex_config_files "$TMP/staged" )
+        grep -q "Be brief." "$TMP/staged/config/AGENTS.md"
+        if [ "$want" = 0 ]; then
+            grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"
+        elif grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"; then
+            echo "the rule was staged with SAGENT_AI_ATTRIBUTION=1" >&2
+            exit 1
+        fi
+        [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
+    done
+' _ "$SCLAUDE" "$SCODEX"
 
 print_results

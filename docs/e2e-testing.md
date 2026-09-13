@@ -44,6 +44,7 @@ Linux, against Docker or Podman.
 | T19d: Clipboard bridge in a real run | With the host clipboard stubbed (so it runs headless too), a run mounts the spool and sets `WAYLAND_DISPLAY`, paste reads the host and copy reaches it, the spool is gone afterwards, and with `SAGENT_CLIPBOARD=0` there is no spool and copy falls back to OSC 52 | -- |
 | T19f: `SAGENT_SESSIONS=all` shares file-history | The host store is readable inside, what the sandbox writes lands on the host owned by the user, rewind data recorded in the volume beforehand moves out, and the default shares none of it | -- |
 | T45: Update lists the changes and their PRs | With a stubbed releases API and CHANGELOG, `update` prints each version newer than the installed one, its entries and their pull request URLs, and stops at the version already installed | -- |
+| T49: Agent attribution is off by default | The image carries Claude Code's policy file with `includeCoAuthoredBy` false and valid JSON; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; an invalid value is refused; the Codex instructions staged for the sandbox gain the rule while the host file is untouched, and do not with attribution on | -- |
 | T48: A test is retried only when the engine went away | The dead-engine signature is recognised and a plain assertion failure is not; a test that fails that way once is retried and reported as a pass, saying RETRY; a real failure is reported once, unretried | -- |
 | T47: Apt mirror rewrites the image sources | Unset, no mirror layer and the default archive; set, the layer appears, the image hash changes, a missing trailing slash is added, and the `sed` it emits rewrites every stanza of a real sources file (security and ports included); a non-URL is refused | -- |
 | T46: Timeout helper reaps its own timer | After a command finishes, the harness's timer subshell and its `sleep` are both gone | -- |
@@ -151,3 +152,24 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 T27 inside each job adds one more nesting level (nested podman in the
 sandbox), so the devcontainer and macOS jobs exercise three to four layers of
 container/VM nesting.
+
+## Running part of the suite
+
+`SAGENT_TEST_SKIP="T02 T10"` skips named tests, reported as SKIP.
+`SAGENT_TEST_SHARD="1/2"` runs one slice: every second test starting from the
+first. Tests are numbered in file order, skipped or not, so every slice
+agrees on which test is which and together the slices run each test exactly
+once. CI runs the macOS jobs as two slices on parallel runners.
+
+A failing test prints the tail of its capture, and its shell runs traced, so
+the last lines name the command that failed even when that command sent its
+own output away. `FAIL_OUTPUT_LINES` sets how many lines are shown (30).
+
+Only the test's own shell is traced; the wrappers and scripts it runs are
+not, so capturing their stderr is safe. The one thing the trace does reach
+is a group, subshell or shell function whose stderr is captured inside the
+test — `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)` — because the
+trace follows file descriptor 2 into the capture. Do not assert on those;
+capture an external command instead. (`BASH_XTRACEFD`, which would avoid
+this, does not exist in the bash 3.2 that macOS ships.)
+

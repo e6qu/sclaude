@@ -63,7 +63,7 @@ HOST_GID=$(id -g)
 # Environment variables and command-line flags take precedence over the file.
 # Arrays, not space-separated strings: zsh (T14) does not word-split unquoted
 # variables, so `for x in $list` would see one item.
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -135,6 +135,13 @@ fi
 if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
     validate_version_setting SAGENT_APT_MIRROR "$SAGENT_APT_MIRROR" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/'
     case "$SAGENT_APT_MIRROR" in */) ;; *) SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR/" ;; esac
+fi
+# Whether commits and pull requests made in the sandbox carry the agent's
+# own attribution ("Co-Authored-By: Claude", "Generated with Codex" and the
+# like). Off by default: the work is the user's, and a footer naming the
+# tool belongs in a project that asked for it.
+if [ -n "${SAGENT_AI_ATTRIBUTION:-}" ]; then
+    validate_version_setting SAGENT_AI_ATTRIBUTION "$SAGENT_AI_ATTRIBUTION" '^[01]$' '0 or 1'
 fi
 # SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
@@ -404,6 +411,17 @@ DOCKERFILE_HEAD
     cat <<'DOCKERFILE_END'
 ENV DEBIAN_FRONTEND=noninteractive
 DOCKERFILE_END
+
+    # Claude Code reads a policy file at this path and it outranks anything
+    # in the config volume, so the setting holds however the sandbox was used
+    # before. Codex has no local switch for its own attribution (the flag it
+    # carries travels with the account), so scodex tells it in the standing
+    # instructions it already reads instead.
+    if [ "${SAGENT_AI_ATTRIBUTION:-0}" = "0" ]; then
+        printf '\n# No agent attribution in commits or pull requests.\n'
+        printf 'RUN mkdir -p /etc/claude-code \\\n'
+        printf '    && printf %%s "{\\"includeCoAuthoredBy\\": false}" > /etc/claude-code/managed-settings.json\n'
+    fi
 
     # Ubuntu's own archive is the default. A mirror is worth naming when the
     # builder sits next to one: an index that takes ten minutes from the
@@ -1393,6 +1411,7 @@ config_validate() {
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
         SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
+        SAGENT_AI_ATTRIBUTION) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CA_BUNDLE) ;;
         MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
         CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
@@ -3115,6 +3134,22 @@ stage_codex_config_files() {
             cp "$codex_home/$name" "$dir/config/$name"
         fi
     done
+    # Codex keeps no local switch for its own attribution — the flag it obeys
+    # travels with the account — so say it in the standing instructions it
+    # already reads. The copy staged for the sandbox is what gains the line;
+    # the file on the host is never written to.
+    if [ "${SAGENT_AI_ATTRIBUTION:-0}" = "0" ]; then
+        if [ -f "$dir/config/AGENTS.md" ]; then
+            printf '\n' >> "$dir/config/AGENTS.md"
+        fi
+        printf '%s\n' \
+            "## Attribution" \
+            "" \
+            "Do not sign your work. Commit messages and pull request descriptions" \
+            "must not carry a \"Co-authored-by\" trailer naming you, a \"Generated" \
+            "with\" line, or any other footer naming the tool that wrote them." \
+            >> "$dir/config/AGENTS.md"
+    fi
 }
 
 sync_state() {
