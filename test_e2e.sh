@@ -78,9 +78,11 @@ run_test "T04b: --docker flags" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" versi
 
 # ── T05: credential sync ─────────────────────────────────────────────
 if [ "$OS" = "Darwin" ]; then
+    # The suite's own image, not one pulled from Docker Hub: a peek into a
+    # volume should not depend on a registry, its rate limit or the VM's DNS.
     run_test "T05: credential sync (macOS)" bash -ec '
-        SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null 2>&1
-        "$ENGINE" run --rm -v sclaude-config:/c alpine ls /c/ >/dev/null 2>&1
+        SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
+        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$SUITE_IMG" ls /c/ >/dev/null
     ' _ "$SCLAUDE"
 else
     run_test "T05: credential sync (Linux)" bash -ec '
@@ -98,7 +100,7 @@ else
                     printf \"%s\" \"\$CREDS\" > /vol-config/.credentials.json
                 fi
             "
-        "$ENGINE" run --rm -v sclaude-config:/c alpine cat /c/.credentials.json 2>/dev/null | grep -q test_cred
+        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$IMG" cat /c/.credentials.json | grep -q test_cred
     ' _ "$SCLAUDE"
 fi
 
@@ -143,11 +145,11 @@ run_test "T06: volume permissions" bash -ec '
 
 # ── T07: volume persistence ──────────────────────────────────────────
 run_test "T07: volume persistence" bash -ec '
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         sh -c "echo sagent-test-marker > /home/agent/.test_persist"
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         cat /home/agent/.test_persist | grep -q sagent-test-marker
-    "$ENGINE" run --rm -v sagent-rootfs:/home/agent alpine \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
         rm -f /home/agent/.test_persist
 '
 
@@ -252,7 +254,7 @@ run_test "T11: PID limit (fork bomb)" bash -ec '
         TIMEOUT_CMD="gtimeout 15"
     fi
     # Run a fork bomb in a PID-limited container; it must not escape
-    $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 alpine \
+    $TIMEOUT_CMD "$ENGINE" run --rm --pids-limit=50 "$SUITE_IMG" \
         sh -c "for i in \$(seq 1 200); do sleep 999 & done" 2>&1 || true
     true
 '
@@ -949,8 +951,8 @@ run_test "T20: scodex config sync" bash -ec '
     printf "%s\n" "model = \"gpt-5\"" > "$TMP_CODEX_HOME/config.toml"
     "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
     CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
-    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/auth.json 2>/dev/null | grep -q test_codex_auth
-    "$ENGINE" run --rm -v scodex-config:/c alpine cat /c/config.toml 2>/dev/null | grep -q "model"
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/auth.json | grep -q test_codex_auth
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/config.toml | grep -q "model"
 ' _ "$SCODEX"
 
 # ── T21: release check is non-fatal and cache-safe ───────────────────
@@ -2096,6 +2098,8 @@ STUB
 # dozens of orphans per job.
 run_test "T46: timeout helper reaps its own timer" bash -ec '
     marker=4813
+    # A slice setting from CI would slice these nested tests away too.
+    unset SAGENT_TEST_SHARD SAGENT_TEST_SKIP
     # shellcheck source=test_lib.sh
     TEST_TIMEOUT_SECONDS=$marker
     . "$(dirname "$1")/test_lib.sh"
@@ -2197,6 +2201,8 @@ SRC
 run_test "T48: a test is retried only when the engine went away" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t48.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
+    # A slice setting from CI would slice these nested tests away too.
+    unset SAGENT_TEST_SHARD SAGENT_TEST_SKIP
     # shellcheck source=test_lib.sh
     . "$(dirname "$1")/test_lib.sh"
 

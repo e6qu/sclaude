@@ -190,10 +190,25 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
+    # Two slices of the suite on two runners. The whole suite on one of these
+    # VMs took 95-100 minutes, most of it spread thinly across ~65 tests that
+    # each pay for a slow VM, so halving the tests per runner halves the wait
+    # for a result. Two, not more: with test-macos-rancher also split and
+    # lint-macos, that is five macOS runners, the hosted concurrency limit.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
+    name: test-macos (${{ matrix.shard }})
     env:
       # Not an Azure runner: Ubuntu's own archive is the right default here.
       SAGENT_APT_MIRROR: ""
-    timeout-minutes: 120
+      SAGENT_TEST_SHARD: ${{ matrix.shard }}
+    # A ceiling, not an estimate. The last whole-suite run spent 5.5 min on
+    # the VM, 33.5 on the image build and 58 on tests, so a slice should take
+    # about 5 + 34 + 30 = 69 minutes; 75 would leave too little room for a
+    # slow build or the VM taking its time to come up.
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v5
       - name: Install docker CLI, buildx, and colima
@@ -222,6 +237,10 @@ jobs:
           echo "colima reports started but docker is not reachable" >&2
           colima status
           exit 1
+      - name: Report the engine's image store
+        # See the same step in test-macos-rancher: the image build here is
+        # dominated by exporting and unpacking, and the store decides why.
+        run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
       - name: Trim the sandbox image for this VM job
         # This job's coverage is the mac-host/VM topology, not image content:
         # every Linux job builds the full image. The toolchains left out here
@@ -273,10 +292,21 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
-    timeout-minutes: 120
+    # Split in two for the same reason as test-macos.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
+    name: test-macos-rancher (${{ matrix.shard }})
+    # A ceiling, not an estimate: the last whole-suite run spent 4.5 min on
+    # Rancher Desktop, 28 on the image build and 61 on tests, so a slice
+    # should take about 63 minutes, and the wait step below can restart the
+    # VM once, which alone costs up to 7 more.
+    timeout-minutes: 100
     env:
       # Not an Azure runner: Ubuntu's own archive is the right default here.
       SAGENT_APT_MIRROR: ""
+      SAGENT_TEST_SHARD: ${{ matrix.shard }}
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
     steps:
       - uses: actions/checkout@v5
@@ -348,6 +378,14 @@ jobs:
           command -v docker | grep -q "/.rd/bin/docker"
           docker context show
           docker version
+      - name: Report the engine's image store
+        # Most of this job's image build is not building: on the last run
+        # "exporting layers" took 334s and "unpacking to" the store 603s,
+        # against 384s for the largest RUN step. Unpacking is what dockerd's
+        # containerd image store does, and whether that is the store in use
+        # decides what would actually make the build faster, so record it.
+        run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
+
       - name: Trim the sandbox image for this VM job
         # This job's coverage is the mac-host/VM topology, not image content:
         # every Linux job builds the full image. The toolchains left out here

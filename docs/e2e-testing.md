@@ -152,3 +152,24 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 T27 inside each job adds one more nesting level (nested podman in the
 sandbox), so the devcontainer and macOS jobs exercise three to four layers of
 container/VM nesting.
+
+## Running part of the suite
+
+`SAGENT_TEST_SKIP="T02 T10"` skips named tests, reported as SKIP.
+`SAGENT_TEST_SHARD="1/2"` runs one slice: every second test starting from the
+first. Tests are numbered in file order, skipped or not, so every slice
+agrees on which test is which and together the slices run each test exactly
+once. CI runs the macOS jobs as two slices on parallel runners.
+
+A failing test prints the tail of its capture, and its shell runs traced, so
+the last lines name the command that failed even when that command sent its
+own output away. `FAIL_OUTPUT_LINES` sets how many lines are shown (30).
+
+Only the test's own shell is traced; the wrappers and scripts it runs are
+not, so capturing their stderr is safe. The one thing the trace does reach
+is a group, subshell or shell function whose stderr is captured inside the
+test — `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)` — because the
+trace follows file descriptor 2 into the capture. Do not assert on those;
+capture an external command instead. (`BASH_XTRACEFD`, which would avoid
+this, does not exist in the bash 3.2 that macOS ships.)
+
