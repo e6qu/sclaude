@@ -14,28 +14,34 @@ Rancher Desktop and colima share only your home directory with their VM, so
 run from under your home directory (or set `SAGENT_SKIP_SHARE_CHECK=1` if you
 added more shares).
 
-TLS-inspecting proxies are handled automatically: the wrapper takes the
-proxy's CA from the host trust store and bakes it into the image. If the host
-does not trust the CA either, get it as PEM and run
-`sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem`.
-
 Something off? `sclaude doctor` checks everything and names the fix.
 `sclaude status` shows what a run would use.
 
+## Corporate networks
+
+A TLS-inspecting proxy is handled automatically: before the first build the
+wrapper checks whether HTTPS from a container is intercepted, takes the
+proxy's CA from the host trust store and bakes it into the image. If the host
+does not trust that CA either, get it as PEM and run
+`sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem`.
+
 ## Install
 
-No sudo, nothing outside your home directory:
+No sudo, nothing outside your home directory. From a release — `install`
+copies both wrappers into `~/.local/bin` and puts it on PATH:
 
 ```bash
-# Release
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
 chmod +x sclaude scodex
-./sclaude install          # copies both into ~/.local/bin and puts it on PATH
+./sclaude install
+```
 
-# Source
+From source, `install` links them instead, so `git pull` updates them:
+
+```bash
 git clone https://github.com/e6qu/sclaude.git && cd sclaude
-./sclaude install          # links both instead, so `git pull` updates them
+./sclaude install
 ```
 
 `install` takes a directory if you want another one (`./sclaude install
@@ -56,18 +62,17 @@ out what sudo put there. `SAGENT_SKIP_MIGRATION=1` leaves it where it is.
 
 ## Usage
 
-```bash
-sclaude                      # Interactive (yolo by default)
-sclaude "fix the bug"        # Direct prompt
-sclaude --resume             # Resume last session
-sclaude -p "query"           # Print mode, no TTY needed
-sclaude --no-yolo            # Ask for permissions
-sclaude --no-docker          # No docker/podman inside the sandbox
-sclaude shell                # Bash in the running sandbox for this directory
-
-scodex                       # Same for Codex
-scodex exec "query"          # Non-interactive Codex
-```
+| Command | What it does |
+|---|---|
+| `sclaude` | Interactive, yolo by default |
+| `sclaude "fix the bug"` | Direct prompt |
+| `sclaude --resume` | Resume the last session |
+| `sclaude -p "query"` | Print mode, no TTY needed |
+| `sclaude --no-yolo` | Ask for permissions |
+| `sclaude --no-docker` | No docker/podman inside the sandbox |
+| `sclaude shell` | Bash in the running sandbox for this directory |
+| `scodex` | The same for Codex |
+| `scodex exec "query"` | Non-interactive Codex |
 
 All native CLI flags pass through. Yolo maps to
 `--dangerously-skip-permissions` (Claude) and
@@ -102,13 +107,9 @@ Utilities: tree, htop, btop, jq, ripgrep, fd, bat, vim, nano, wget, zip,
 rsync, ssh, lsof, dig, nc, tmux, sqlite3.
 
 About 5.5 GB with everything; the cloud group is 1.4 GB of it. Every version
-and tool is a setting:
-
-```bash
-sclaude tools                          # what is in and why not
-sclaude tools disable cloud            # a group, or names
-sclaude config set SAGENT_GO_VERSION none
-```
+and tool is a setting: `sclaude tools` lists what is in and why not,
+`sclaude tools disable cloud` drops a group (or names), and
+`sclaude config set SAGENT_GO_VERSION none` drops a toolchain.
 
 Changing any of them builds a new image on the next run. Caches that belong
 to an old toolchain are cleared automatically.
@@ -221,27 +222,26 @@ Every `sclaude` command exists for `scodex` too.
 `~/.config/sagent/config`, plain bash. Environment variables and flags win.
 `sclaude config set KEY VALUE` writes it for you.
 
-```bash
-MEMORY_LIMIT="8g"               # default 4g
-CPU_LIMIT="4"                   # default 2
-PIDS_LIMIT="200"                # default 100 (512 with container tooling)
-SAGENT_DOCKER=0                 # container tooling inside the sandbox, default 1
-SAGENT_CONTAINER_ENGINE=podman  # default: docker, then podman
-SAGENT_CA_BUNDLE=/path/ca.pem   # extra CA certificates
-SAGENT_GIT_PROTOCOL=ssh         # ssh or https, default: your gh setting
-SAGENT_CLIPBOARD=0              # host clipboard in the sandbox, default 1
-SAGENT_SESSIONS=0               # share sessions with the host: 0, 1 (default), or all
-
-SAGENT_UBUNTU_VERSION="26.04"
-SAGENT_NODE_VERSION="26"
-SAGENT_PYTHON_VERSION="3.14"
-SAGENT_GO_VERSION="1.27"        # or none
-SAGENT_RUST_VERSION="stable"    # or none
-SAGENT_JAVA_VERSION="26"        # or none
-SAGENT_TOOLS="all"              # all, none, js, java, infra, cloud, or names
-SAGENT_APT_MIRROR=""            # Ubuntu mirror for image builds, default: the archive
-SAGENT_AI_ATTRIBUTION=0         # agent footers in commits and PRs, default 0 (off)
-```
+| Setting | Values | Default |
+|---|---|---|
+| `MEMORY_LIMIT` | a size like `8g` | `4g` |
+| `CPU_LIMIT` | a number | `2` |
+| `PIDS_LIMIT` | a number | `100` (`512` with container tooling) |
+| `SAGENT_DOCKER` | `0`, `1` — container tooling inside the sandbox | `1` |
+| `SAGENT_CONTAINER_ENGINE` | `docker`, `podman` | docker, then podman |
+| `SAGENT_CA_BUNDLE` | path to a PEM file with extra CA certificates | unset |
+| `SAGENT_GIT_PROTOCOL` | `ssh`, `https` | your gh setting |
+| `SAGENT_CLIPBOARD` | `0`, `1` — host clipboard in the sandbox | `1` |
+| `SAGENT_SESSIONS` | `0`, `1`, `all` — share sessions with the host | `1` |
+| `SAGENT_UBUNTU_VERSION` | a release like `26.04` | `26.04` |
+| `SAGENT_NODE_VERSION` | a major version | `26` |
+| `SAGENT_PYTHON_VERSION` | a minor version | `3.14` |
+| `SAGENT_GO_VERSION` | a version, or `none` | `1.27` |
+| `SAGENT_RUST_VERSION` | `stable`, `beta`, `nightly`, a version, or `none` | `stable` |
+| `SAGENT_JAVA_VERSION` | a major version, or `none` | `26` |
+| `SAGENT_TOOLS` | `all`, `none`, `js`, `java`, `infra`, `cloud`, or names | `all` |
+| `SAGENT_APT_MIRROR` | an Ubuntu mirror URL for image builds | Ubuntu's archive |
+| `SAGENT_AI_ATTRIBUTION` | `0`, `1` — agent footers in commits and PRs | `0` |
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a
 setting can differ per tool — `scodex` shares every workspace's Codex history
@@ -259,15 +259,18 @@ with the default toolchain, for direct use in CI or dev containers; the
 wrappers build locally for your own uid and settings.
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.14.0 claude
+docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.19.0 claude
 ```
 
 ## Best practice
 
+Commit first, then review the agent's work with `git diff` and commit or
+`reset --hard`:
+
 ```bash
 git commit -am "before sclaude"
 sclaude "fix all bugs"
-git diff                          # review, then commit or reset --hard
+git diff
 ```
 
 ## Uninstall
@@ -275,8 +278,13 @@ git diff                          # review, then commit or reset --hard
 ```bash
 sclaude reset
 docker images sagent-sandbox -q | xargs -r docker rmi
-sudo rm /usr/local/bin/sclaude /usr/local/bin/scodex
+rm ~/.local/bin/sclaude ~/.local/bin/scodex
 ```
+
+The last line assumes the default location; `install DIR` may have put them
+elsewhere, and an install from before 2.16 lives in `/usr/local/bin` and
+needs `sudo rm`. `install` also added a PATH block to your shell startup file,
+marked `added by sclaude/scodex`; delete it if you like.
 
 ## Dev containers
 

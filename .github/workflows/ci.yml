@@ -5,17 +5,11 @@ on:
   push:
     branches: [main]
 
-# No CI on the release PR. It is opened by github-actions[bot], and GitHub
-# holds workflow runs on bot-authored PRs for manual approval, so no job
-# ever starts and the check ends red for good. Releasing itself is
-# untouched: the Release Please workflow runs on push to main, and merging
-# that PR still cuts the release, uploads the wrappers and publishes the
-# images. The commit is tested on main right after the merge, and the
-# release workflow re-verifies the published wrappers.
+# No test jobs on the release PR; only `what-ran` runs there. The commit is
+# tested on main after the merge.
 
-# Cancel superseded runs for a pull request, but never on main: two merges
-# landing together used to cancel main's suite, and nothing gates releasing
-# on CI, so a release could be cut from a commit whose tests never finished.
+# Cancel superseded PR runs, never main's: a release could be cut from a
+# commit whose tests were cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -26,23 +20,15 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # These runners are Azure VMs sitting beside Canonical's Azure mirror.
-  # From the default archive a single package index has taken ten minutes
-  # here and timed out a job; from this one it arrives in seconds. Only the
-  # Linux jobs use it (x86_64: an arm64 build would need the ports mirror),
-  # and the macOS jobs keep Ubuntu's default.
+  # The runners are Azure VMs; the default archive has taken ten minutes for
+  # one index here. The macOS jobs unset it (not Azure, and x86_64 only).
   SAGENT_APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu/
-  # A cold T02 build fetches an Ubuntu base, five toolchains and the cloud
-  # tooling; that does not fit the harness's default 600s per test. The
-  # macOS jobs already ran at this budget for the same reason.
+  # A cold image build does not fit the harness's default 600s.
   TEST_TIMEOUT_SECONDS: "1200"
 
 jobs:
-  # A run whose every job is filtered out has nothing to conclude from, and
-  # GitHub calls that a failure ("This run likely failed because of a
-  # workflow file issue"), which left a permanent red X on every release PR.
-  # This job never filters itself out, so the run concludes on it, and it
-  # says why the others did not run.
+  # A run with every job filtered out is a failure to GitHub (#89). This job
+  # always runs and says why the others did not.
   what-ran:
     runs-on: ubuntu-latest
     steps:
@@ -93,9 +79,6 @@ jobs:
   lint-macos:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: macos-latest
-    env:
-      # Not an Azure runner: Ubuntu's own archive is the right default here.
-      SAGENT_APT_MIRROR: ""
     steps:
       - uses: actions/checkout@v5
       - name: Install pre-commit
@@ -129,12 +112,8 @@ jobs:
       - name: Run E2E tests against podman
         run: SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 
-  # Real docker CLI talking to a podman server through the docker-compat
-  # socket — the flavor combo where builds must use the classic builder
-  # endpoint (DOCKER_BUILDKIT=0) instead of buildx. The socket is rootful
-  # (the podman-docker server arrangement): on a rootless socket the docker
-  # CLI cannot request podman's keep-id mapping and the wrapper refuses (#75,
-  # covered by T34 with a stub).
+  # Real docker CLI on a podman server: builds must use the classic builder.
+  # Rootful socket; a rootless one is refused (#75, T34).
   test-linux-docker-cli-podman:
     if: >-
       (github.event_name == 'push' ||
@@ -180,21 +159,15 @@ jobs:
         run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
 
   test-macos:
-    # Real macOS host with a Linux VM behind the engine — the Docker Desktop /
-    # podman machine topology (docker CLI on the host, dockerd in a VM). Runs
-    # on the Intel runner: Apple Silicon runners have no nested virtualization,
-    # so the VM cannot start there. T27 inside adds the third nesting level
-    # (mac host -> VM -> sandbox container -> nested podman container).
+    # macOS host, dockerd in a colima VM. Intel runner: Apple Silicon runners
+    # have no nested virtualization.
     if: >-
       (github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
     runs-on: macos-15-intel
-    # Two slices of the suite on two runners. The whole suite on one of these
-    # VMs took 95-100 minutes, most of it spread thinly across ~65 tests that
-    # each pay for a slow VM, so halving the tests per runner halves the wait
-    # for a result. Two, not more: with test-macos-rancher also split and
-    # lint-macos, that is five macOS runners, the hosted concurrency limit.
+    # Two slices: the whole suite took 95-100 minutes here (#96). Not more:
+    # five macOS runners is the hosted concurrency limit.
     strategy:
       fail-fast: false
       matrix:
@@ -204,10 +177,7 @@ jobs:
       # Not an Azure runner: Ubuntu's own archive is the right default here.
       SAGENT_APT_MIRROR: ""
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
-    # A ceiling, not an estimate. The last whole-suite run spent 5.5 min on
-    # the VM, 33.5 on the image build and 58 on tests, so a slice should take
-    # about 5 + 34 + 30 = 69 minutes; 75 would leave too little room for a
-    # slow build or the VM taking its time to come up.
+    # A slice takes about 65 minutes (5 VM + 34 build + 30 tests).
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v5
@@ -217,16 +187,11 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
       - name: Start colima VM
-        # vz (Virtualization.framework) instead of the default qemu — markedly
-        # faster on the Intel runners.
-        # --dns: the VM's own resolver has failed to resolve archive.ubuntu.com
-        # from inside a build container, 597 times in one run, and took the
-        # job with it. Public resolvers make container DNS deterministic.
+        # vz is markedly faster than qemu here. --dns: the VM's own resolver
+        # failed 597 times in one build (#93).
         run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30 --dns 1.1.1.1 --dns 8.8.8.8
       - name: Wait for the VM's docker daemon
-        # colima start can return while (or without) dockerd becoming
-        # reachable; assert readiness with a clear error instead of failing
-        # later with a generic "no engine responding".
+        # colima start can return before dockerd is reachable.
         run: |
           for _ in $(seq 1 24); do
             if docker info >/dev/null 2>&1; then
@@ -242,50 +207,30 @@ jobs:
         # dominated by exporting and unpacking, and the store decides why.
         run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
       - name: Trim the sandbox image for this VM job
-        # This job's coverage is the mac-host/VM topology, not image content:
-        # every Linux job builds the full image. The toolchains left out here
-        # are the bulk of the bytes, and on a VM-backed engine the image size
-        # drives the build twice over (download, then export and unpack).
-        # Written to the config file, not the environment, so tests that set
-        # their own SAGENT_CONFIG_FILE or environment (T32, T35, T38) still
-        # see the defaults they expect.
+        # The Linux jobs build the full image; on a VM its size is paid twice.
+        # The config file, not the environment, so tests that set their own
+        # (T32, T35, T38) see the defaults.
         run: |
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
             'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
       - name: Prime the image build cache
-        # The cold build takes 10-20+ minutes depending on the runner instance
-        # and would trip the per-test timeout inside the suite; built here, T02
-        # revalidates the build path from cache in seconds.
+        # A cold build takes 10-20+ minutes here; T02 then revalidates from cache.
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
-        # This job's unique coverage is the mac-host/VM topology; T10's update
-        # logic and T31's CA-bundle build are engine-independent and covered by
-        # every Linux job, and each costs a full image build (30+ minutes for
-        # T10's no-cache rebuild on this runner). The cold T02 build needs
-        # more than the default 600s per-test budget. colima shares only $HOME
-        # and /tmp/colima with its VM, so bind-mounted fixtures live under the
-        # home directory and T12b (a /tmp workspace) is skipped.
+        # Skipped: T02 (built above), T10, T10b and T31 (full builds the
+        # Linux jobs cover), T12b (colima shares only $HOME and /tmp/colima,
+        # which is also why fixtures live under the home directory).
         env:
-          TEST_TIMEOUT_SECONDS: "1200"
-          # T02 is the build the "Prime the image build cache" step above
-          # already ran; repeating it costs another full image export and
-          # unpack on these VM engines for no extra coverage.
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
-          # The engine probe (docker info) can stall for more than the 10s
-          # default while the Lima VM is under build/test load; one such stall
-          # failed T04 with "engine not responding" on an otherwise green run.
+          # docker info has stalled past 10s under build load here.
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
 
-  # Rancher Desktop with its dockerd (moby) engine on a macOS host: the
-  # docker CLI from ~/.rd/bin talking to dockerd in Rancher Desktop's Lima VM.
-  # This is the setup behind #68 and the README's Rancher Desktop notes.
-  # Rancher Desktop is driven headlessly with rdctl; it shares only $HOME with
-  # the VM, so the suite's bind-mounted fixtures live under the home directory
-  # and T12b (a /tmp workspace) is skipped along with the two full-build tests.
+  # Rancher Desktop's docker CLI to dockerd in its Lima VM, driven with
+  # rdctl (the setup behind #68).
   test-macos-rancher:
     if: >-
       (github.event_name == 'push' ||
@@ -298,10 +243,7 @@ jobs:
       matrix:
         shard: ["1/2", "2/2"]
     name: test-macos-rancher (${{ matrix.shard }})
-    # A ceiling, not an estimate: the last whole-suite run spent 4.5 min on
-    # Rancher Desktop, 28 on the image build and 61 on tests, so a slice
-    # should take about 63 minutes, and the wait step below can restart the
-    # VM once, which alone costs up to 7 more.
+    # A slice takes about 63 minutes; a VM restart below adds up to 7.
     timeout-minutes: 100
     env:
       # Not an Azure runner: Ubuntu's own archive is the right default here.
@@ -311,10 +253,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Rancher Desktop
-        # Strip the quarantine attribute Homebrew puts on casks: a quarantined
-        # GUI app launched via `open` blocks on a Gatekeeper prompt nobody can
-        # click on a runner (the app process existed but never wrote settings
-        # or logs). Homebrew no longer accepts --no-quarantine.
+        # A quarantined app blocks on a Gatekeeper prompt nobody can click.
         run: |
           brew install --cask rancher
           xattr -l "/Applications/Rancher Desktop.app" || true
@@ -335,10 +274,8 @@ jobs:
             --no-modal-dialogs
           echo "$HOME/.rd/bin" >> "$GITHUB_PATH"
       - name: Wait for Rancher Desktop's docker daemon
-        # The VZ guest occasionally boots without network on a runner host (its
-        # SSH address stays unreachable while the VM reports "running"); a
-        # second start on the same runner has recovered from that. One
-        # restart, bounded, then the diagnostics below.
+        # The VZ guest occasionally boots without network; one restart, then
+        # diagnostics.
         run: |
           wait_ready() {
             for _ in $(seq 1 "$1"); do
@@ -379,21 +316,12 @@ jobs:
           docker context show
           docker version
       - name: Report the engine's image store
-        # Most of this job's image build is not building: on the last run
-        # "exporting layers" took 334s and "unpacking to" the store 603s,
-        # against 384s for the largest RUN step. Unpacking is what dockerd's
-        # containerd image store does, and whether that is the store in use
-        # decides what would actually make the build faster, so record it.
+        # The containerd image store (io.containerd.snapshotter.v1): export
+        # and unpack cost more here (334s + 603s) than the largest RUN (384s).
         run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
 
       - name: Trim the sandbox image for this VM job
-        # This job's coverage is the mac-host/VM topology, not image content:
-        # every Linux job builds the full image. The toolchains left out here
-        # are the bulk of the bytes, and on a VM-backed engine the image size
-        # drives the build twice over (download, then export and unpack).
-        # Written to the config file, not the environment, so tests that set
-        # their own SAGENT_CONFIG_FILE or environment (T32, T35, T38) still
-        # see the defaults they expect.
+        # Same trimmed image as test-macos, for the same reasons.
         run: |
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
@@ -401,11 +329,9 @@ jobs:
       - name: Prime the image build cache
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
+        # Skipped for the reasons given in test-macos; Rancher Desktop shares
+        # only $HOME with its VM.
         env:
-          TEST_TIMEOUT_SECONDS: "1200"
-          # T02 is the build the "Prime the image build cache" step above
-          # already ran; repeating it costs another full image export and
-          # unpack on these VM engines for no extra coverage.
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |
@@ -430,14 +356,9 @@ jobs:
         run: npm install -g @devcontainers/cli
       - name: Run devcontainer build tests
         run: bash test_devcontainers.sh
-      # The dev container runs as UID-1000 vscode with a nested Docker daemon —
-      # the configuration that exposed bugs #56 (ubuntu-user sudoers collision)
-      # and #57 (SELinux) classes of platform bugs. Run the full suite inside.
+      # UID 1000 with a nested daemon: the setup that exposed #56 and #57.
       - name: Run E2E suite inside the dev container (UID 1000, Docker-in-Docker)
-        # `devcontainer exec` starts with the container's own environment, so
-        # the settings this job runs under have to be handed over explicitly.
-        # Without the mirror the suite inside built from Ubuntu's archive and
-        # outgrew the job's timeout.
+        # `devcontainer exec` starts from the container's own environment.
         run: |
           devcontainer up --workspace-folder .
           devcontainer exec --workspace-folder . \

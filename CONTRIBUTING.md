@@ -5,8 +5,10 @@
 ```bash
 git clone https://github.com/e6qu/sclaude.git
 cd sclaude
-chmod +x sclaude scodex test_e2e.sh
+./sclaude install
 ```
+
+`install` links both wrappers into `~/.local/bin`.
 
 Requirements: Docker (or Podman), bash, shellcheck.
 
@@ -18,18 +20,15 @@ and a hard block on `pull_request_target` triggers in workflows (see
 [Forbidden workflow triggers](#forbidden-workflow-triggers) below). Install
 once:
 
+Install pre-commit itself (`brew install pre-commit` on macOS,
+`pipx install pre-commit` anywhere), then the hooks:
+
 ```bash
-# Install pre-commit itself (pick whichever fits your environment)
-brew install pre-commit       # macOS
-pipx install pre-commit       # cross-platform
-
-# If you previously set `core.hooksPath=.githooks`, unset it so pre-commit can
-# manage the hooks directory:
-git config --unset core.hooksPath || true
-
-# Install the git hooks defined in .pre-commit-config.yaml
 pre-commit install --install-hooks
 ```
+
+If you once set `core.hooksPath=.githooks`, unset it first so pre-commit can
+manage the hooks directory: `git config --unset core.hooksPath`.
 
 After install, `git commit` runs the configured pre-commit and commit-msg
 hooks automatically. Run them on demand with `pre-commit run --all-files`.
@@ -59,9 +58,10 @@ image rebuilds on the next run. Changes elsewhere in the wrappers (runtime
 flags, commands, messages) keep the hash, so existing users are not forced to
 rebuild. Version defaults live in the `*_VERSION` constants near the top of
 the wrappers; the optional tooling is the `SAGENT_TOOL_REGISTRY` table (name,
-group, description) plus one install fragment per tool in
-`get_dockerfile_content` and one presence check per tool in T19. Volume stamps
-take their values from the settings automatically.
+group, description) plus one install fragment per tool (`get_dockerfile_content`
+for the npm and Java tools, `emit_extra_tools` for the infra and cloud ones)
+and one presence check per tool in T19. Volume stamps take their values from
+the settings automatically.
 
 ## Code Standards
 
@@ -177,25 +177,22 @@ This verifies that all three configs (sclaude-dev, claude-code example, sclaude 
 
 ## Project Structure
 
-```
-sclaude                  # Claude Code sandbox script
-scodex                   # Codex CLI sandbox script
-test_e2e.sh              # E2E test suite
-test_lib.sh              # Shared test harness (timeouts, skip knob, results)
-test_devcontainers.sh    # Devcontainer build/smoke tests
-cleanup.sh               # macOS-only helper for reclaiming disk space and Docker/Podman state
-.devcontainer/           # Dev container for sclaude development
-examples/
-  devcontainer-claude/   # Example: Claude Code directly in a dev container
-  devcontainer-sclaude/  # Example: Claude Code via sclaude in a dev container
-README.md                # Quick start and usage
-CONTRIBUTING.md          # This file
-BUGS.md                  # Bug tracker and fix history
-CHANGELOG.md             # Release history (managed by release-please)
-LICENSE                  # MIT
-.github/workflows/       # CI + release-please automation
-docs/
-  security.md            # Threat model and security analysis
-  storage-layout.md      # Docker volume architecture
-  e2e-testing.md         # Test plan and VM setup
-```
+| Path | What it is |
+|---|---|
+| `sclaude`, `scodex` | The two wrappers; identical apart from tool constants (T24 checks) |
+| `test_e2e.sh` | E2E test suite |
+| `test_lib.sh` | Test harness: timeouts, tracing, skip and slice knobs, results |
+| `test_devcontainers.sh` | Dev container build and smoke tests |
+| `cleanup.sh` | macOS-only helper for reclaiming disk and Docker/Podman state |
+| `.devcontainer/` | Dev container for working on sclaude |
+| `examples/devcontainer-claude/` | Claude Code directly in a dev container |
+| `examples/devcontainer-sclaude/` | Claude Code via sclaude in a dev container |
+| `README.md`, `CONTRIBUTING.md`, `BUGS.md`, `CHANGELOG.md`, `LICENSE` | Usage, this file, bug history, release history (release-please), MIT |
+| `.github/workflows/` | CI and release automation |
+| `.githooks/` | The commit-msg hook that strips AI attribution |
+| `.pre-commit-config.yaml` | Lint hooks; CI runs the same set |
+| `release-please-config.json`, `.release-please-manifest.json` | Release automation |
+| `renovate.json` | Dependency updates for the pre-commit hooks |
+| `docs/security.md` | Threat model and security analysis |
+| `docs/storage-layout.md` | Volumes, synced files, environment |
+| `docs/e2e-testing.md` | Test matrix, CI jobs, running part of the suite |

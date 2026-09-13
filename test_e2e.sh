@@ -183,25 +183,15 @@ run_test "T09b: reset reports pinned volumes" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T10: update command ──────────────────────────────────────────────
-# Runs the update flow with wrapper self-update pinned off: whenever the
-# checked-out WRAPPER_VERSION is older than the latest published release (every
-# open branch after a release), self-update would replace the copy with the
-# released wrapper and re-exec THAT — silently testing released code instead of
-# the code under test. The wrapper is still copied into a tmpdir so the test
-# never touches the under-test script. --force-rebuild bypasses the npm-version
-# skip path so this test always asserts the no-cache rebuild actually runs.
-# The self-update download path is verified against the real assets by the
-# release workflow after each release upload.
+# Self-update pinned off, or an older branch would test the released
+# wrapper instead (#59). --force-rebuild makes the no-cache rebuild certain.
 run_test "T10: update (forced no-cache rebuild)" bash -ec '
     set -e
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
     cp "$1" "$tmpdir/sclaude"
     chmod +x "$tmpdir/sclaude"
-    # --force-rebuild means --no-cache --pull: the most expensive thing the
-    # suite does. What it proves is that the rebuild runs, not how much it
-    # rebuilds, so it rebuilds the small image. This also leaves the suite
-    # image and its cache alone.
+    # The small image: what this proves is that the rebuild runs, not its size.
     export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
     img="sagent-sandbox:$(SAGENT_SKIP_RELEASE_CHECK=1 "$tmpdir/sclaude" version | sed -n "s/^Image hash: //p")"
     trap "rm -rf $tmpdir; \"$ENGINE\" rmi -f \"$img\" >/dev/null 2>&1 || true" EXIT
@@ -222,10 +212,8 @@ run_test "T10: update (forced no-cache rebuild)" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T10b: a CLI release rebuilds one layer, not the image ────────────
-# The agent CLIs are the last layer, behind AGENT_CLI_REFRESH, so `update`
-# reinstalls them from a cached image. A stubbed registry lookup makes the
-# CLIs look outdated; the run must take the cached path (not the no-cache
-# rebuild that --force-rebuild asks for) and still leave working CLIs.
+# A stubbed registry makes the CLIs look outdated; `update` must take the
+# cached path and leave working CLIs.
 run_test "T10b: update refreshes the CLIs from cache" bash -ec '
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" EXIT
@@ -272,10 +260,8 @@ run_test "T12: path with spaces" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T12b: workspace under /tmp is not shadowed by the tmpfs ──────────
-# Replicates run_tool's fixed behavior (#65, #71): with a workspace under /tmp
-# the tmpfs is omitted, and the physical path is mounted at the logical path
-# (on macOS /tmp is a symlink into /private, which is what a VM-backed engine
-# actually shares), so the workspace files are visible inside the sandbox.
+# The tmpfs is omitted under /tmp and the physical path is mounted at the
+# logical one (#65, #71).
 run_test "T12b: /tmp workspace visible in sandbox" bash -ec '
     IMG="$SUITE_IMG"
     WS=$(mktemp -d /tmp/sclaude-t12b.XXXXXX)
@@ -355,24 +341,15 @@ run_test "T16: shebang uses env" bash -ec '
 # ── T17: Codex CLI wrapper smoke ─────────────────────────────────────
 run_test "T17: scodex version command" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version' _ "$SCODEX"
 
-# T17b / T17c exercise deeper code paths than `--version`. They should fail fast,
-# so cap their per-test timeout regardless of the global default — a hang in
-# inner-CLI config loading shouldn't waste 10 minutes per test in CI. The cap
-# is 300s, not the 120s it started at: the first run of the inner CLI takes
-# 97s on a podman CI runner now that the image carries the cloud tooling, and
-# a cap a legitimate run nearly reaches is a coin toss, not a guard.
-# Users can still set T17_TIMEOUT_SECONDS for slow builders.
+# T17b/T17c fail fast on an inner-CLI hang: 300s, since an honest first run
+# takes 97s on a podman runner. T17_TIMEOUT_SECONDS overrides.
 _t17_prev_timeout="$TEST_TIMEOUT_SECONDS"
 _t17_cap="${T17_TIMEOUT_SECONDS:-300}"
 if [ "$TEST_TIMEOUT_SECONDS" -gt "$_t17_cap" ]; then
     TEST_TIMEOUT_SECONDS="$_t17_cap"
 fi
 
-# T17b exercises a deeper Codex code path than `--version`: `exec --help` actually
-# loads the Codex command tree and runs the early config-init code. This catches
-# regressions where the inner CLI errors out on configuration loading (e.g. cloud
-# requirements / managed policies) — T17's `--version` is too shallow to reach
-# that code path.
+# `exec --help` loads Codex's config, which `--version` never reaches.
 run_test "T17b: scodex exec --help loads without config errors" bash -ec '
     rc=0
     output=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" exec --help 2>&1) || rc=$?
@@ -434,10 +411,7 @@ run_test "T18: sudo apt works in sandbox" bash -ec '
         "$IMG" bash -c "sudo apt-get update >/dev/null && sudo apt-get install -y --no-install-recommends file >/dev/null"
 ' _ "$SCLAUDE"
 
-# ── T18b: pip user install works despite PEP 668 ─────────────────────
-# Ubuntu 24.04 marks system Python externally managed; the image sets
-# PIP_BREAK_SYSTEM_PACKAGES=1 so `pip install --user` lands in the
-# sagent-pip volume instead of erroring out.
+# ── T18b: pip user install works despite PEP 668 (#51) ───────────────
 run_test "T18b: pip install --user works in sandbox" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
@@ -542,10 +516,8 @@ EOF
 ' _ "$SCLAUDE"
 
 # ── T19c: clipboard bridge round trip ────────────────────────────────
-# The wrapper's clipboard agent (host side, sourced from the wrapper) serves
-# the sandbox's clipboard shims through a bind-mounted directory. A fake
-# host clipboard (pbcopy/pbpaste/osascript on macOS, xclip under DISPLAY on
-# Linux) records what the agent does, so this runs on headless CI too.
+# The agent, sourced from the wrapper, against a fake host clipboard so
+# this runs headless too.
 run_test "T19c: clipboard bridge round trip" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19c.XXXXXX")
     AGENT=""
@@ -586,10 +558,7 @@ EOF
     sed -n "/^# ---- Clipboard bridge/,/^# ---- End clipboard bridge/p" "$1" > "$TMP/bridge.sh"
     bash -c ". \"$TMP/bridge.sh\"; clipboard_bridge_serve \"$TMP/bridge\"" &
     AGENT=$!
-    # Wait for the agent to actually serve before asking the sandbox to use
-    # it: a backgrounded bash still has to start and reach its loop, and on a
-    # loaded runner the shim inside gave up first. One real request answered
-    # is the only proof that it is up.
+    # One answered request is the only proof the agent is up (#92).
     ready=0
     printf text > "$TMP/bridge/req-warmup.paste"
     for _ in $(seq 1 100); do
@@ -630,10 +599,8 @@ EOF
 ' _ "$SCLAUDE"
 
 # ── T19d: the clipboard bridge as a real run wires it ────────────────
-# T19c exercises the agent and the shims in isolation. This one checks the
-# wiring `run_tool` does: the spool mounted, WAYLAND_DISPLAY set so the CLIs
-# use the shims, the agent answering, and nothing left behind. The host
-# clipboard is stubbed, so it also runs on a headless CI machine.
+# The spool mounted, WAYLAND_DISPLAY set, the agent answering, nothing left
+# behind; host clipboard stubbed.
 run_test "T19d: clipboard bridge wired into a run" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19d.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -692,10 +659,8 @@ STUB
 ' _ "$SCLAUDE"
 
 # ── T19e: sessions are shared with the host ──────────────────────────
-# A session started outside the sandbox must be resumable inside it, and one
-# started inside must be resumable outside, so a bug in either place cannot
-# strand work. One bind mount, not a copy, plus a one-time move of sessions
-# the sandbox recorded before this existed.
+# Resumable in both directions, plus the one-time move of sessions the
+# sandbox recorded before sharing existed.
 run_test "T19e: sessions shared both ways" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19e.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -741,10 +706,7 @@ run_test "T19e: sessions shared both ways" bash -ec '
     case "$out" in *"No such file"*) ;; *) echo "sessions still shared with SAGENT_SESSIONS=0: $out" >&2; exit 1 ;; esac
 ' _ "$SCLAUDE"
 
-# ── T19f: SAGENT_SESSIONS=all shares the flat stores too ─────────────
-# Transcripts are all a resume needs, and they are per project. The stores
-# that are not (file-history, which holds what /rewind restores) reach the
-# sandbox only with SAGENT_SESSIONS=all, and then both ways.
+# ── T19f: SAGENT_SESSIONS=all shares file-history too, both ways ─────
 run_test "T19f: SAGENT_SESSIONS=all shares file-history" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t19f.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -787,13 +749,8 @@ run_test "T19f: SAGENT_SESSIONS=all shares file-history" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T20a: host git config, gh login and SSH sync ─────────────────────
-# The wrapper carries the host's global git config (minus host-only keys)
-# and gh login into the home volume on every run. GIT_CONFIG_GLOBAL and
-# GH_CONFIG_DIR point git and a fake gh at synthetic state; XDG_CONFIG_HOME
-# stays untouched because the wrapper's own config file lives there and CI
-# slims the image through it. The volume is inspected as root: on rootless
-# podman the image's user maps to a subordinate UID and cannot read the
-# 600-mode hosts.yml.
+# GIT_CONFIG_GLOBAL and GH_CONFIG_DIR point at synthetic state. The volume
+# is read as root: rootless podman maps the image user elsewhere.
 run_test "T20a: host git config, gh login and SSH sync" bash -ec '
     TMP=$(mktemp -d)
     trap "rm -rf \"$TMP\"" EXIT
@@ -857,12 +814,8 @@ EOF
         ! grep -q LEAKED_ENV_TOKEN /h/.config/gh/hosts.yml
         [ \"\$(stat -c %a /h/.config/gh/hosts.yml)\" = 600 ]
     "
-    # The synced git files mirror the host: gone from the host, gone from the
-    # volume. An excludes file that no longer exists stands in for "none"
-    # (the default ~/.config/git/ignore may exist on the machine running this).
-    # Unset, the protocol follows the host gh (ssh in this hosts.yml): no
-    # rewrite, and ~/.ssh is synced by manifest with a sandbox-made key left
-    # alone. Back on https the manifest'"'"'s files go and that key stays.
+    # Synced files mirror the host. Unset, the protocol follows the host gh
+    # (ssh here): ~/.ssh synced by manifest, a sandbox-made key left alone.
     printf "[core]\n\texcludesfile = %s\n" "$TMP/missing" > "$TMP/gitconfig2"
     "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
         mkdir -p /h/.ssh && echo sandbox-key > /h/.ssh/id_sandbox
@@ -893,10 +846,7 @@ EOF
     "
 ' _ "$SCLAUDE"
 
-# ── T20c: an identity git only has in the workspace is synced ────────
-# A repo-local identity (or one from a conditional include) is what git
-# commits as here, but a read of the global config alone never sees it, and
-# without it commits in the sandbox have no author.
+# ── T20c: an identity git only has in the workspace is synced (#79) ──
 run_test "T20c: workspace git identity syncs" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t20c.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -918,10 +868,8 @@ run_test "T20c: workspace git identity syncs" bash -ec '
     "
 ' _ "$SCLAUDE"
 
-# ── T20b: the sync tar is quiet when the host clock is ahead ─────────
-# A host clock a fraction of a second ahead of the VM the engine runs in made
-# GNU tar warn about every extracted file. The extraction command is read out
-# of the wrapper, so dropping the flag fails here.
+# ── T20b: the sync tar is quiet when the host clock is ahead (#80) ───
+# The extraction command is read out of the wrapper.
 run_test "T20b: sync tar quiet on clock skew" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t20b.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -975,10 +923,8 @@ run_test "T23: explicit engine selection" bash -ec '
 ' _ "$SCLAUDE" "$SCODEX"
 
 # ── T24: wrapper parity ──────────────────────────────────────────────
-# sclaude and scodex share their sandbox implementation; only the tool-specific
-# functions may differ. Any drift in a shared function is a bug. Functions are
-# auto-discovered from sclaude, so new shared functions are covered without
-# updating this test. Script-name mentions in comments are normalized.
+# Every function not in the tool-specific set must be identical in both
+# wrappers; functions are discovered from sclaude.
 run_test "T24: wrapper shared functions identical" bash -ec '
     tmpdir=$(mktemp -d)
     trap "rm -rf \"$tmpdir\"" EXIT
@@ -1061,10 +1007,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T28: config file ─────────────────────────────────────────────────
-# The config file is sourced at startup and may set tunables; a MEMORY_LIMIT
-# override is observable in the version output's Limits line. Environment
-# variables must take precedence over the file, and a config file with a
-# syntax error must fail with a clear message naming the file.
+# Sourced at startup, the environment wins, a syntax error names the file (#63).
 run_test "T28: config file sourced with env precedence" bash -ec '
     TMP_CFG_DIR=$(mktemp -d)
     trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
@@ -1084,10 +1027,7 @@ run_test "T28: config file sourced with env precedence" bash -ec '
     grep -q "config file has a syntax error" "$TMP_CFG_DIR/err"
 ' _ "$SCLAUDE"
 
-# ── T29: browser-open shim ───────────────────────────────────────────
-# The sandbox has no browser: xdg-open/$BROWSER render each URL as an OSC 8
-# terminal hyperlink plus plain text, so login flows (claude, codex, gh auth)
-# reach the host browser via Cmd/Ctrl+click in the terminal.
+# ── T29: browser-open shim renders OSC 8 hyperlinks (#78) ────────────
 run_test "T29: browser-open shim renders clickable URL" bash -ec '
     IMG="$SUITE_IMG"
     if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then
@@ -1113,10 +1053,7 @@ run_test "T29: browser-open shim renders clickable URL" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T30: sandbox isolation assertions ────────────────────────────────
-# Adversarial checks of the security model's core claims (the original design
-# plan listed these but they were never implemented): no engine socket is
-# reachable, the other tool's secret volume is not mounted, and host files
-# beside the workspace do not leak into the sandbox.
+# No engine socket, no other tool's secrets, no host files beside the workspace.
 run_test "T30: sandbox isolation assertions" bash -ec '
     WS=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t30.XXXXXX")
     SIBLING="$WS-sibling-secret"
@@ -1137,18 +1074,13 @@ run_test "T30: sandbox isolation assertions" bash -ec '
         "
 ' _ "$SCLAUDE"
 
-# ── T31: SAGENT_CA_BUNDLE bakes trust anchors into the image ─────────
-# #68: behind a TLS-inspecting proxy every HTTPS fetch in the build and in the
-# sandbox fails. Builds a second image with a two-certificate bundle and proves
-# a server certificate issued by one of those CAs is trusted by curl (system
-# store), Python (SSL_CERT_FILE) and Node (NODE_EXTRA_CA_CERTS). Also asserts
-# the bundle validation and that the bundle content is part of the image hash.
+# ── T31: SAGENT_CA_BUNDLE bakes trust anchors into the image (#68) ───
+# A second image with two CAs; a leaf signed by one is trusted by curl,
+# Python and Node.
 run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
     set -e
-    # This builds a fresh image, and what it asserts (the staged bundle, the
-    # system trust store, the two env vars) has nothing to do with the
-    # toolchains or tooling. Build the small version: with the cloud tools in
-    # "all", the full one outgrew even the 1200s budget on a CI runner.
+    # The small image: nothing here depends on the toolchains, and the full
+    # one outgrew the CI budget.
     export SAGENT_TOOLS=none SAGENT_GO_VERSION=none SAGENT_RUST_VERSION=none SAGENT_JAVA_VERSION=none
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t31.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
@@ -1216,10 +1148,7 @@ run_test "T31: SAGENT_CA_BUNDLE trust anchors" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T32: generated Dockerfile and build-failure guidance ─────────────
-# A stub engine records the build context and fails the build, so this checks
-# (without a real build) that the CA block is emitted only when a bundle is
-# configured, that the bundle is split one-certificate-per-file in the
-# context, and that a failed build prints the proxy-CA guidance.
+# A stub engine records the context and fails the build.
 run_test "T32: Dockerfile generation and build guidance" bash -ec '
     set -e
     tmp=$(mktemp -d /tmp/sagent-t32.XXXXXX)
@@ -1315,10 +1244,7 @@ STUB
 ' _ "$SCLAUDE"
 
 # ── T32b: `dockerfile` prints the build's Dockerfile ─────────────────
-# The release workflow builds the published images from this output, so it
-# must be the Dockerfile a build would use: same content, the metadata
-# stamp with the version hash, and SAGENT_IMAGE_UID/GID re-keying the hash
-# to the user the image is built for.
+# The release workflow builds from this output.
 run_test "T32b: dockerfile command" bash -ec '
     tmp=$(mktemp -d)
     trap "rm -rf \"$tmp\"" EXIT
@@ -1348,11 +1274,7 @@ run_test "T32b: dockerfile command" bash -ec '
     diff <(grep -v build_timestamp "$tmp/Dockerfile") <("$2" dockerfile | grep -v build_timestamp)
 ' _ "$SCLAUDE" "$SCODEX"
 
-# ── T32c: a refreshed CA bundle reaches the build context ────────────
-# ensure_build_tls can replace the bundle after the context was staged. A
-# context still holding the old certificates builds an image that trusts the
-# wrong CA while its hash claims the new one, and the build fails at its
-# first fetch with the wrapper blaming the network.
+# ── T32c: a refreshed CA bundle reaches the build context (#82) ──────
 run_test "T32c: refreshed CA bundle is re-staged" bash -ec '
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t32c.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
@@ -1403,10 +1325,7 @@ STUB
     fi
 ' _ "$SCLAUDE"
 
-# ── T32d: build guidance survives a broken engine ────────────────────
-# The failure guidance asks the engine how much disk is left. That probe
-# runs a container, which is exactly what may be broken, and its failure
-# must not swallow the advice.
+# ── T32d: build guidance survives a broken engine (#83) ──────────────
 run_test "T32d: build guidance is not swallowed" bash -ec '
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t32d.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
@@ -1436,10 +1355,8 @@ STUB
     fi
 ' _ "$SCLAUDE"
 
-# ── T33: unshared workspace on VM-backed engines is refused ──────────
-# #74: Rancher Desktop and colima share only $HOME (plus one /tmp subdir)
-# with their VM, so any other workspace mounts empty. A stub engine reporting
-# their docker contexts stands in for them.
+# ── T33: unshared workspace on VM-backed engines is refused (#74) ────
+# A stub engine reports their docker contexts.
 run_test "T33: unshared workspace refused (Rancher Desktop, colima)" bash -ec '
     tmp=$(mktemp -d /tmp/sagent-t33.XXXXXX)
     home_ws="$HOME/.sagent-t33-ws"
@@ -1482,10 +1399,8 @@ STUB
     (cd "$tmp" && "$1" --help) | grep -q "STUB-RUN.*--help"
 ' _ "$SCLAUDE"
 
-# ── T34: docker CLI on a rootless daemon is refused ──────────────────
-# #75: the docker CLI cannot request podman's keep-id mapping, so on a
-# rootless daemon the workspace would be unusable; the wrapper must say so
-# before touching anything. A stub engine reports a rootless podman server.
+# ── T34: docker CLI on a rootless daemon is refused (#75) ────────────
+# A stub engine reports a rootless podman server.
 run_test "T34: docker CLI on rootless daemon refused" bash -ec '
     tmp=$(mktemp -d /tmp/sagent-t34.XXXXXX)
     trap "rm -rf \"$tmp\"" EXIT
@@ -1546,10 +1461,7 @@ run_test "T35: toolchain version settings validated and hashed" bash -ec '
     SAGENT_CONFIG_FILE="$cfg/config" SAGENT_NODE_VERSION=24 "$1" version | grep -q "^Toolchain: .*node=24 "
 ' _ "$SCLAUDE"
 
-# ── T36: cache volumes are cleared when their toolchain changes ───────
-# The pip volume carries a stamp of the Python it was filled for; contents
-# for another version are cleared automatically on the next run, with a
-# warning, so upgrades never need a manual reset.
+# ── T36: cache volumes are cleared when their toolchain changes (#76) ─
 run_test "T36: stale toolchain caches cleared automatically" bash -ec '
     IMG="$SUITE_IMG"
     "$ENGINE" volume rm sagent-pip >/dev/null 2>&1 || true
@@ -1593,10 +1505,7 @@ run_test "T37: reset-caches clears only cache volumes" bash -ec '
     done
 ' _ "$SCLAUDE"
 
-# ── T37b: ~/.local/share is its own volume, migrated in place ────────
-# uv installs tools and its managed Pythons under ~/.local/share, which used
-# to sit in the pip volume and was wiped whenever the image Python changed.
-# An existing install must not have to do anything but run again.
+# ── T37b: ~/.local/share is its own volume, migrated in place (#84) ──
 run_test "T37b: share volume, migrated from the pip volume" bash -ec '
     # Its own workspace: `shell` attaches to a sandbox already running for a
     # directory, and an attached shell runs no sync, so the migration under
@@ -1635,11 +1544,9 @@ run_test "T37b: share volume, migrated from the pip volume" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 "$1" shell -c "uv tool list" 2>/dev/null | grep -q cowsay
 ' _ "$SCLAUDE"
 
-# ── T38b: config quoting and tools groups ────────────────────────────
-# The config file is sourced on every run, so a value holding $ or a
-# backtick must be stored literally rather than expanded (or executed). And
-# a group must not pull Java tools in when there is no JDK, which would fail
-# with an error naming tools the user never typed.
+# ── T38b: config quoting and tools groups (#86) ──────────────────────
+# A value holding $ or a backtick is stored literally; a group skips Java
+# tools without a JDK.
 run_test "T38b: config quoting and tools groups" bash -ec '
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t38b.XXXXXX")
     trap "rm -rf \"$tmp\"" EXIT
@@ -1765,9 +1672,7 @@ run_test "T39: status snapshot" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T40: doctor diagnostics ──────────────────────────────────────────
-# A healthy setup with a built image has no FAIL lines and exits 0; the
-# checks that spot real problems (missing engine, unmountable workspace,
-# rootless docker CLI) report FAIL and exit 1.
+# Healthy: no FAIL, exit 0. Missing engine, rootless docker CLI: FAIL, exit 1.
 run_test "T40: doctor diagnostics" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" doctor) || { echo "$out" >&2; echo "doctor failed on a healthy setup" >&2; exit 1; }
@@ -1812,11 +1717,8 @@ STUB
     echo "$out" | grep -qE "^  FAIL  workspace .*rootless podman daemon"
 ' _ "$SCLAUDE"
 
-# ── T41: TLS interception fixed from the host trust store before building ─
-# #77: a stub engine answers the pre-build probe with TLS-FAIL until a bundle
-# arrives on stdin, then with TLS-OK. The wrapper must export the host trust
-# store, verify it, persist the bundle and setting, and build with the CA
-# block; with a bundle that still fails it must stop naming the issuer.
+# ── T41: TLS interception fixed from the host trust store (#77) ──────
+# A stub engine answers TLS-FAIL until a bundle arrives on stdin.
 run_test "T41: TLS interception auto-fixed from host trust store" bash -ec '
     tmp=$(mktemp -d /tmp/sagent-t41.XXXXXX)
     trap "rm -rf \"$tmp\"" EXIT
@@ -1917,12 +1819,9 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
     [ "$out" = "${cid:0:12}" ]
 ' _ "$SCLAUDE"
 
-# ── T44: install and migrate without sudo ────────────────────────────
-# `install` puts both wrappers somewhere the user owns and makes sure that
-# directory is on PATH; running it again changes nothing. `update` moves an
-# install that lives outside the home directory (one that needed sudo) into
-# that same place. The release install path is the copy, not the symlink a
-# checkout gets, so the wrappers are copied out of the checkout first.
+# ── T44: install and migrate without sudo (#85, #87) ─────────────────
+# The wrappers are copied out of the checkout first: a release install is
+# a copy, not the symlink a checkout gets.
 run_test "T44: install and migrate without sudo" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t44.XXXXXX")
     trap "chmod -R u+w \"$TMP\" 2>/dev/null; rm -rf \"$TMP\"" EXIT
@@ -2017,9 +1916,7 @@ STUB
 ' _ "$SCLAUDE"
 
 # ── T45: update shows what changed, with PR links ────────────────────
-# Updating should say what it is about to install. The notes come from the
-# CHANGELOG at the new tag, newest first, stopping at the installed version;
-# release-please's own release PRs are not entries there.
+# From the CHANGELOG at the new tag, stopping at the installed version.
 run_test "T45: update lists the changes and their PRs" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t45.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -2092,10 +1989,7 @@ STUB
     fi
 ' _ "$SCLAUDE"
 
-# ── T46: the test timer leaves nothing behind ────────────────────────
-# The timeout is a subshell around a sleep. Killing only the subshell left
-# the sleep running to full term, which is why CI cleanup used to terminate
-# dozens of orphans per job.
+# ── T46: the test timer leaves no orphan sleep behind ────────────────
 run_test "T46: timeout helper reaps its own timer" bash -ec '
     marker=4813
     # A slice setting from CI would slice these nested tests away too.
@@ -2116,9 +2010,7 @@ run_test "T46: timeout helper reaps its own timer" bash -ec '
 ' _ "$SCLAUDE"
 
 # ── T47: the apt mirror is named, not guessed ────────────────────────
-# Unset means Ubuntu's own archive. Set, it rewrites the image's sources
-# before the first apt-get update — and the rewrite is checked against a
-# real sources file, not just the text of the Dockerfile.
+# The rewrite is checked against a real sources file, not the Dockerfile text.
 run_test "T47: apt mirror rewrites the image sources" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     mirror="http://azure.ports.ubuntu.com/ubuntu-ports/"
@@ -2147,10 +2039,8 @@ run_test "T47: apt mirror rewrites the image sources" bash -ec '
     SAGENT_APT_MIRROR="${mirror%/}" "$1" dockerfile | grep -qF "URIs: $mirror" \
         || { echo "a mirror given without a trailing slash did not get one" >&2; exit 1; }
 
-    # The sed it emits, run against a stock Ubuntu sources file, rewrites
-    # every stanza: the archive, security, and the ports host an arm64 image
-    # uses. The fixture is written here rather than taken from the image,
-    # which may itself have been built through a mirror (CI builds are).
+    # A stock sources fixture, written here: the suite image may itself have
+    # been built through a mirror (CI builds are).
     sed_line=$(echo "$out" | sed -n "s/^    \(sed -i -E .*\) \\\\$/\1/p")
     if [ -z "$sed_line" ]; then
         echo "could not find the sed the mirror layer runs, in:" >&2
@@ -2194,10 +2084,8 @@ SRC
     done
 ' _ "$SCLAUDE"
 
-# ── T48: an engine that dies mid-suite does not fail the job ─────────
-# The Rancher Desktop VM has lost its network with the suite half-run,
-# failing tests that had nothing to do with it. Such a failure is retried
-# once, out loud; a test that failed on its own merits is not.
+# ── T48: an engine that dies mid-suite does not fail the job (#90) ───
+# Retried once, out loud; a genuine failure is not.
 run_test "T48: a test is retried only when the engine went away" bash -ec '
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t48.XXXXXX")
     trap "rm -rf \"$TMP\"" EXIT
@@ -2250,10 +2138,8 @@ BROKEN
 ' _ "$SCLAUDE"
 
 # ── T49: no agent attribution in commits or pull requests ────────────
-# Claude Code reads a policy file the config volume cannot override; Codex
-# has no local switch, so scodex puts it in the standing instructions it
-# already reads. Both are off by default and both come back with
-# SAGENT_AI_ATTRIBUTION=1.
+# Claude via its policy file, Codex via its standing instructions; both
+# come back with SAGENT_AI_ATTRIBUTION=1.
 run_test "T49: agent attribution is off by default" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t49.XXXXXX")
@@ -2293,10 +2179,8 @@ run_test "T49: agent attribution is off by default" bash -ec '
         grep -qi \"Do not sign your work\" /c/AGENTS.md
     "
 
-    # The other half of the switch is checked against the staging function
-    # itself, straight from the wrapper. Running scodex with the setting
-    # flipped would ask for an image built with the other policy, and that
-    # is a full build on a CI runner, for an answer this gives exactly.
+    # The staging function itself: running scodex with the setting flipped
+    # would build a whole other image.
     awk "/^stage_codex_config_files\\(\\)/,/^}\$/" "$2" > "$TMP/stage.sh"
     for want in 0 1; do
         rm -rf "$TMP/staged"; mkdir -p "$TMP/staged/config"

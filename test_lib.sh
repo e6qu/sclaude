@@ -12,11 +12,8 @@ SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 # How much of a failed test's capture to print. Tests run traced, so the
 # tail of it holds the commands that led to the failure.
 FAIL_OUTPUT_LINES="${FAIL_OUTPUT_LINES:-30}"
-# Run one slice of the suite: "2/3" runs every third test starting from the
-# second. CI splits a slow platform's suite across parallel runners this way.
-# Each runner has its own engine and volumes, so the slices cannot touch each
-# other's state. Numbering counts every test in file order, skipped or not,
-# so every slice agrees on which test is which.
+# "2/3" runs every third test from the second. Tests are numbered in file
+# order, skipped or not, so every slice agrees on which test is which.
 SAGENT_TEST_SHARD="${SAGENT_TEST_SHARD:-}"
 TEST_INDEX=0
 SHARDED_OUT=0
@@ -55,13 +52,9 @@ run_with_timeout_capture() {
     local timer_child
     local rc
 
-    # Trace the test's own shell, so a failure names the command that failed
-    # instead of reporting nothing: 59 commands in the suite send their own
-    # output away. `bash -x` on this one shell, and nothing more. SHELLOPTS in
-    # the environment would switch tracing on in every descendant bash — the
-    # wrappers included — and the tests that read a wrapper's stderr would
-    # see the trace and fail (#97). BASH_XTRACEFD, which would keep the trace
-    # off stderr altogether, does not exist in the bash 3.2 macOS ships.
+    # `bash -x` on this shell only, so a failure names its command (#94).
+    # SHELLOPTS would trace every descendant, wrappers included (#97);
+    # BASH_XTRACEFD does not exist in macOS's bash 3.2.
     local -a traced=("$@")
     if [ "${traced[0]}" = bash ]; then
         traced=(bash -x "${traced[@]:1}")
@@ -79,10 +72,8 @@ run_with_timeout_capture() {
     else
         rc=$?
     fi
-    # The timer is a subshell whose `sleep` is a separate process: killing
-    # only the subshell leaves the sleep running to full term, which is why
-    # CI cleanup used to terminate dozens of orphans per job. Its children
-    # have to be noted before it dies, since they reparent away from it.
+    # Note the timer's children before killing it: they reparent away from
+    # it, and an orphaned sleep runs to full term.
     timer_children=$(pgrep -P "$timer_pid" 2>/dev/null || true)
     kill "$timer_pid" 2>/dev/null || true
     for timer_child in $timer_children; do
@@ -96,10 +87,7 @@ run_with_timeout_capture() {
     return "$rc"
 }
 
-# Did this test fail because the engine went away underneath it? Container
-# engines on CI runners do fall over mid-suite: the Rancher Desktop VM has
-# lost its network with the suite half-run, failing tests that had nothing
-# to do with it.
+# Did the engine go away underneath this test? (#90)
 engine_went_away() {
     grep -qiE "engine is not responding|cannot connect to the docker daemon|no network from containers|error during connect|connection refused.*docker" "$1"
 }
