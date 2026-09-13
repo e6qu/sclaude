@@ -112,31 +112,22 @@ jobs:
 
           ## Install / Update
 
-          **Fresh install:**
+          **Fresh install** — no sudo, both wrappers go to `~/.local/bin`:
           ```bash
           curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
-          chmod +x sclaude
-          sudo mv sclaude /usr/local/bin/sclaude
           curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o scodex
-          chmod +x scodex
-          sudo mv scodex /usr/local/bin/scodex
+          chmod +x sclaude scodex
+          ./sclaude install
           ```
 
-          **Update existing install:**
+          **Update an existing install:**
           ```bash
-          sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o /usr/local/bin/sclaude
-          sudo chmod +x /usr/local/bin/sclaude
-          sudo curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/scodex -o /usr/local/bin/scodex
-          sudo chmod +x /usr/local/bin/scodex
-          sclaude update   # updates Claude and Codex CLIs inside the shared container
+          sclaude update   # both wrappers, then the Claude and Codex CLIs in the image
           ```
 
           **From source:**
           ```bash
-          git pull
-          sclaude --build
-          sudo install -m 0755 sclaude /usr/local/bin/sclaude
-          sudo install -m 0755 scodex /usr/local/bin/scodex
+          git pull && sclaude --build
           ```
           EOF
           )

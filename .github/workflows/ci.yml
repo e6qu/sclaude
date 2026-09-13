@@ -5,13 +5,11 @@ on:
   push:
     branches: [main]
 
-# No CI on the release PR. It is opened by github-actions[bot], and GitHub
-# holds workflow runs on bot-authored PRs for manual approval, so no job
-# ever starts and the check ends red for good. Releasing itself is
-# untouched: the Release Please workflow runs on push to main, and merging
-# that PR still cuts the release, uploads the wrappers and publishes the
-# images. The commit is tested on main right after the merge, and the
-# release workflow re-verifies the published wrappers.
+# No test jobs on the release PR: every one of them filters itself out on
+# its branch name, and only `what-ran` runs there, to say so. Releasing is
+# untouched — the commit is tested on main right after the merge, and the
+# release workflow re-verifies the published wrappers. GitHub holds runs on
+# bot-authored PRs until someone approves them (CONTRIBUTING explains).
 
 # Cancel superseded runs for a pull request, but never on main: two merges
 # landing together used to cancel main's suite, and nothing gates releasing
@@ -40,7 +38,7 @@ env:
 jobs:
   # A run whose every job is filtered out has nothing to conclude from, and
   # GitHub calls that a failure ("This run likely failed because of a
-  # workflow file issue"), which left a permanent red X on every release PR.
+  # workflow file issue"), which left a red X on every release PR (#89).
   # This job never filters itself out, so the run concludes on it, and it
   # says why the others did not run.
   what-ran:
@@ -93,9 +91,6 @@ jobs:
   lint-macos:
     if: github.event_name == 'pull_request' && github.head_ref != 'release-please--branches--main'
     runs-on: macos-latest
-    env:
-      # Not an Azure runner: Ubuntu's own archive is the right default here.
-      SAGENT_APT_MIRROR: ""
     steps:
       - uses: actions/checkout@v5
       - name: Install pre-commit
@@ -259,18 +254,14 @@ jobs:
         # revalidates the build path from cache in seconds.
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
-        # This job's unique coverage is the mac-host/VM topology; T10's update
-        # logic and T31's CA-bundle build are engine-independent and covered by
-        # every Linux job, and each costs a full image build (30+ minutes for
-        # T10's no-cache rebuild on this runner). The cold T02 build needs
-        # more than the default 600s per-test budget. colima shares only $HOME
-        # and /tmp/colima with its VM, so bind-mounted fixtures live under the
-        # home directory and T12b (a /tmp workspace) is skipped.
+        # This job's coverage is the mac-host/VM topology. Skipped: T02 (the
+        # build the step above already ran; again would be another full
+        # export and unpack for no coverage), T10, T10b and T31 (engine-
+        # independent builds every Linux job covers, 30+ minutes each here)
+        # and T12b (colima shares only $HOME and /tmp/colima with its VM, so
+        # a /tmp workspace cannot mount; fixtures live under the home
+        # directory for the same reason).
         env:
-          TEST_TIMEOUT_SECONDS: "1200"
-          # T02 is the build the "Prime the image build cache" step above
-          # already ran; repeating it costs another full image export and
-          # unpack on these VM engines for no extra coverage.
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           # The engine probe (docker info) can stall for more than the 10s
           # default while the Lima VM is under build/test load; one such stall
@@ -379,11 +370,11 @@ jobs:
           docker context show
           docker version
       - name: Report the engine's image store
-        # Most of this job's image build is not building: on the last run
-        # "exporting layers" took 334s and "unpacking to" the store 603s,
-        # against 384s for the largest RUN step. Unpacking is what dockerd's
-        # containerd image store does, and whether that is the store in use
-        # decides what would actually make the build faster, so record it.
+        # Most of this job's image build is not building: "exporting layers"
+        # has taken 334s and "unpacking to" the store 603s, against 384s for
+        # the largest RUN step. This line names the store; it reads
+        # `driver-type io.containerd.snapshotter.v1`, dockerd's containerd
+        # image store, which is what pays that export-and-unpack price.
         run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
 
       - name: Trim the sandbox image for this VM job
@@ -401,11 +392,9 @@ jobs:
       - name: Prime the image build cache
         run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
       - name: Run E2E tests
+        # Skipped for the reasons given in test-macos; Rancher Desktop shares
+        # only $HOME with its VM.
         env:
-          TEST_TIMEOUT_SECONDS: "1200"
-          # T02 is the build the "Prime the image build cache" step above
-          # already ran; repeating it costs another full image export and
-          # unpack on these VM engines for no extra coverage.
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
         run: |

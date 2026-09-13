@@ -14,13 +14,16 @@ Rancher Desktop and colima share only your home directory with their VM, so
 run from under your home directory (or set `SAGENT_SKIP_SHARE_CHECK=1` if you
 added more shares).
 
-TLS-inspecting proxies are handled automatically: the wrapper takes the
-proxy's CA from the host trust store and bakes it into the image. If the host
-does not trust the CA either, get it as PEM and run
-`sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem`.
-
 Something off? `sclaude doctor` checks everything and names the fix.
 `sclaude status` shows what a run would use.
+
+## Corporate networks
+
+A TLS-inspecting proxy is handled automatically: before the first build the
+wrapper checks whether HTTPS from a container is intercepted, takes the
+proxy's CA from the host trust store and bakes it into the image. If the host
+does not trust that CA either, get it as PEM and run
+`sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem`.
 
 ## Install
 
@@ -259,7 +262,7 @@ with the default toolchain, for direct use in CI or dev containers; the
 wrappers build locally for your own uid and settings.
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.14.0 claude
+docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:2.19.0 claude
 ```
 
 ## Best practice
@@ -275,8 +278,12 @@ git diff                          # review, then commit or reset --hard
 ```bash
 sclaude reset
 docker images sagent-sandbox -q | xargs -r docker rmi
-sudo rm /usr/local/bin/sclaude /usr/local/bin/scodex
+rm ~/.local/bin/sclaude ~/.local/bin/scodex   # or wherever `install` put them
 ```
+
+`install` added a PATH block to your shell startup file, marked
+`# added by sclaude/scodex`; delete it if you like. An install from before
+2.16 lives in `/usr/local/bin` and needs `sudo rm`.
 
 ## Dev containers
 

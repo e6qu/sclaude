@@ -1,13 +1,11 @@
-# sclaude / scodex Storage Layout
+# Storage layout
 
-## Docker Volume Architecture
+What persists between runs lives in named volumes: one image and one set of
+home and cache volumes for both wrappers, and a config volume per tool for its
+credentials. Nothing is written to the host except the workspace, the shared
+session directory and the clipboard spool.
 
-sclaude and scodex use Docker named volumes for persistent storage, providing
-clean separation from the host filesystem and proper Linux file structure
-compatibility. Both scripts share one Docker image and shared package/home
-volumes, while credentials stay in tool-specific volumes.
-
-## Volume Structure
+## Volumes
 
 ```
 Docker Volume              Container Mount                   Purpose
@@ -38,18 +36,18 @@ by an older wrapper) is treated the same way once. Nothing else needs to be
 run after a version change; `sclaude volumes` shows usage and
 `sclaude reset-caches` clears these volumes on demand.
 
-## Environment Variables
+## Environment variables
 
 - `CLAUDE_CONFIG_DIR=/sclaude-config` - Tells Claude Code where to find credentials and configuration
 - `JAVA_HOME=/opt/java`, `RUSTUP_HOME=/opt/rust/rustup` - System-wide JDK and rustup toolchain; `CARGO_HOME` is unset so cargo's registry and `cargo install` land in `/home/agent/.cargo`
 - `PATH` puts `~/.npm-global/bin`, `~/.local/bin`, `~/.cargo/bin` and `~/go/bin` (all persistent) ahead of the system toolchains in `/usr/local/go/bin`, `/opt/rust/cargo/bin` and `/opt/java/bin`
 - `CODEX_HOME=/scodex-config` - Tells Codex where to find auth and runtime state
 - `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` - Always set: the uv-built Python's OpenSSL expects `/etc/ssl/cert.pem`, which Ubuntu lacks; Codex reads it too
-- `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set only when the image was built with `SAGENT_CA_BUNDLE`; they point Node, requests and pip at the extra trust anchors (see the README's corporate-network section)
+- `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set only when the image was built with `SAGENT_CA_BUNDLE`; they point Node, requests and pip at the extra trust anchors (README, "Corporate networks")
 
-## Key Files and Directories
+## Key files and directories
 
-### Credentials & Configuration
+### Credentials and configuration
 - `/sclaude-config/.credentials.json` - OAuth credentials (auto-synced from macOS Keychain or `~/.claude/.credentials.json` / `$XDG_CONFIG_HOME/claude-code/credentials.json` on Linux)
 - `/sclaude-config/.claude.json` - Claude Code configuration
 - `/sclaude-config/projects/` - Session history (bind-mounted from the host)
@@ -59,7 +57,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `/scodex-config/instructions.md` - Codex instructions copied from `${CODEX_HOME:-$HOME/.codex}/instructions.md` when present
 - `/scodex-config/AGENTS.md` - Codex agent guide copied from `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` when present
 
-### User Files
+### User files
 - `/home/agent/` - Shared user home directory (theme preferences, CLI state, etc.)
 - `/home/agent/.config/git/config` - host global git config minus host-only keys, rewritten every run; `ignore` next to it is the host's excludes file
 - `/home/agent/.gitconfig` - sandbox-only git settings; read after the synced file, so it wins
@@ -68,7 +66,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `/run/sagent/clipboard/` - per-run clipboard bridge spool, mounted from `~/.cache/sagent/clipboard.*`
 - `/etc/gitconfig` (image) - gh as git's credential helper for github.com, git-lfs filters
 
-### Package Management
+### Package management
 - `/home/agent/.npm-global/` - npm global packages
 - `/home/agent/.local/` - pip user packages and scripts
 - `/home/agent/.local/share/` - what `uv tool install` installs and the Pythons uv manages, in their own volume: the pip volume around it is cleared when the image Python changes, and neither belongs to that Python. Content left in the old location moves here on the next run
@@ -78,7 +76,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `/var/cache/apt/` - apt package cache
 - `/var/lib/apt/lists/` - apt package lists
 
-## Host State Sync Flow
+## Host state sync
 
 sclaude and scodex carry credentials and host state into Docker volumes on each run:
 
@@ -97,57 +95,32 @@ sclaude and scodex carry credentials and host state into Docker volumes on each 
 `sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
 credentials, the gh token, with ssh your private keys.
 
-## Why This Design?
+## Why volumes rather than host directories
 
-### Problem 1: Credential Persistence
-- Credentials must persist across container restarts
-- macOS stores credentials in Keychain, Linux uses files
-- Container can't access macOS Keychain
-- **Solution**: Auto-sync from Keychain to Docker volume on each run
+The sandbox is Linux and the host may be macOS: mounting `~/.claude` or
+`~/.npm` from the host would mix two filesystems' ownership rules and two
+platforms' binaries. Volumes hold Linux-shaped state, and only what the
+sandbox needs from the host is copied in each run (credentials, git and gh
+state) or bind-mounted where both sides must see the same files (the
+workspace, mounted at its own path so per-directory state keys match, and
+the session transcripts — see the README, "Sessions are shared").
 
-### Problem 2: macOS vs Linux File Structure
-- macOS and Linux have different file layouts and permissions
-- Mounting host directories caused permission/ownership conflicts
-- **Solution**: Use Docker volumes for Linux filesystem, sync only what's needed
+## Volume management
 
-### Problem 3: Package Isolation
-- macOS and Linux packages are incompatible architectures
-- Don't want conflicts with host packages
-- **Solution**: Separate Docker volumes for Linux packages (npm, pip, apt cache)
-
-### Problem 4: Session Sharing
-- Want `--resume` to work across container runs
-- Sessions stored per-directory path
-- **Solution**: Mount the workspace at the same absolute (logical) path in the container
-
-## Security
-
-Docker volumes provide strong isolation while allowing persistence:
-
-- ✅ Volumes isolated from host filesystem
-- ✅ Cannot access files outside mounted workspace
-- ✅ Starts as a non-root user
-- ✅ Capabilities limited to the set needed for package management
-- ✅ Resource limits enforced (4GB RAM, 2 CPUs, 100 PIDs; 512 PIDs with container tooling)
-- ✅ Ephemeral container (`--rm` flag, filesystem reset on exit)
-- ✅ Workspace sandboxed to current directory only
-
-## Volume Management
-
-### View Volumes
+### View volumes
 
 ```bash
 sclaude volumes
 ```
 
-### Reset All Data
+### Reset all data
 
 ```bash
 # Deletes ALL persistent data (credentials, packages, preferences)
 sclaude reset
 ```
 
-### Manual Volume Management
+### By hand
 
 ```bash
 # List volumes
@@ -160,5 +133,5 @@ docker volume inspect sclaude-config
 docker volume rm sagent-apt-cache
 
 # Remove all sclaude volumes
-docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers
+docker volume rm sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers
 ```

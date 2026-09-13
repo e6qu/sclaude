@@ -871,14 +871,12 @@ USER agent
 DOCKERFILE_END
 }
 
-# The cloud, infrastructure and CLI tooling, each at its latest release as of
-# the build and fetched for the image's own architecture. These sit as low in
-# the file as they can: changing the selection rebuilds them and the agent-CLI
+# The cloud and infrastructure tooling, each at its latest release as of the
+# build and fetched for the image's own architecture. These sit as low in the
+# file as they can: changing the selection rebuilds them and the agent-CLI
 # layer above, never the toolchains below. An architecture a vendor does not
 # publish for fails the build rather than quietly leaving the tool out.
 emit_extra_tools() {
-    # ripgrep and btop are not here: the image installs them for everyone,
-    # so a row offering to disable them could not keep its promise.
     if tool_selected kubectl; then
         cat <<'DOCKERFILE_END'
 
@@ -1300,7 +1298,7 @@ show_volumes() {
     done <<EOF
 sclaude-config|Claude credentials, config, sessions|
 scodex-config|Codex auth and config|
-$ROOTFS_VOLUME|home directory: shell state, gh auth, Go/Rust/Java caches|
+$ROOTFS_VOLUME|home directory: shell state, git/gh/ssh sync, Go, cargo, Maven, Gradle caches|
 $NPM_VOLUME|npm global packages|cache
 $PIP_VOLUME|pip user packages|cache
 $SHARE_VOLUME|uv tools and uv-managed Pythons, other XDG data|
@@ -1651,10 +1649,11 @@ add_dir_to_shell_file() {
     echo "  added $dir to PATH in $file"
 }
 
-# An install outside the home directory is one that needed sudo. Move it
-# into the user's own bin directory, which needs sudo once more to remove
-# what is left behind. Skipped for a git checkout (its symlinks are the
-# user's own) and with SAGENT_SKIP_MIGRATION=1.
+# An install in a directory this user cannot write needed sudo to get there
+# and would need it for every update. Move it into the user's own bin
+# directory, which needs sudo once more to remove what is left behind.
+# Skipped for a git checkout, a writable directory (#87), and with
+# SAGENT_SKIP_MIGRATION=1.
 migrate_system_install() {
     local script_path script_dir target name failed=""
     [ "${SAGENT_SKIP_MIGRATION:-}" = "1" ] && return 0
@@ -2116,8 +2115,8 @@ doctor_report() {
 }
 
 # Environment diagnostics with a fix for anything that is wrong. Exit 1 when
-# any check fails. Only reads state; the one container it may start runs
-# `true`/`curl` inside the already-built image.
+# any check fails. Changes nothing on the host or in the volumes; the
+# containers it starts probe the network, the image and the cache stamps.
 doctor_command() {
     local msg latest out rc v stamp expected stale="" old_images key unknown="" free
     echo "[$SCRIPT_NAME] doctor"
@@ -2389,9 +2388,6 @@ install_wrapper_file() {
     fi
 }
 
-# Self-update the running wrapper (and its paired wrapper if present) to the latest release.
-# Downloads both assets first; only installs after both downloads succeed. Re-execs the new
-# wrapper to complete the update. Returns non-zero if any download or install step failed.
 # Print what changed between the installed version and $1 (a tag like
 # v2.17.0), read from the CHANGELOG at that tag: one line per merged pull
 # request, with its URL. release-please's own release PRs never appear there
@@ -2448,6 +2444,10 @@ print_release_notes() {
     printf '%s\n' "$notes" >&2
 }
 
+# Self-update the running wrapper (and its paired wrapper if present) to the
+# latest release. Downloads both assets first; only installs after both
+# downloads succeed. Re-execs the new wrapper to complete the update. Returns
+# non-zero if any download or install step failed.
 self_update_wrapper() {
     local latest_tag script_path script_dir paired_name paired_path
     local tmp_self tmp_paired=""
@@ -2468,10 +2468,10 @@ self_update_wrapper() {
         paired_path="$script_dir/$paired_name"
     fi
 
-    # A wrapper that resolves into a git checkout is a source install (README
-    # suggests symlinking from the repo into /usr/local/bin). Overwriting it with
-    # a release asset would clobber the user's working tree, so skip the wrapper
-    # download and let the image rebuild proceed.
+    # A wrapper that resolves into a git checkout is a source install
+    # (`install` links a checkout rather than copying it). Overwriting it with
+    # a release asset would clobber the user's working tree, so skip the
+    # wrapper download and let the image rebuild proceed.
     if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] Wrapper runs from a git checkout ($script_dir); skipping wrapper self-update." >&2
         echo "[$SCRIPT_NAME] Update the checkout with: git -C \"$script_dir\" pull" >&2
@@ -2518,9 +2518,8 @@ self_update_wrapper() {
     if [ -n "$tmp_paired" ]; then
         if ! install_wrapper_file "$tmp_paired" "$paired_path"; then
             echo "[$SCRIPT_NAME] ERROR: $script_path is now $latest_tag but $paired_path failed to install" >&2
-            echo "[$SCRIPT_NAME] Install $paired_name manually:" >&2
-            echo "  sudo curl -fsSL https://github.com/$PROJECT_REPO/releases/download/$latest_tag/$paired_name -o $paired_path" >&2
-            echo "  sudo chmod +x $paired_path" >&2
+            echo "[$SCRIPT_NAME] Install $paired_name by hand (with sudo in front if $script_dir is not yours):" >&2
+            echo "  curl -fsSL https://github.com/$PROJECT_REPO/releases/download/$latest_tag/$paired_name -o $paired_path && chmod +x $paired_path" >&2
             return 1
         fi
         echo "[$SCRIPT_NAME] Paired wrapper at $paired_path is now $latest_tag" >&2
@@ -2538,10 +2537,9 @@ self_update_wrapper() {
     fi
 }
 
-# Fetch the latest published "version" for the npm package $1 (e.g. "@openai/codex"). Uses
-# python3 for robust JSON parsing when available, falling back to a precise grep that only
-# matches the top-level "version" field in the npm registry's /latest document. Empty output
-# on any failure.
+# The latest published version of the npm package $1 (e.g. "@openai/codex"),
+# parsed with python3. Empty when python3 or the registry is unavailable, and
+# empty means "rebuild" to the caller: a wrong version would be worse.
 fetch_npm_latest() {
     local pkg="$1"
     local resp
