@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.2](https://github.com/e6qu/sclaude/compare/v2.19.1...v2.19.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* build the macOS test image once on Linux and load it on the VMs ([#83](https://github.com/e6qu/sclaude/issues/83)) ([6a25a65](https://github.com/e6qu/sclaude/commit/6a25a6587b24e823d1d56cf7a6bf6da6b3339b15))
+
 ## [2.19.1](https://github.com/e6qu/sclaude/compare/v2.19.0...v2.19.1) (2026-09-13)
 
 
