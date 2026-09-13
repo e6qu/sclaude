@@ -311,17 +311,36 @@ else
     skip_test "T14: zsh invocation" "zsh not installed"
 fi
 
-# ── T15: temp file cleanup on build failure ───────────────────────────
+# ── T15: temp file cleanup on build failure (#1) ─────────────────────
+# A stub engine fails the build, so this tests the failure path it is named
+# for and builds nothing: a real `--build` on a VM that loaded its image
+# rebuilds from scratch (#98).
 run_test "T15: no leaked temp files" bash -ec '
+    tmp=$(mktemp -d)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    run) cat >/dev/null; echo TLS-OK; exit 0 ;;
+    build) echo "stub: build failed" >&2; exit 1 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
     # A private TMPDIR for the wrapper (mktemp honors it), so nothing else on
     # the machine can write into the directory under test.
-    PRIVATE_TMP=$(mktemp -d)
-    trap "rm -rf \"$PRIVATE_TMP\"" EXIT
-    TMPDIR="$PRIVATE_TMP" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --build >/dev/null 2>&1 || true
-    LEAKED=$(find "$PRIVATE_TMP" -mindepth 1 | wc -l)
-    if [ "$LEAKED" -gt 0 ]; then
-        echo "Temp files leaked:" >&2
-        find "$PRIVATE_TMP" -mindepth 1 >&2
+    mkdir -p "$tmp/private"
+    if TMPDIR="$tmp/private" SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" \
+        "$1" --build >"$tmp/out" 2>&1; then
+        echo "the build should have failed" >&2
+        exit 1
+    fi
+    grep -q "sandbox image build failed" "$tmp/out"
+    if [ -n "$(find "$tmp/private" -mindepth 1)" ]; then
+        echo "Temp files leaked after a failed build:" >&2
+        find "$tmp/private" -mindepth 1 >&2
         exit 1
     fi
 ' _ "$SCLAUDE"

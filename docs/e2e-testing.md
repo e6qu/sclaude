@@ -32,7 +32,7 @@ Linux, against Docker or Podman.
 | T12c: / workspace refused | `/` as workspace rejected (would expose the host filesystem) | #66 |
 | T13: `volumes` report | No literal `-e` in output; the disk usage report lists the image, every volume with a size, and the caches total | #15 |
 | T14: Zsh invocation | `BASH_SOURCE` fallback | #17 |
-| T15: Temp file cleanup on failure | No leaked temp files after failed build (searches `$TMPDIR`) | #1, #73 |
+| T15: Temp file cleanup on failure | A stub engine fails the build; the wrapper's private `$TMPDIR` is empty afterwards. No real build on any platform | #1, #73, #98 |
 | T16: Shebang portability | Script runs via `env bash` | #18 |
 | T17: scodex version command | Codex wrapper smoke test | #40 |
 | T17b: scodex exec --help | Inner Codex CLI loads config without errors | -- |
