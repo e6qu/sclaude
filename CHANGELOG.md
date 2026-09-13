@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.1](https://github.com/e6qu/sclaude/compare/v2.19.0...v2.19.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* keep the agent's name out of commits, and stop CI losing releases ([#80](https://github.com/e6qu/sclaude/issues/80)) ([d1f8c7d](https://github.com/e6qu/sclaude/commit/d1f8c7d816e9b868cef74241d5dbe89564c4306a))
+
 ## [2.19.0](https://github.com/e6qu/sclaude/compare/v2.18.0...v2.19.0) (2026-09-12)
 
 
