@@ -21,7 +21,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # The runners are Azure VMs; the default archive has taken ten minutes for
-  # one index here. The macOS jobs unset it (not Azure, and x86_64 only).
+  # one index here. The macOS jobs keep it: it is part of the image hash.
   SAGENT_APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu/
   # A cold image build does not fit the harness's default 600s.
   TEST_TIMEOUT_SECONDS: "1200"
@@ -158,6 +158,39 @@ jobs:
       - name: Run E2E tests (podman as the docker command)
         run: SAGENT_CONTAINER_ENGINE=docker bash test_e2e.sh
 
+  # The trimmed image the macOS jobs test with, built once here and loaded
+  # there. Building on those VMs took 20-57 minutes depending on the runner
+  # and timed a slice out (#98). Built for the runner's uid/gid (501/20) so
+  # the tag is the one the wrapper computes there.
+  build-macos-image:
+    if: >-
+      (github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.head_ref != 'release-please--branches--main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the trimmed image for the macOS runners
+        run: |
+          mkdir -p ~/.config/sagent
+          printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
+            'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
+          ctx=$(mktemp -d)
+          SAGENT_IMAGE_UID=501 SAGENT_IMAGE_GID=20 SAGENT_SKIP_RELEASE_CHECK=1 \
+            ./sclaude dockerfile > "$ctx/Dockerfile"
+          tag=$(sed -n 's/.*sagent\.version="\([0-9a-f]*\)".*/\1/p' "$ctx/Dockerfile")
+          [ -n "$tag" ]
+          docker build --load --build-arg USER_UID=501 --build-arg USER_GID=20 \
+            -t "sagent-sandbox:$tag" -f "$ctx/Dockerfile" "$ctx"
+          docker save "sagent-sandbox:$tag" | zstd -T0 -3 -o sagent-macos-image.tar.zst
+          ls -l sagent-macos-image.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sagent-macos-image
+          path: sagent-macos-image.tar.zst
+          compression-level: 0
+          retention-days: 1
+
   test-macos:
     # macOS host, dockerd in a colima VM. Intel runner: Apple Silicon runners
     # have no nested virtualization.
@@ -165,6 +198,7 @@ jobs:
       (github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
+    needs: build-macos-image
     runs-on: macos-15-intel
     # Two slices: the whole suite took 95-100 minutes here (#96). Not more:
     # five macOS runners is the hosted concurrency limit.
@@ -174,10 +208,10 @@ jobs:
         shard: ["1/2", "2/2"]
     name: test-macos (${{ matrix.shard }})
     env:
-      # Not an Azure runner: Ubuntu's own archive is the right default here.
-      SAGENT_APT_MIRROR: ""
+      # The mirror is part of the image hash, so it must match the builder.
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
-    # A slice takes about 65 minutes (5 VM + 34 build + 30 tests).
+    # A slice takes about 50 minutes (5 VM + 15 load + 30 tests), on a VM
+    # whose speed varies twofold.
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v5
@@ -203,20 +237,31 @@ jobs:
           colima status
           exit 1
       - name: Report the engine's image store
-        # See the same step in test-macos-rancher: the image build here is
-        # dominated by exporting and unpacking, and the store decides why.
+        # The containerd image store, as on Rancher Desktop: a load unpacks.
         run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
       - name: Trim the sandbox image for this VM job
-        # The Linux jobs build the full image; on a VM its size is paid twice.
-        # The config file, not the environment, so tests that set their own
-        # (T32, T35, T38) see the defaults.
+        # The same settings the builder used, so the wrapper computes the same
+        # hash. The config file, not the environment, so tests that set their
+        # own (T32, T35, T38) see the defaults.
         run: |
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
             'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
-      - name: Prime the image build cache
-        # A cold build takes 10-20+ minutes here; T02 then revalidates from cache.
-        run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
+      - uses: actions/download-artifact@v4
+        with:
+          name: sagent-macos-image
+      - name: Load the prebuilt image
+        # The tag must be the one the wrapper here would build; otherwise the
+        # suite would silently build its own, which is what this replaces.
+        run: |
+          brew install zstd
+          zstd -dc sagent-macos-image.tar.zst | docker load
+          rm sagent-macos-image.tar.zst
+          want=$(SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude version | sed -n 's/^Image hash: //p')
+          if ! docker image inspect "sagent-sandbox:$want" >/dev/null 2>&1; then
+            echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
+            exit 1
+          fi
       - name: Run E2E tests
         # Skipped: T02 (built above), T10, T10b and T31 (full builds the
         # Linux jobs cover), T12b (colima shares only $HOME and /tmp/colima,
@@ -236,6 +281,7 @@ jobs:
       (github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'release-please--branches--main'
+    needs: build-macos-image
     runs-on: macos-15-intel
     # Split in two for the same reason as test-macos.
     strategy:
@@ -243,11 +289,10 @@ jobs:
       matrix:
         shard: ["1/2", "2/2"]
     name: test-macos-rancher (${{ matrix.shard }})
-    # A slice takes about 63 minutes; a VM restart below adds up to 7.
+    # A slice takes about 50 minutes (5 VM + 15 load + 30 tests), on a VM
+    # whose speed varies twofold; a VM restart below adds up to 7.
     timeout-minutes: 100
     env:
-      # Not an Azure runner: Ubuntu's own archive is the right default here.
-      SAGENT_APT_MIRROR: ""
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
     steps:
@@ -316,18 +361,30 @@ jobs:
           docker context show
           docker version
       - name: Report the engine's image store
-        # The containerd image store (io.containerd.snapshotter.v1): export
-        # and unpack cost more here (334s + 603s) than the largest RUN (384s).
+        # The containerd image store (io.containerd.snapshotter.v1): a build
+        # here paid 585s to export and 880s to unpack, so the image is loaded.
         run: docker info --format 'driver={{.Driver}} status={{json .DriverStatus}}'
 
       - name: Trim the sandbox image for this VM job
-        # Same trimmed image as test-macos, for the same reasons.
+        # Same settings as the builder, for the same hash.
         run: |
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
             'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
-      - name: Prime the image build cache
-        run: SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude --build
+      - uses: actions/download-artifact@v4
+        with:
+          name: sagent-macos-image
+      - name: Load the prebuilt image
+        # See test-macos.
+        run: |
+          brew install zstd
+          zstd -dc sagent-macos-image.tar.zst | docker load
+          rm sagent-macos-image.tar.zst
+          want=$(SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude version | sed -n 's/^Image hash: //p')
+          if ! docker image inspect "sagent-sandbox:$want" >/dev/null 2>&1; then
+            echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
+            exit 1
+          fi
       - name: Run E2E tests
         # Skipped for the reasons given in test-macos; Rancher Desktop shares
         # only $HOME with its VM.

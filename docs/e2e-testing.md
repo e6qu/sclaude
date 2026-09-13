@@ -154,8 +154,9 @@ engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`); builds a trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) via the config file, which also exercises the "none" paths |
-| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, skips and trimmed image as test-macos (Rancher Desktop shares only `$HOME`) |
+| build-macos-image | Builds the trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) once on Linux for the macOS runners' uid/gid, and publishes it as an artifact (#98) |
+| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Loads the prebuilt image and checks it is the one the wrapper there computes. Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
+| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, image and skips as test-macos (Rancher Desktop shares only `$HOME`) |
 | test-devcontainers | UID-1000 docker-in-docker dev container, building the dev containers and then running the whole suite inside |
 
 T27 inside each job adds one more nesting level (nested podman in the
