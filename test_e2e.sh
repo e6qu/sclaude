@@ -2218,4 +2218,77 @@ run_test "T49: agent attribution is off by default" bash -ec '
     done
 ' _ "$SCLAUDE" "$SCODEX"
 
+# ── T50: `mcp` and other management subcommands get no yolo flag ─────
+# The flag belongs to a session. A stub engine records the argv the tool
+# container is started with; a real run then shows an added server persists.
+run_test "T50: mcp subcommand runs without the yolo flag" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t50.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
+    for w in "$1" "$2"; do
+        flag=$(grep -m1 "^YOLO_FLAG=" "$w" | cut -d\" -f2)
+        # A management subcommand: no flag.
+        "$w" mcp list | grep "STUB-RUN" | tail -1 > "$tmp/argv"
+        grep -q " mcp list" "$tmp/argv"
+        if grep -qF -- "$flag" "$tmp/argv"; then
+            echo "$(basename "$w"): yolo flag passed to mcp: $(cat "$tmp/argv")" >&2
+            exit 1
+        fi
+        # A prompt: the flag, as before.
+        "$w" "fix the bug" | grep "STUB-RUN" | tail -1 > "$tmp/argv"
+        grep -qF -- "$flag" "$tmp/argv"
+    done
+    # Codex sessions keep it too.
+    "$2" exec "query" | grep "STUB-RUN" | tail -1 | grep -qF -- "--dangerously-bypass-approvals-and-sandbox"
+
+    # For real: a server added through the wrapper is there on the next run,
+    # so it lives in the config volume.
+    unset SAGENT_CONTAINER_ENGINE
+    "$1" mcp add --transport http --scope user sagent-t50 https://example.invalid/mcp >/dev/null 2>&1
+    "$1" mcp list 2>/dev/null | grep -q "sagent-t50"
+    "$1" mcp remove --scope user sagent-t50 >/dev/null 2>&1
+    if "$1" mcp list 2>/dev/null | grep -q "sagent-t50"; then
+        echo "mcp remove left the server behind" >&2
+        exit 1
+    fi
+' _ "$SCLAUDE" "$SCODEX"
+
+# ── T51: Codex config edited in the sandbox survives the host sync ───
+# The host config.toml used to be copied over the sandbox'"'"'s on every run,
+# so a server added with `scodex mcp add` was gone by the next one. The host
+# copy now replaces it only when the host copy changed.
+run_test "T51: scodex mcp add persists under a host config.toml" bash -ec '
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t51.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    mkdir -p "$tmp/codex"
+    printf "model = \"gpt-5\"\n" > "$tmp/codex/config.toml"
+    export SAGENT_SKIP_RELEASE_CHECK=1 CODEX_HOME="$tmp/codex"
+    "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
+    "$1" mcp add sagent-t51 -- echo hi >/dev/null 2>&1
+    "$1" mcp list 2>/dev/null | grep -q sagent-t51
+    # A run with the host file unchanged keeps the sandbox'"'"'s edit.
+    "$1" mcp list 2>/dev/null | grep -q sagent-t51
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5\"" /c/config.toml
+    # A changed host file wins, edits and all.
+    printf "model = \"gpt-5-mini\"\n" > "$tmp/codex/config.toml"
+    "$1" --no-yolo exec --help >/dev/null 2>&1
+    if "$1" mcp list 2>/dev/null | grep -q sagent-t51; then
+        echo "a changed host config.toml did not replace the sandbox copy" >&2
+        exit 1
+    fi
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5-mini\"" /c/config.toml
+' _ "$SCODEX"
+
 print_results

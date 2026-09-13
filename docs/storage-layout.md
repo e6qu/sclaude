@@ -53,7 +53,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `/sclaude-config/projects/` - Session history (bind-mounted from the host)
 - `/sclaude-config/file-history/` - Snapshots `/rewind` restores (bind-mounted only with `SAGENT_SESSIONS=all`)
 - `/scodex-config/auth.json` - Codex auth copied from `${CODEX_HOME:-$HOME/.codex}/auth.json`
-- `/scodex-config/config.toml` - Codex config copied from `${CODEX_HOME:-$HOME/.codex}/config.toml` when present
+- `/scodex-config/config.toml` - Codex config copied from `${CODEX_HOME:-$HOME/.codex}/config.toml` when present, and again only when that file changes (`.sagent-synced-config.toml` holds its hash), so `scodex mcp add` inside survives
 - `/scodex-config/instructions.md` - Codex instructions copied from `${CODEX_HOME:-$HOME/.codex}/instructions.md` when present
 - `/scodex-config/AGENTS.md` - Codex agent guide copied from `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` when present
 

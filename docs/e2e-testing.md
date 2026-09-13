@@ -83,6 +83,8 @@ Linux, against Docker or Podman.
 | T47: Apt mirror rewrites the image sources | Unset, no mirror layer and the default archive; set, the layer appears, the image hash changes, a missing trailing slash is added, and the `sed` it emits rewrites every stanza of a real sources file (security and ports included); a non-URL is refused | -- |
 | T48: A test is retried only when the engine went away | The dead-engine signature is recognised and a plain assertion failure is not; a test that fails that way once is retried and reported as a pass, saying RETRY; a real failure is reported once, unretried | -- |
 | T49: Agent attribution is off by default | The image carries Claude Code's policy file with `includeCoAuthoredBy` false and valid JSON; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; an invalid value is refused; the Codex instructions staged for the sandbox gain the rule while the host file is untouched, and do not with attribution on | -- |
+| T50: mcp subcommand runs without the yolo flag | With a stub engine recording argv, `mcp list` gets no yolo flag from either wrapper while a prompt and `codex exec` still do; for real, a server added with `sclaude mcp add` is listed on the next run and gone after `mcp remove` | -- |
+| T51: `scodex mcp add` persists under a host config.toml | A server added inside is still there on the next run while the host `config.toml` is unchanged, and gone once the host file changes, which then wins | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

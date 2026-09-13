@@ -20,6 +20,9 @@ SESSIONS_PER_PROJECT=false
 # shares exactly what 1 already does.
 SESSIONS_EXTRA_DIRS=()
 YOLO_FLAG="--dangerously-bypass-approvals-and-sandbox"
+# Subcommands that manage the CLI rather than run a session; they get no
+# yolo flag. exec, resume, fork and review run the agent and keep it.
+NO_YOLO_SUBCOMMANDS="agents login logout mcp plugin app-server remote-control completion update doctor sandbox debug apply queue archive delete migrate-rollouts unarchive cloud exec-server features help"
 WRAPPER_VERSION="2.19.1" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
@@ -3153,12 +3156,19 @@ sync_state() {
                 fi
             fi
             rm -f /vol-config/._*
+            # The host copy replaces the sandbox'"'"'s only when it has changed
+            # since it was last synced, so `scodex mcp add` (which edits
+            # config.toml in the sandbox) survives the next run.
             for name in config.toml instructions.md AGENTS.md; do
-                if [ -f "/tmp/sync/config/$name" ]; then
-                    cp "/tmp/sync/config/$name" "/vol-config/$name"
-                    chown "$TARGET_UID:$TARGET_GID" "/vol-config/$name"
-                    chmod 600 "/vol-config/$name"
+                [ -f "/tmp/sync/config/$name" ] || continue
+                sum=$(sha256sum "/tmp/sync/config/$name" | cut -c1-64)
+                if [ -f "/vol-config/$name" ] && [ "$(cat "/vol-config/.sagent-synced-$name" 2>/dev/null)" = "$sum" ]; then
+                    continue
                 fi
+                cp "/tmp/sync/config/$name" "/vol-config/$name"
+                chown "$TARGET_UID:$TARGET_GID" "/vol-config/$name"
+                chmod 600 "/vol-config/$name"
+                printf "%s\n" "$sum" > "/vol-config/.sagent-synced-$name"
             done
 '"$(home_state_sync_script)"'
         ' || echo "[$SCRIPT_NAME] Warning: host state sync failed (non-fatal)" >&2
@@ -3402,7 +3412,11 @@ run_tool() {
             ;;
     esac
 
-    if [ "$YOLO" = true ]; then
+    # `sclaude mcp add ...` is `claude mcp add ...` in the sandbox: a
+    # management subcommand, not a session, so no yolo flag.
+    local first="${ARGS[0]:-}" yolo="$YOLO"
+    case " $NO_YOLO_SUBCOMMANDS " in *" $first "*) yolo=false ;; esac
+    if [ "$yolo" = true ]; then
         tool_args=("$YOLO_FLAG" "${ARGS[@]+"${ARGS[@]}"}")
     else
         tool_args=("${ARGS[@]+"${ARGS[@]}"}")

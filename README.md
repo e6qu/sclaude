@@ -71,8 +71,10 @@ out what sudo put there. `SAGENT_SKIP_MIGRATION=1` leaves it where it is.
 | `sclaude --no-yolo` | Ask for permissions |
 | `sclaude --no-docker` | No docker/podman inside the sandbox |
 | `sclaude shell` | Bash in the running sandbox for this directory |
+| `sclaude mcp add …` | `claude mcp add …` in the sandbox; likewise every other `claude` subcommand |
 | `scodex` | The same for Codex |
 | `scodex exec "query"` | Non-interactive Codex |
+| `scodex mcp add name -- command` | `codex mcp add …` in the sandbox |
 
 All native CLI flags pass through. Yolo maps to
 `--dangerously-skip-permissions` (Claude) and
@@ -80,6 +82,15 @@ All native CLI flags pass through. Yolo maps to
 
 **Shell in a running session**: from a second terminal, in the same
 directory, `sclaude shell`. Inside the TUI, `!command` runs one command.
+
+**MCP servers** are added with the CLI's own command, run in the sandbox:
+`sclaude mcp add --transport http name URL`, `scodex mcp add name -- command`.
+They persist in the config volume; a stdio server's command must exist in
+the image (`npx` does). `--scope project` writes the workspace's `.mcp.json`,
+which the host sees too. Management subcommands like `mcp` and `plugin` run
+without the yolo flag. For Codex, a host `~/.codex/config.toml` is copied
+into the sandbox again only when it changes, so servers added inside stay
+until you edit the host file.
 
 **Sign-in** works without a browser in the sandbox: URLs print as clickable
 links, Claude Code uses its paste-a-code flow, Codex uses device-code
