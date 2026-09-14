@@ -664,6 +664,7 @@ STUB
         [ \"\$WAYLAND_DISPLAY\" = sagent-clipboard ] || { echo NO-DISPLAY; exit 1; }
         [ \"\$DISPLAY\" = :99 ] || { echo NO-X-DISPLAY; exit 1; }
         [ -S /tmp/.X11-unix/X99 ] || { echo NO-X-SOCKET; exit 1; }
+        [ -e /tmp/sagent-x11-clipboard.ready ] || { echo NO-X-CLIPBOARD; exit 1; }
         printf %s \"\$(pbpaste)\"
         printf to-the-host | pbcopy
     " 2>&1) || { echo "$out" >&2; exit 1; }
@@ -2472,7 +2473,9 @@ while True:
         break
 print("X-CLIENT-OK")
 EOF
-    out=$(cd "$TMP/ws" && "$1" shell -c "/usr/bin/python3 $TMP/ws/xclient.py" 2>&1) || { echo "$out" >&2; exit 1; }
+    # The clipboard is owned before the tool starts: the first thing a run
+    # does may already be a paste.
+    out=$(cd "$TMP/ws" && "$1" shell -c "[ -e /tmp/sagent-x11-clipboard.ready ] || { echo NO-X-CLIPBOARD; exit 1; }; /usr/bin/python3 $TMP/ws/xclient.py" 2>&1) || { echo "$out" >&2; exit 1; }
     case "$out" in *X-CLIENT-OK*) ;; *) echo "$out" >&2; exit 1 ;; esac
     [ "$(cat "$TMP/clip.txt")" = from-codex ]
 ' _ "$SCLAUDE"

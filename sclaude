@@ -845,11 +845,13 @@ RUN set -eux; \
         '# that speak X11 rather than run xclip (Codex reads images that way). What' \
         '# another client puts on the selection is forwarded to the host, then served' \
         '# from there again.' \
+        'import os' \
         'import subprocess' \
         'from Xlib import X, display' \
         'from Xlib.protocol import event' \
         '' \
         'SHIM = "/usr/local/bin/xclip"' \
+        'READY = "/tmp/sagent-x11-clipboard.ready"' \
         'CHUNK = 3 * 65536' \
         '' \
         '' \
@@ -980,6 +982,8 @@ RUN set -eux; \
         '' \
         '' \
         'own()' \
+        'with open(READY, "w") as f:' \
+        '    f.write(str(os.getpid()))' \
         'while True:' \
         '    ev = d.next_event()' \
         '    if ev.type == X.SelectionRequest and ev.selection == CLIPBOARD:' \
@@ -1005,7 +1009,13 @@ RUN set -eux; \
         '        [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] && break' \
         '        sleep 0.05' \
         '    done' \
+        '    rm -f /tmp/sagent-x11-clipboard.ready' \
         '    /usr/bin/python3 /usr/local/lib/sagent/x11-clipboard.py >/tmp/sagent-x11-clipboard.log 2>&1 &' \
+        '    for _ in $(seq 1 100); do' \
+        '        [ -e /tmp/sagent-x11-clipboard.ready ] && break' \
+        '        sleep 0.05' \
+        '    done' \
+        '    [ -e /tmp/sagent-x11-clipboard.ready ] || echo "[sagent] the X clipboard did not come up in 5s; see /tmp/sagent-x11-clipboard.log" >&2' \
         'fi' \
         'exec "$@"' \
         > /usr/local/bin/sagent-run; \
