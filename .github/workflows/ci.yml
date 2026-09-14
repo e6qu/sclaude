@@ -81,6 +81,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+      # The actionlint hook is built with Go. The macOS image ships none, and
+      # pre-commit then fetches the newest release listed on go.dev, which
+      # can be listed before its darwin-arm64 archive exists (#108). A Go
+      # from the toolcache makes pre-commit use that instead.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
       - name: Install pre-commit
         run: brew install pre-commit
       - name: Run pre-commit hooks
