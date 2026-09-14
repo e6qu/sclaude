@@ -16,7 +16,8 @@
           "type": "generic",
           "path": "scodex"
         }
-      ]
+      ],
+      "draft": true
     }
   }
 }
