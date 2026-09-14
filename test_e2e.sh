@@ -2507,7 +2507,7 @@ run_test "T55: build downloads go to a file first" bash -ec '
     files=$(echo "$joined" | grep -oE -- "-o /tmp/[A-Za-z0-9._-]+" | sed "s#-o /tmp/##" | sort -u)
     echo "$files" | grep -q "^node.tar.xz$" || { echo "no file download for node.tar.xz" >&2; exit 1; }
     for f in $files; do
-        echo "$joined" | grep -q "rm /tmp/$f" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
+        echo "$joined" | grep -qE "rm( -[a-zA-Z]+)*( \"?/tmp/[^ ;\"]+\"?)* /tmp/$f( |;|\"|$)" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
     done
 ' _ "$SCLAUDE"
 
