@@ -33,6 +33,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: ascii-only-docs
+        name: docs are plain ASCII (no em dashes, no emoji, no box drawing)
+        language: pygrep
+        entry: '[^\x00-\x7F]'
+        files: ^(README|CONTRIBUTING|BUGS)\.md$|^docs/.*\.md$
+
       - id: forbid-pull-request-target
         name: forbid pull_request_target in GitHub Actions workflows
         language: pygrep

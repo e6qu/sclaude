@@ -7,21 +7,19 @@ directory and the clipboard spool are written to.
 
 ## Volumes
 
-```
-Docker Volume              Container Mount                   Purpose
-─────────────────────────  ────────────────────────────────  ────────────────────────────────
-sclaude-config          →  /sclaude-config/                  Claude Code config & credentials
-scodex-config           →  /scodex-config/                   Codex auth and config
-sagent-rootfs           →  /home/agent/                      Shared home directory & preferences; Go, cargo, Maven/Gradle caches
-sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages
-sagent-pip              →  /home/agent/.local/                Shared pip user packages and pip scripts
-sagent-share            →  /home/agent/.local/share/          uv tools, uv-managed Pythons, other XDG data (not a cache)
-sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
-sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
-sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
-$(pwd -P)               →  $(pwd)                            Current workspace directory (physical path mounted at the logical path)
-~/sagent-drop           →  same path                          Files for the agent (read-write; SAGENT_DROP_DIR names another folder)
-```
+| Volume | Mounted at | Holds |
+|---|---|---|
+| `sclaude-config` | `/sclaude-config/` | Claude Code config and credentials |
+| `scodex-config` | `/scodex-config/` | Codex auth and config |
+| `sagent-rootfs` | `/home/agent/` | Home directory and preferences; Go, cargo, Maven and Gradle caches |
+| `sagent-npm` | `/home/agent/.npm-global/` | npm global packages |
+| `sagent-pip` | `/home/agent/.local/` | pip user packages and scripts |
+| `sagent-share` | `/home/agent/.local/share/` | uv tools, uv-managed Pythons, other XDG data (not a cache) |
+| `sagent-apt-cache` | `/var/cache/apt/` | apt package cache |
+| `sagent-apt-lists` | `/var/lib/apt/lists/` | apt package lists |
+| `sagent-containers` | `/home/agent/.local/share/containers/` | Nested container images and state |
+| the workspace, `$(pwd -P)` | `$(pwd)` | The current directory, physical path mounted at the logical one |
+| `~/sagent-drop` | the same path | Files for the agent, read-write; `SAGENT_DROP_DIR` names another folder |
 
 ## Toolchain stamps
 
