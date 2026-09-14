@@ -170,7 +170,7 @@ hosts.
 
 **Protection still provided**:
 - Docker socket is not mounted
-- Host filesystem access is limited to the workspace bind mount, plus the folder named by `SAGENT_DROP_DIR` when set
+- Host filesystem access is limited to the workspace bind mount and the drop folder (`~/sagent-drop`, or what `SAGENT_DROP_DIR` names)
 - Resource limits still apply
 - The capability set is restricted
 

@@ -154,10 +154,18 @@ if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
 fi
 # A host directory for files handed to the agent (screenshots, images),
 # mounted read-write inside at the same path so a pasted or dropped path
-# resolves there too. Off unless set.
+# resolves there too. ~/sagent-drop unless SAGENT_DROP_DIR names another;
+# the default is created on first use, a named one must exist.
 DROP_DIR=""
 DROP_HOST_DIR=""
-if [ -n "${SAGENT_DROP_DIR:-}" ]; then
+if [ -z "${SAGENT_DROP_DIR:-}" ]; then
+    DROP_DIR="$HOME/sagent-drop"
+    if [ ! -d "$DROP_DIR" ] && ! mkdir -p "$DROP_DIR" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] ERROR: could not create the drop folder $DROP_DIR; set SAGENT_DROP_DIR to a folder that exists." >&2
+        exit 1
+    fi
+    DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
+else
     # shellcheck disable=SC2088  # a literal ~/ prefix is what is matched here
     case "$SAGENT_DROP_DIR" in
         "~") DROP_DIR="$HOME" ;;
@@ -2110,7 +2118,7 @@ EOF
         printf '%-13s %s\n' "Workspace:" "$PWD ($git_line)"
     fi
     if [ -n "$DROP_DIR" ]; then
-        printf '%-13s %s\n' "Drop dir:" "$DROP_DIR (read-write in the sandbox, SAGENT_DROP_DIR)"
+        printf '%-13s %s\n' "Drop dir:" "$DROP_DIR (read-write in the sandbox$([ -n "${SAGENT_DROP_DIR:-}" ] && echo ", SAGENT_DROP_DIR" || echo "; SAGENT_DROP_DIR names another"))"
     fi
 }
 

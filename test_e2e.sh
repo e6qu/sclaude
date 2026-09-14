@@ -1704,7 +1704,7 @@ run_test "T38: tools/config commands" bash -ec '
 run_test "T39: status snapshot" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" status)
-    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard Volumes Workspace; do
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" Volumes Workspace; do
         echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
     done
     echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
@@ -2335,9 +2335,10 @@ STUB
     SAGENT_VOLUME_SUFFIX=-t52 "$1" volumes | grep -q "^  sclaude-config-t52 "
 ' _ "$SCLAUDE" "$SCODEX" "${BASH_SOURCE[0]}"
 
-# ── T53: SAGENT_DROP_DIR, a host folder for files handed to the agent ─
-# Mounted read-write at its own path, so a pasted or dropped path resolves
-# inside; unsafe values are refused with a reason.
+# ── T53: the drop folder, a host folder for files handed to the agent ─
+# ~/sagent-drop by default, created on first use; SAGENT_DROP_DIR names
+# another. Mounted read-write at its own path, so a pasted or dropped path
+# resolves inside; unsafe values are refused with a reason.
 run_test "T53: drop dir is mounted at its own path, unsafe values refused" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t53.XXXXXX")
@@ -2360,8 +2361,11 @@ STUB
     stub() { (cd "$tmp/ws" && env SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$@" "$W" mcp list 2>&1); }
     # Mounted at its own path; a trailing slash is dropped.
     stub SAGENT_DROP_DIR="$tmp/drop/" | grep -q -- "-v $tmp/drop:$tmp/drop:rw"
-    # Not set: no such mount.
-    if stub | grep -q -- "$tmp/drop"; then echo "a drop dir was mounted without the setting" >&2; exit 1; fi
+    # Not set: the default folder, made on first use.
+    home_real=$(cd "$HOME" && pwd -P)
+    stub | grep -q -- "-v $home_real/sagent-drop:$HOME/sagent-drop:rw"
+    [ -d "$HOME/sagent-drop" ]
+    if stub | grep -q -- "$tmp/drop"; then echo "a named drop dir was mounted without the setting" >&2; exit 1; fi
     refuse() {
         want="$1"; shift
         if out=$(stub "$@"); then echo "accepted: $*" >&2; exit 1; fi
