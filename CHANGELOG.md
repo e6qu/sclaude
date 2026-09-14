@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/e6qu/sclaude/compare/v3.0.0...v3.0.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* keep the sandbox login, keep the test suite off the real volumes, and use the current attribution settings ([#88](https://github.com/e6qu/sclaude/issues/88)) ([40a755d](https://github.com/e6qu/sclaude/commit/40a755d27986e7ef5a0b1b1aa96e64d51b47921b))
+* tag the release commit before release-please creates the release ([#89](https://github.com/e6qu/sclaude/issues/89)) ([f8ae411](https://github.com/e6qu/sclaude/commit/f8ae4116b04234d70cd16ee7fc9be4d24738aaf1))
+
 ## [3.0.0](https://github.com/e6qu/sclaude/compare/v2.19.3...v3.0.0) (2026-09-14)
 
 No changes since 2.19.3. The version was renumbered by a release automation
