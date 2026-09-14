@@ -138,9 +138,11 @@ without review.
 
 ### When a release does not finish
 
-Releasing has several steps, and a failure part way leaves a release that
-exists but has no wrappers attached, or wrappers but no images. Run the
-Release Please workflow by hand with the tag to publish what is missing:
+A release is created as a draft and published only once both wrappers are
+attached and verified, so `latest` never points at a release without them.
+A failure part way leaves a draft, or a published release with no images.
+Run the Release Please workflow by hand with the tag to publish what is
+missing (it publishes the draft too):
 
 ```bash
 gh workflow run release-please.yml -f tag=v2.15.1

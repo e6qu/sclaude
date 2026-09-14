@@ -1809,7 +1809,8 @@ esac
 STUB
     chmod +x "$tmp/fake-engine"
     export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine"
-    "$1" login 2>"$tmp/err" | grep -qE "STUB-RUN .* codex --dangerously-bypass-approvals-and-sandbox login --device-auth$"
+    # login is a management subcommand: no yolo flag in front of it.
+    "$1" login 2>"$tmp/err" | grep -qE "STUB-RUN .* codex login --device-auth$"
     grep -q "device-code sign-in" "$tmp/err"
     "$1" login --with-api-key 2>/dev/null | grep -qE " codex .*login --with-api-key$"
     "$1" login status 2>/dev/null | grep -qE " codex .*login status$"

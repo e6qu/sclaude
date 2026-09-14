@@ -34,6 +34,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -41,8 +42,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # The tag the jobs below publish: the one release-please just created, or
-  # the one asked for by hand.
+  # The tag the jobs below publish, and the ref to build it from: the release
+  # is a draft until its wrappers are attached (#100), and a draft has no git
+  # tag yet, so on a push that is the release commit; by hand it is the tag.
   tag:
     needs: release-please
     if: >-
@@ -52,22 +54,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       name: ${{ steps.pick.outputs.name }}
+      ref: ${{ steps.pick.outputs.ref }}
     steps:
       - id: pick
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
         run: |
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            name="$DISPATCH_TAG"
+            name="$DISPATCH_TAG"; ref="$DISPATCH_TAG"
           else
-            name="$RELEASE_TAG"
+            name="$RELEASE_TAG"; ref="$RELEASE_SHA"
           fi
-          if [ -z "$name" ]; then
+          if [ -z "$name" ] || [ -z "$ref" ]; then
             echo "::error::no tag to publish"
             exit 1
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
   upload-assets:
     needs: tag
@@ -75,11 +80,11 @@ jobs:
     if: always() && needs.tag.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      # The tag, not github.sha: back-to-back merges shipped mis-stamped
-      # wrappers once (#67).
+      # The release commit, not github.sha: back-to-back merges shipped
+      # mis-stamped wrappers once (#67).
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.tag.outputs.name }}
+          ref: ${{ needs.tag.outputs.ref }}
       - name: Upload scripts and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -141,6 +146,14 @@ jobs:
             bash -n "$downloaded"
             echo "$asset: shebang, SCRIPT_NAME, WRAPPER_VERSION=$expected_version, syntax OK"
           done
+      - name: Publish the release
+        # Only now does `latest` point here: a release visible before its
+        # wrappers were attached gave `sclaude update` and the dev container
+        # example a 404 for as long as this job sat in the queue (#100).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.name }}
+        run: gh release edit "$TAG" --draft=false
 
   # The image, built natively per architecture from the released wrapper's
   # Dockerfile. Tags: <version>-amd64, <version>-arm64, <version>; never latest.
@@ -168,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.tag.outputs.name }}
+          ref: ${{ needs.tag.outputs.ref }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
