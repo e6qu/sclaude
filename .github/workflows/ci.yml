@@ -264,7 +264,11 @@ jobs:
           brew install zstd
           zstd -dc sagent-macos-image.tar.zst | docker load
           rm sagent-macos-image.tar.zst
-          want=$(SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude version | sed -n 's/^Image hash: //p')
+          # The daemon keeps unpacking after `load` returns and can leave
+          # `docker info` unanswered for a while (#109).
+          for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
+          docker info >/dev/null 2>&1 || { echo "::error::the engine did not answer within 120s of the image load"; exit 1; }
+          want=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SECONDS=60 ./sclaude version | sed -n 's/^Image hash: //p')
           if ! docker image inspect "sagent-sandbox:$want" >/dev/null 2>&1; then
             echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
             exit 1
@@ -387,7 +391,11 @@ jobs:
           brew install zstd
           zstd -dc sagent-macos-image.tar.zst | docker load
           rm sagent-macos-image.tar.zst
-          want=$(SAGENT_SKIP_RELEASE_CHECK=1 ./sclaude version | sed -n 's/^Image hash: //p')
+          # The daemon keeps unpacking after `load` returns and can leave
+          # `docker info` unanswered for a while (#109).
+          for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
+          docker info >/dev/null 2>&1 || { echo "::error::the engine did not answer within 120s of the image load"; exit 1; }
+          want=$(SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ENGINE_TIMEOUT_SECONDS=60 ./sclaude version | sed -n 's/^Image hash: //p')
           if ! docker image inspect "sagent-sandbox:$want" >/dev/null 2>&1; then
             echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
             exit 1
