@@ -20,6 +20,7 @@ sagent-apt-cache        →  /var/cache/apt/                   Shared apt packag
 sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
 sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
 $(pwd -P)               →  $(pwd)                            Current workspace directory (physical path mounted at the logical path)
+$SAGENT_DROP_DIR        →  same path                          Files for the agent (only with SAGENT_DROP_DIR set; read-write)
 ```
 
 ## Toolchain stamps

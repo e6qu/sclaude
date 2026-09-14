@@ -530,6 +530,8 @@ done
 out=$(printf hello | pbcopy 2>&1)
 [ "$out" = "$(printf "\033]52;c;aGVsbG8=\033\\\\")" ]
 printf hello | xclip -selection clipboard 2>&1 | grep -q "52;c;aGVsbG8="
+# An image cannot go out as OSC 52; without the bridge that fails loudly.
+printf png | xclip -selection clipboard -t image/png 2>&1 | grep -q "only through the bridge"
 # Without the bridge, reads fail loudly and print nothing on stdout.
 for c in pbpaste wl-paste "xclip -selection clipboard -t TARGETS -o" "xsel --clipboard --output"; do
     out=$($c 2>/dev/null) && { echo "$c should fail" >&2; exit 1; }
@@ -564,6 +566,7 @@ EOF
 #!/bin/sh
 case "\$*" in
     *"clipboard info"*) echo "«class PNGf», 9, string, 4" ;;
+    *"set the clipboard"*) in=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\([^\"]*\\)\".*/\\1/p"); cp "\$in" "$TMP/clip.png" ;;
     *PNGf*) out=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\(.*\\)\" with.*/\\1/p"); cp "$TMP/image.png" "\$out" ;;
 esac
 EOF
@@ -571,7 +574,7 @@ EOF
 #!/bin/sh
 target=UTF8_STRING; out=0
 while [ \$# -gt 0 ]; do case "\$1" in -t) target=\$2; shift ;; -o) out=1 ;; esac; shift; done
-if [ \$out = 0 ]; then cat > "$TMP/clip.txt"; exit 0; fi
+if [ \$out = 0 ]; then if [ "\$target" = image/png ]; then cat > "$TMP/clip.png"; else cat > "$TMP/clip.txt"; fi; exit 0; fi
 case "\$target" in
     TARGETS) printf "TARGETS\\nimage/png\\ntext/plain\\n" ;;
     image/png) cat "$TMP/image.png" ;;
@@ -615,9 +618,13 @@ EOF
         printf to-host-2 | wl-copy
         printf to-host-3 | xclip -selection clipboard
         printf to-host-4 | xsel --clipboard --input
+        printf png-to-host | xclip -selection clipboard -t image/png
+        printf png-to-host-2 | wl-copy --type image/png
+        ! printf x | xclip -selection clipboard -t text/html 2>/dev/null
         [ \"\$(ls -A /run/sagent/clipboard)\" = \"\" ]
     "
     [ "$(cat "$TMP/clip.txt")" = to-host-4 ]
+    [ "$(cat "$TMP/clip.png")" = png-to-host-2 ]
     # A request nobody answers fails loudly instead of hanging.
     kill "$AGENT"; wait "$AGENT" 2>/dev/null || true
     "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$BRIDGE_HOST:/run/sagent/clipboard:rw" "$SUITE_IMG" bash -ec "
@@ -2324,5 +2331,50 @@ STUB
     done
     SAGENT_VOLUME_SUFFIX=-t52 "$1" volumes | grep -q "^  sclaude-config-t52 "
 ' _ "$SCLAUDE" "$SCODEX" "${BASH_SOURCE[0]}"
+
+# ── T53: SAGENT_DROP_DIR, a host folder for files handed to the agent ─
+# Mounted read-write at its own path, so a pasted or dropped path resolves
+# inside; unsafe values are refused with a reason.
+run_test "T53: drop dir is mounted at its own path, unsafe values refused" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t53.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/drop" "$tmp/ws"
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    W="$1"
+    stub() { (cd "$tmp/ws" && env SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$@" "$W" mcp list 2>&1); }
+    # Mounted at its own path; a trailing slash is dropped.
+    stub SAGENT_DROP_DIR="$tmp/drop/" | grep -q -- "-v $tmp/drop:$tmp/drop:rw"
+    # Not set: no such mount.
+    if stub | grep -q -- "$tmp/drop"; then echo "a drop dir was mounted without the setting" >&2; exit 1; fi
+    refuse() {
+        want="$1"; shift
+        if out=$(stub "$@"); then echo "accepted: $*" >&2; exit 1; fi
+        echo "$out" | grep -q "$want" || { echo "wrong reason for $*: $out" >&2; exit 1; }
+    }
+    refuse "absolute path" SAGENT_DROP_DIR=relative/dir
+    refuse "not a directory: $tmp/missing" SAGENT_DROP_DIR="$tmp/missing"
+    refuse "not a directory: $HOME/sagent-t53-missing" SAGENT_DROP_DIR="~/sagent-t53-missing"
+    refuse "entire host filesystem" SAGENT_DROP_DIR=/
+    refuse "the workspace itself" SAGENT_DROP_DIR="$tmp/ws"
+    # A real run: a file put there on the host is read inside, one written
+    # inside is on the host afterwards.
+    printf in > "$tmp/drop/in.txt"
+    out=$(cd "$tmp/ws" && SAGENT_DROP_DIR="$tmp/drop" "$W" shell -c "cat $tmp/drop/in.txt; echo out > $tmp/drop/out.txt" 2>/dev/null)
+    [ "$out" = in ]
+    [ "$(cat "$tmp/drop/out.txt")" = out ]
+' _ "$SCLAUDE"
 
 print_results

@@ -60,7 +60,7 @@ HOST_GID=$(id -g)
 
 # The config file is sourced; the environment wins over it. Arrays, not
 # strings: zsh does not word-split unquoted variables (T14).
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_DROP_DIR SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -151,6 +151,40 @@ fi
 # SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
+fi
+# A host directory for files handed to the agent (screenshots, images),
+# mounted read-write inside at the same path so a pasted or dropped path
+# resolves there too. Off unless set.
+DROP_DIR=""
+DROP_HOST_DIR=""
+if [ -n "${SAGENT_DROP_DIR:-}" ]; then
+    # shellcheck disable=SC2088  # a literal ~/ prefix is what is matched here
+    case "$SAGENT_DROP_DIR" in
+        "~") DROP_DIR="$HOME" ;;
+        "~/"*) DROP_DIR="$HOME/${SAGENT_DROP_DIR#"~/"}" ;;
+        *) DROP_DIR="$SAGENT_DROP_DIR" ;;
+    esac
+    case "$DROP_DIR" in
+        /*) ;;
+        *) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR must be an absolute path or start with ~/: $SAGENT_DROP_DIR" >&2; exit 1 ;;
+    esac
+    DROP_DIR="${DROP_DIR%/}"
+    if [ -z "$DROP_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=/: it would expose the entire host filesystem to the sandbox." >&2
+        exit 1
+    fi
+    if [ ! -d "$DROP_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is not a directory: $DROP_DIR" >&2
+        exit 1
+    fi
+    DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
+    if [ "$DROP_HOST_DIR" = / ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=$DROP_DIR: it resolves to /, the entire host filesystem." >&2
+        exit 1
+    fi
+    case "$DROP_DIR$DROP_HOST_DIR" in
+        *:*) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR contains a colon, which conflicts with Docker volume syntax: $DROP_DIR" >&2; exit 1 ;;
+    esac
 fi
 # 0: no transcripts shared. all: also SESSIONS_EXTRA_DIRS, which hold state
 # from every workspace.
@@ -695,7 +729,7 @@ RUN set -eux; \
 # Clipboard shims: pbcopy, pbpaste, wl-copy, wl-paste, xclip and xsel (what
 # the Claude and Codex CLIs and everyday scripts call) are one script that
 # talks to the wrapper's clipboard agent on the host through the bridge
-# directory mounted at /run/sagent/clipboard: copy, read as text, list the
+# directory mounted at /run/sagent/clipboard: copy text or a PNG, read as text, list the
 # available targets, read a PNG. The host agent runs pbcopy/pbpaste/osascript
 # (macOS) or wl-copy/wl-paste or xclip (Linux). Without the bridge (the image
 # run on its own) a copy goes to the controlling terminal as OSC 52 and reads
@@ -705,7 +739,7 @@ RUN set -eux; \
         '#!/bin/sh' \
         '# sagent host-clipboard: the sandbox'"'"'s clipboard commands, served by the host.' \
         '# With the wrapper'"'"'s bridge mounted, requests go to the host clipboard agent' \
-        '# through /run/sagent/clipboard (copy, text, target list, PNG). Without it' \
+        '# through /run/sagent/clipboard (copy text or a PNG, text, target list, PNG). Without it' \
         '# (the image run on its own), copy goes out as OSC 52 and reads fail.' \
         'bridge=/run/sagent/clipboard' \
         'name=$(basename "$0")' \
@@ -753,13 +787,17 @@ RUN set -eux; \
         '}' \
         '' \
         'if [ "$mode" = copy ]; then' \
+        '    case "$target" in unsupported:*) fail "unsupported clipboard target ${target#unsupported:}" ;; esac' \
         '    if [ -d "$bridge" ]; then' \
+        '        kind=copy' \
+        '        [ "$target" = image/png ] && kind=copy-image' \
         '        id="$$-$(od -An -N4 -tu4 /dev/urandom | tr -d '"'"' '"'"')"' \
         '        cat > "$bridge/req-$id.tmp"' \
-        '        mv "$bridge/req-$id.tmp" "$bridge/req-$id.copy"' \
-        '        wait_gone "$bridge/req-$id.copy"' \
+        '        mv "$bridge/req-$id.tmp" "$bridge/req-$id.$kind"' \
+        '        wait_gone "$bridge/req-$id.$kind"' \
         '        exit 0' \
         '    fi' \
+        '    [ "$target" = image/png ] && fail "an image reaches the host clipboard only through the bridge (the image is running without the wrapper)"' \
         '    data=$(base64 -w0)' \
         '    if ( exec > /dev/tty ) 2>/dev/null; then' \
         '        exec > /dev/tty' \
@@ -1364,6 +1402,7 @@ config_validate() {
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_DROP_DIR) ;;
         SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
         SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
         SAGENT_AI_ATTRIBUTION) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
@@ -1879,6 +1918,9 @@ EOF
         printf '%-13s %s\n' "Workspace:" "$PWD ($git_line; mounted from $(pwd -P))"
     else
         printf '%-13s %s\n' "Workspace:" "$PWD ($git_line)"
+    fi
+    if [ -n "$DROP_DIR" ]; then
+        printf '%-13s %s\n' "Drop dir:" "$DROP_DIR (read-write in the sandbox, SAGENT_DROP_DIR)"
     fi
 }
 
@@ -3243,6 +3285,20 @@ validate_workspace() {
                 exit 1
                 ;;
         esac
+        if [ -n "$DROP_HOST_DIR" ]; then
+            case "$DROP_HOST_DIR" in
+                "$home_host" | "$home_host"/* | "$extra_share" | "$extra_share"/*) ;;
+                *)
+                    echo "[$SCRIPT_NAME] ERROR: $tool shares only $home_host and $extra_share with its VM; SAGENT_DROP_DIR would mount empty:" >&2
+                    echo "  $DROP_HOST_DIR" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+    fi
+    if [ -n "$DROP_DIR" ] && { [ "$DROP_DIR" = "$WORKSPACE_PATH" ] || [ "$DROP_HOST_DIR" = "$WORKSPACE_HOST_PATH" ]; }; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is the workspace itself ($DROP_DIR), which is mounted already." >&2
+        exit 1
     fi
 }
 
@@ -3288,6 +3344,13 @@ host_clipboard_copy() {   # stdin -> host clipboard
         macos) pbcopy ;;
         wayland) wl-copy ;;
         x11) xclip -selection clipboard ;;
+    esac
+}
+host_clipboard_copy_image() {   # PNG file -> host clipboard
+    case "$(host_clipboard_kind)" in
+        macos) osascript -e 'set the clipboard to (read (POSIX file "'"$1"'") as «class PNGf»)' >/dev/null ;;
+        wayland) wl-copy --type image/png < "$1" ;;
+        x11) xclip -selection clipboard -t image/png < "$1" ;;
     esac
 }
 
@@ -3341,8 +3404,9 @@ host_clipboard_paste() {
     esac
 }
 
-# Serves req-ID.copy (text to copy) and req-ID.paste (a target, answered with
-# res-ID.ok or res-ID.fail). Files land by rename, so visible means complete.
+# Serves req-ID.copy (text to copy), req-ID.copy-image (a PNG to copy) and
+# req-ID.paste (a target, answered with res-ID.ok or res-ID.fail). Files land
+# by rename, so visible means complete.
 clipboard_bridge_serve() {
     local dir="$1" parent=$$ f id target
     # $$ is the wrapper's pid even in this background subshell: stop with it
@@ -3351,6 +3415,11 @@ clipboard_bridge_serve() {
         for f in "$dir"/req-*.copy; do
             [ -e "$f" ] || continue
             host_clipboard_copy < "$f" || true
+            rm -f "$f"
+        done
+        for f in "$dir"/req-*.copy-image; do
+            [ -e "$f" ] || continue
+            host_clipboard_copy_image "$f" || true
             rm -f "$f"
         done
         for f in "$dir"/req-*.paste; do
@@ -3466,6 +3535,10 @@ run_tool() {
 
     start_clipboard_bridge
     build_session_mount_args
+    local DROP_MOUNT_ARGS=()
+    if [ -n "$DROP_DIR" ]; then
+        DROP_MOUNT_ARGS=(-v "$DROP_HOST_DIR:$DROP_DIR:rw")
+    fi
 
     # label=disable: SELinux hosts cannot read the workspace otherwise (#57).
     # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
@@ -3475,6 +3548,7 @@ run_tool() {
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
         "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
+        "${DROP_MOUNT_ARGS[@]+"${DROP_MOUNT_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \

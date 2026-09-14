@@ -170,7 +170,7 @@ hosts.
 
 **Protection still provided**:
 - Docker socket is not mounted
-- Host filesystem access is limited to the workspace bind mount
+- Host filesystem access is limited to the workspace bind mount, plus the folder named by `SAGENT_DROP_DIR` when set
 - Resource limits still apply
 - The capability set is restricted
 
@@ -272,7 +272,7 @@ per-run directory (`~/.cache/sagent/clipboard.*`, mode 700, removed
 afterwards) at `/run/sagent/clipboard`. The sandbox's clipboard commands
 drop request files there; the agent answers with the host's `pbcopy`,
 `pbpaste` and `osascript` (or `wl-copy`/`wl-paste`/`xclip`). Request data is
-only ever clipboard content, never a command.
+only ever clipboard content, text or a PNG, never a command.
 
 This means the agent can read your clipboard at any time (a password you
 just copied) and set it to anything. `SAGENT_CLIPBOARD=0` turns the bridge
