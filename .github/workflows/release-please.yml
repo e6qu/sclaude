@@ -28,6 +28,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Creates the release (a draft, #100) from a merged release PR. It does not
+  # build the next release PR: a draft has no tag, and building the PR in the
+  # same run found "no latest release", took every commit since the first
+  # one and opened a 3.0.0 (#106). The `release-pr` job at the end does that
+  # once the release is published.
   release-please:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -41,6 +46,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
 
   # The tag the jobs below publish, and the ref to build it from: the release
   # is a draft until its wrappers are attached (#100), and a draft has no git
@@ -237,3 +243,21 @@ jobs:
           docker buildx imagetools inspect "$IMAGE:$version" | tee inspect.txt
           grep -q 'linux/amd64' inspect.txt
           grep -q 'linux/arm64' inspect.txt
+
+  # The next release PR, built only once any release this push made is
+  # published, so its base is a tag that exists (#106). A publish that
+  # failed leaves the PR alone: the draft is finished by hand first.
+  release-pr:
+    needs: [release-please, upload-assets]
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      needs.release-please.result == 'success' &&
+      (needs.upload-assets.result == 'success' || needs.upload-assets.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

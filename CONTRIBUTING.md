@@ -143,6 +143,9 @@ without review.
 
 A release is created as a draft and published only once both wrappers are
 attached and verified, so `latest` never points at a release without them.
+The next release PR is built after that, from the published tag; while a
+release is stuck as a draft there is no release PR, and none should be
+merged until the draft is published.
 A failure part way leaves a draft, or a published release with no images.
 Run the Release Please workflow by hand with the tag to publish what is
 missing (it publishes the draft too):
