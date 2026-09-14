@@ -174,12 +174,15 @@ inside. `SAGENT_SESSIONS=all` additionally shares `~/.claude/file-history`,
 so `/rewind` reaches edits made on the other side — that store is not per
 project, so it hands the sandbox state from every workspace.
 
-**Commits are yours.** Neither agent signs its work in the sandbox: no
-`Co-Authored-By` trailer naming the tool, no "Generated with" line, in commit
-messages or pull request descriptions. Claude Code is told through a policy
-file in the image, which nothing in the config volume can override; Codex has
-no local switch for it, so the rule goes into the standing instructions it
-already reads. `SAGENT_AI_ATTRIBUTION=1` puts the footers back.
+**Commits are yours.** Claude Code does not sign its work in the sandbox: no
+`Co-Authored-By` trailer, no "Generated with" line, in commit messages or
+pull request descriptions. It is told through a policy file in the image
+(`attribution` with both texts empty), which nothing in the config volume can
+override; `SAGENT_AI_ATTRIBUTION=1` puts the footers back. Codex has no local
+switch: whether it signs is a policy of the ChatGPT workspace you sign in
+with, computed by OpenAI's backend and sent to the CLI on each run with
+instructions that override anything in `AGENTS.md`. An API-key sign-in has
+it off.
 
 **Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
 `xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
@@ -252,7 +255,8 @@ Every `sclaude` command exists for `scodex` too.
 | `SAGENT_JAVA_VERSION` | a major version, or `none` | `26` |
 | `SAGENT_TOOLS` | `all`, `none`, `js`, `java`, `infra`, `cloud`, or names | `all` |
 | `SAGENT_APT_MIRROR` | an Ubuntu mirror URL for image builds | Ubuntu's archive |
-| `SAGENT_AI_ATTRIBUTION` | `0`, `1` — agent footers in commits and PRs | `0` |
+| `SAGENT_AI_ATTRIBUTION` | `0`, `1` — Claude Code's footers in commits and PRs | `0` |
+| `SAGENT_VOLUME_SUFFIX` | suffix on every volume name: a separate set of sandbox state | none |
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a
 setting can differ per tool — `scodex` shares every workspace's Codex history

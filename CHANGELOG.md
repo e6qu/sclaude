@@ -2,61 +2,10 @@
 
 ## [3.0.0](https://github.com/e6qu/sclaude/compare/v2.19.3...v3.0.0) (2026-09-14)
 
-
-### ⚠ BREAKING CHANGES
-
-* harden sclaude for cross-platform use, add CI and release automation ([#1](https://github.com/e6qu/sclaude/issues/1))
-
-### Features
-
-* `status` snapshot and `doctor` diagnostics commands ([#36](https://github.com/e6qu/sclaude/issues/36)) ([c848ca7](https://github.com/e6qu/sclaude/commit/c848ca749c0ef40b377048fd560f60cdae0eff59))
-* ~/.local/share gets its own volume, so uv tools survive ([#60](https://github.com/e6qu/sclaude/issues/60)) ([df249db](https://github.com/e6qu/sclaude/commit/df249dbd63f61ed96618c82df07caa2761811467))
-* add Codex sandbox wrapper, engine selection, and pre-commit hooks ([#6](https://github.com/e6qu/sclaude/issues/6)) ([3afc723](https://github.com/e6qu/sclaude/commit/3afc7234e92585070d13cb58a58c5a9059b68953))
-* add devcontainers, gh CLI, fix bugs [#26](https://github.com/e6qu/sclaude/issues/26)-32 ([#4](https://github.com/e6qu/sclaude/issues/4)) ([e754f07](https://github.com/e6qu/sclaude/commit/e754f0770cfd2c76b84d2e6d634df5c2f9549363))
-* add install/update instructions to GitHub release notes ([9bdcc65](https://github.com/e6qu/sclaude/commit/9bdcc6570c096715cfd81dd812c5630c340eb564))
-* CA bundle for TLS-inspecting proxies, Rancher Desktop guidance, symlink-safe workspace mounts ([#32](https://github.com/e6qu/sclaude/issues/32)) ([5793fb5](https://github.com/e6qu/sclaude/commit/5793fb5037e2f6308d1a5078d607c922cec19b2b))
-* cloud and infrastructure tooling, from a mirror that keeps up ([#77](https://github.com/e6qu/sclaude/issues/77)) ([15dc126](https://github.com/e6qu/sclaude/commit/15dc1260e4834a3392f821646e8ab35993477efa))
-* configurable toolchains with latest defaults, JS/Java tooling, self-clearing caches, disk usage report ([#34](https://github.com/e6qu/sclaude/issues/34)) ([485620b](https://github.com/e6qu/sclaude/commit/485620b52f66aa09d96edfd0cb95699fbcd8e4af))
-* detect TLS interception before every build and take the CA from the host trust store ([#38](https://github.com/e6qu/sclaude/issues/38)) ([d46e9ac](https://github.com/e6qu/sclaude/commit/d46e9ac62b0cd6b85582682a53faefea25177d0a))
-* harden sclaude for cross-platform use, add CI and release automation ([#1](https://github.com/e6qu/sclaude/issues/1)) ([6385591](https://github.com/e6qu/sclaude/commit/6385591dcee4586fdb40d8db23cd528c1059b9b8))
-* host clipboard bridge, both ways, text and images ([#48](https://github.com/e6qu/sclaude/issues/48)) ([e8e65fd](https://github.com/e6qu/sclaude/commit/e8e65fd4f1307295fa0e0667b9928067b4c2d4d5))
-* host clipboard, terminal identity, git config and gh login inside the sandbox ([#42](https://github.com/e6qu/sclaude/issues/42)) ([bf8949a](https://github.com/e6qu/sclaude/commit/bf8949a5ddb56e42eb63ee535632737d10dd7045))
-* idempotent update, --force-rebuild flag, wrapper version display, deeper smoke tests ([#10](https://github.com/e6qu/sclaude/issues/10)) ([feb212c](https://github.com/e6qu/sclaude/commit/feb212cb6685140f9e717fb0574cb05af581c5bc))
-* install without sudo, migrate old installs, and fix what review found ([#70](https://github.com/e6qu/sclaude/issues/70)) ([8a8f36c](https://github.com/e6qu/sclaude/commit/8a8f36cb400eaac3f56ea31789eca32dcf98fb41))
-* nested containers by default, engine flavor autodetection, config file, browser-open shim ([#18](https://github.com/e6qu/sclaude/issues/18)) ([55ebd08](https://github.com/e6qu/sclaude/commit/55ebd08de2f9b94d92f9666f0ddd9fabeb4a7382))
-* publish the sandbox image per architecture with a multi-arch manifest ([#46](https://github.com/e6qu/sclaude/issues/46)) ([bbaac8b](https://github.com/e6qu/sclaude/commit/bbaac8be6323cf5cb1c486ad43dac05bf8523881))
-* SAGENT_GIT_PROTOCOL, ssh by default when the host gh uses it ([#44](https://github.com/e6qu/sclaude/issues/44)) ([b7a0a68](https://github.com/e6qu/sclaude/commit/b7a0a68ab2494ba0669895f225cdb96c52018bed))
-* self-update wrappers on update + pre-commit and CI from prior PR ([#8](https://github.com/e6qu/sclaude/issues/8)) ([b94b17a](https://github.com/e6qu/sclaude/commit/b94b17afeacf67dec52f66e7f4906bb3b39ebfd6))
-* session state, release notes in update, and a migration that asks first ([#75](https://github.com/e6qu/sclaude/issues/75)) ([de5dbb9](https://github.com/e6qu/sclaude/commit/de5dbb94c81edfd04e6644a8abfa2c2eac9c597b))
-* share session transcripts with the host, both ways ([#73](https://github.com/e6qu/sclaude/issues/73)) ([23e969e](https://github.com/e6qu/sclaude/commit/23e969e0e2322a27dedad98c72dfa9035df699ae))
-* working sign-in from inside the sandbox, shell command, everyday utilities ([#40](https://github.com/e6qu/sclaude/issues/40)) ([94c46f3](https://github.com/e6qu/sclaude/commit/94c46f36dd0ec252d6fe7958a0ee531acf9f08ed))
-
-
-### Bug Fixes
-
-* /tmp workspaces shadowed by tmpfs; refuse / as workspace ([#24](https://github.com/e6qu/sclaude/issues/24)) ([375d81e](https://github.com/e6qu/sclaude/commit/375d81e99ddc2a0cd456c676aba49d7e51c514cd))
-* build release assets from the tag, not the triggering commit ([#30](https://github.com/e6qu/sclaude/issues/30)) ([dae7747](https://github.com/e6qu/sclaude/commit/dae7747a98ab63cb5180ba8c95cb3926e5cead0b))
-* build the macOS test image once on Linux and load it on the VMs ([#83](https://github.com/e6qu/sclaude/issues/83)) ([6a25a65](https://github.com/e6qu/sclaude/commit/6a25a6587b24e823d1d56cf7a6bf6da6b3339b15))
-* carry over the identity git actually uses in the workspace ([#56](https://github.com/e6qu/sclaude/issues/56)) ([efc8c45](https://github.com/e6qu/sclaude/commit/efc8c456452e2ada640d90bff0461ae4c625dc36))
-* clamp nested podman log noise; prune stale CONTRIBUTING test list ([#26](https://github.com/e6qu/sclaude/issues/26)) ([902ac99](https://github.com/e6qu/sclaude/commit/902ac99882e1dd85f18815b35399fec4d576e401))
-* corrupted release-check cache crash; expand CI and local test coverage ([#14](https://github.com/e6qu/sclaude/issues/14)) ([e3da91f](https://github.com/e6qu/sclaude/commit/e3da91f6da8b922a4b3eef4ad893a0ab6d44f2d9))
-* image loading, pip, UID-1000 sudo, and SELinux support across docker/podman ([#12](https://github.com/e6qu/sclaude/issues/12)) ([f18cfe4](https://github.com/e6qu/sclaude/commit/f18cfe4a1fcac90dddb1471cdb369aa66617b603))
-* keep the agent's name out of commits, and stop CI losing releases ([#80](https://github.com/e6qu/sclaude/issues/80)) ([d1f8c7d](https://github.com/e6qu/sclaude/commit/d1f8c7d816e9b868cef74241d5dbe89564c4306a))
-* let a half-published release be finished ([#62](https://github.com/e6qu/sclaude/issues/62)) ([b42ecb7](https://github.com/e6qu/sclaude/commit/b42ecb7b7424149a8537530290cce7888827ce10))
-* no tar warnings from the host state sync ([#51](https://github.com/e6qu/sclaude/issues/51)) ([012a5b4](https://github.com/e6qu/sclaude/commit/012a5b4ad8e5fe7c78455025b584ee83c7db0d60))
-* publish jobs opt out of the inherited skip ([#66](https://github.com/e6qu/sclaude/issues/66)) ([9d537e4](https://github.com/e6qu/sclaude/commit/9d537e4e1f439381600cb0ee8c6172627d06d3ef))
-* publish jobs run on a manual release finish ([#64](https://github.com/e6qu/sclaude/issues/64)) ([50a3d55](https://github.com/e6qu/sclaude/commit/50a3d55a3ff7fecfeb9636dd3b24c92ad76cdf5a))
-* publish releases only once their wrappers are attached, and update T42 ([#85](https://github.com/e6qu/sclaude/issues/85)) ([89a7570](https://github.com/e6qu/sclaude/commit/89a7570387362ac59a274af5deb2427eec001d8e))
-* publish smoke test reads the image labels, not the metadata file ([#55](https://github.com/e6qu/sclaude/issues/55)) ([193d6a4](https://github.com/e6qu/sclaude/commit/193d6a45c1b1bfc540795d1c07ce8ca45f18086f))
-* release creation needs attestation permissions ([#65](https://github.com/e6qu/sclaude/issues/65)) ([7fb1f2c](https://github.com/e6qu/sclaude/commit/7fb1f2c39df6648c8dd88e2091a849cfcfd4d8af))
-* release-please needs issues write for its release labels ([#67](https://github.com/e6qu/sclaude/issues/67)) ([a192b77](https://github.com/e6qu/sclaude/commit/a192b77f5ad7bc5c0a38124db86ab96d7fb7dd65))
-* reset leaves pinned volumes silently; boy-scout doc and test hardening ([#21](https://github.com/e6qu/sclaude/issues/21)) ([63cac3b](https://github.com/e6qu/sclaude/commit/63cac3bdc59cf7a45fc2ca5081099ad2c1665fb1))
-* T10 CI validity after releases; idempotent release workflow with asset verification ([#16](https://github.com/e6qu/sclaude/issues/16)) ([368179a](https://github.com/e6qu/sclaude/commit/368179a194957c821ff376cb7728f84dc3546c64))
-
-
-### Performance Improvements
-
-* rebuild one layer for a CLI release, and stop rebuilding what is cached ([#53](https://github.com/e6qu/sclaude/issues/53)) ([c8d9ebc](https://github.com/e6qu/sclaude/commit/c8d9ebce962d881cc9d595239eaab7d1e0112d90))
+No changes since 2.19.3. The version was renumbered by a release automation
+defect (#106): the release PR was built while v2.19.3 was still a draft, so
+it took every commit since the first one and read the initial commit's
+breaking change as new.
 
 ## [2.19.3](https://github.com/e6qu/sclaude/compare/v2.19.2...v2.19.3) (2026-09-14)
 

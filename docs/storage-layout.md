@@ -92,8 +92,16 @@ sclaude and scodex carry credentials and host state into Docker volumes on each 
 3. Validate the credentials are JSON
 4. Write to the config volume and the home volume, owned by your UID, secrets 600
 
+Credentials go in only when the host copy is the newer one: Claude by
+`expiresAt`, Codex by `last_refresh`. Refresh tokens rotate, and the sandbox
+refreshes on its own, so an older host copy over a newer sandbox one was a
+logout (#102).
+
 `sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
 credentials, the gh token, with ssh your private keys.
+
+`SAGENT_VOLUME_SUFFIX` puts a suffix on every volume name, a second set of
+sandbox state. The e2e suite runs on `-e2e` volumes and never touches yours.
 
 ## Why volumes rather than host directories
 

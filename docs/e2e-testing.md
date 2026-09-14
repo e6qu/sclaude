@@ -18,7 +18,7 @@ Linux, against Docker or Podman.
 | T03: Piped input (no TTY) | Non-TTY detection, `-it` flag handling | #6 |
 | T04: `--yolo` flag conversion | Flag rewriting | -- |
 | T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
-| T05: Credential sync | macOS Keychain / Linux file-based creds | #12, #14, #16 |
+| T05: Credential sync keeps the newer copy | Linux: a host credential lands in the volume, a sandbox copy with a later `expiresAt` survives the next run, a newer host copy replaces it; macOS: the keychain read runs | #12, #14, #16, #102 |
 | T06: Volume creation & permissions | Shared user volumes writable by agent user | #22 |
 | T07: Volume persistence | Data survives across container runs | -- |
 | T08: Cleanup command | Old image removal | -- |
@@ -48,7 +48,7 @@ Linux, against Docker or Podman.
 | T20a: Host git config, gh login and SSH sync | Host global git config lands in the home volume minus host-only keys (signing, credential helpers, editor, host paths), multi-valued keys and the excludes file intact; gh tokens per host (env token masked); with `SAGENT_GIT_PROTOCOL=https` every host gets the SSH-to-HTTPS rewrite and no `~/.ssh` is synced; unset it follows the host gh (ssh): no rewrite, `~/.ssh` synced 700/600 by manifest, a sandbox-made key untouched, and removed again on the next https run; `~/.gitconfig` exists; synced git files mirror the host | -- |
 | T20c: Workspace git identity | An identity only the repo provides (invisible to a global-config read) is carried into the sandbox, so commits there have an author | -- |
 | T20b: Sync tar quiet on clock skew | The extraction command read out of the wrapper stays silent on a tarball dated in the future (a host clock ahead of the engine VM made GNU tar warn per file) | -- |
-| T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config` | #40 |
+| T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config`; an `auth.json` with a later `last_refresh` in the volume survives the next run and a newer host copy replaces it | #40, #102 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
 | T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
@@ -82,9 +82,10 @@ Linux, against Docker or Podman.
 | T46: Timeout helper reaps its own timer | After a command finishes, the harness's timer subshell and its `sleep` are both gone | -- |
 | T47: Apt mirror rewrites the image sources | Unset, no mirror layer and the default archive; set, the layer appears, the image hash changes, a missing trailing slash is added, and the `sed` it emits rewrites every stanza of a real sources file (security and ports included); a non-URL is refused | -- |
 | T48: A test is retried only when the engine went away | The dead-engine signature is recognised and a plain assertion failure is not; a test that fails that way once is retried and reported as a pass, saying RETRY; a real failure is reported once, unretried | -- |
-| T49: Agent attribution is off by default | The image carries Claude Code's policy file with `includeCoAuthoredBy` false and valid JSON; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; an invalid value is refused; the Codex instructions staged for the sandbox gain the rule while the host file is untouched, and do not with attribution on | -- |
+| T49: Agent attribution is off by default | The image carries Claude Code's policy file with `attribution.commit` and `attribution.pr` empty; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; anything but 0 or 1 is refused | #103, #104 |
 | T50: mcp subcommand runs without the yolo flag | With a stub engine recording argv, `mcp list` gets no yolo flag from either wrapper while a prompt and `codex exec` still do; for real, a server added with `sclaude mcp add` is listed on the next run and gone after `mcp remove` | -- |
 | T51: `scodex mcp add` persists under a host config.toml | A server added inside is still there on the next run while the host `config.toml` is unchanged, and gone once the host file changes, which then wins | -- |
+| T52: Volume suffix keeps the suite off the real volumes | No test names a real volume, both wrappers mount only suffixed names under `SAGENT_VOLUME_SUFFIX`, a suffix with a space is refused, `volumes` lists the suffixed names | #101 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
