@@ -39,8 +39,32 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      sha: ${{ steps.release.outputs.sha }}
     steps:
+      - uses: actions/checkout@v5
+      - name: Tag the pending release commit
+        # A release created at a commit behind HEAD is refused to the
+        # Actions token once workflow files changed in between (#107), and
+        # that is exactly the state after a failed or cancelled release run.
+        # With the tag already there, the release attaches to it and the
+        # commit is never compared.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r '."."' .release-please-manifest.json)
+          tag="v$version"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag exists"
+            exit 0
+          fi
+          sha=$(gh pr list --state merged --base main --head release-please--branches--main \
+            --label "autorelease: pending" --search "release $version in:title" \
+            --json mergeCommit --jq '.[0].mergeCommit.oid')
+          if [ -z "$sha" ]; then
+            echo "no merged release PR for $version is pending"
+            exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null
+          echo "$tag -> $sha"
       - uses: googleapis/release-please-action@v4
         id: release
         with:
@@ -48,9 +72,9 @@ jobs:
           manifest-file: .release-please-manifest.json
           skip-github-pull-request: true
 
-  # The tag the jobs below publish, and the ref to build it from: the release
-  # is a draft until its wrappers are attached (#100), and a draft has no git
-  # tag yet, so on a push that is the release commit; by hand it is the tag.
+  # The tag the jobs below publish: the one release-please just created, or
+  # the one asked for by hand. It exists in both cases (see above), so it is
+  # also what they check out.
   tag:
     needs: release-please
     if: >-
@@ -60,25 +84,22 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       name: ${{ steps.pick.outputs.name }}
-      ref: ${{ steps.pick.outputs.ref }}
     steps:
       - id: pick
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
-          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
         run: |
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            name="$DISPATCH_TAG"; ref="$DISPATCH_TAG"
+            name="$DISPATCH_TAG"
           else
-            name="$RELEASE_TAG"; ref="$RELEASE_SHA"
+            name="$RELEASE_TAG"
           fi
-          if [ -z "$name" ] || [ -z "$ref" ]; then
+          if [ -z "$name" ]; then
             echo "::error::no tag to publish"
             exit 1
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
   upload-assets:
     needs: tag
@@ -86,11 +107,11 @@ jobs:
     if: always() && needs.tag.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      # The release commit, not github.sha: back-to-back merges shipped
-      # mis-stamped wrappers once (#67).
+      # The tag, not github.sha: back-to-back merges shipped mis-stamped
+      # wrappers once (#67).
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.tag.outputs.ref }}
+          ref: ${{ needs.tag.outputs.name }}
       - name: Upload scripts and update release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,7 +208,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.tag.outputs.ref }}
+          ref: ${{ needs.tag.outputs.name }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
