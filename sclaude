@@ -573,6 +573,7 @@ RUN set -eux; \
     env RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo \
         sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
         --component rustfmt --component clippy; \
+    rm /tmp/rustup-init.sh; \
     chmod -R a+w /opt/rust/rustup; \
     RUSTUP_HOME=/opt/rust/rustup /opt/rust/cargo/bin/cargo --version
 ENV RUSTUP_HOME=/opt/rust/rustup

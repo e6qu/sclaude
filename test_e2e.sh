@@ -2494,7 +2494,8 @@ EOF
 # archives; they are the one shape allowed to pipe.
 run_test "T55: build downloads go to a file first" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
-    joined=$("$1" dockerfile | sed -e ":a" -e "/\\\\$/N; s/\\\\\\n//; ta")
+    # Continuation lines joined (awk: BSD sed cannot match a newline).
+    joined=$("$1" dockerfile | awk "{ if (sub(/\\\\$/, \"\")) printf \"%s\", \$0; else print }")
     if echo "$joined" | grep -oE "curl [^|;]*\\| *(tar|sh|bash|env|gpg|unzip|tee)\\b" | grep -q .; then
         echo "a build download is piped into its consumer:" >&2
         echo "$joined" | grep -oE "curl [^|;]*\\| *(tar|sh|bash|env|gpg|unzip|tee)\\b" >&2
