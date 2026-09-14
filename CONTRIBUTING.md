@@ -143,25 +143,36 @@ without review.
 
 A release is created as a draft, on a tag the workflow pushes first, and
 published only once both wrappers are attached and verified, so `latest`
-never points at a release without them.
-The next release PR is built after that, from the published tag; while a
-release is stuck as a draft there is no release PR, and none should be
-merged until the draft is published.
-A failure part way leaves a draft, or a published release with no images.
-Run the Release Please workflow by hand with the tag to publish what is
-missing (it publishes the draft too):
+never points at a release without them. The next release PR is built after
+that, from the published tag; while a release is stuck as a draft there is
+no release PR, and none should be merged until the draft is published.
+
+A failure after the release exists leaves a draft, or a published release
+with no images. Run the workflow by hand with the tag to publish what is
+missing (it publishes the draft too); that path skips release-please itself
+and runs the publishing jobs only, so it is safe to repeat:
 
 ```bash
 gh workflow run release-please.yml -f tag=v2.15.1
 ```
 
-That path skips release-please itself and runs the publishing jobs only, so
-it is safe to repeat and cannot cut a release by accident.
+A failure before the release exists is the other case: once anything else
+lands on `main` after the release commit, and it touches a workflow file,
+GitHub lets no Actions token tag or release that commit (#107). The job
+says so. Finish it with your own credentials, with the version from
+`.release-please-manifest.json` and the merged release PR's commit:
 
-If release-please stops before creating the release at all, its pull request
-keeps the `autorelease: pending` label and every later run retries that same
-version instead of moving on. After publishing that version, swap the label
-for `autorelease: tagged` so the next merge releases what comes after it.
+```bash
+git push origin <sha>:refs/tags/v3.0.0
+awk '/^## \[3\.0\.0\]/{f=1; next} f&&/^## \[/{exit} f' CHANGELOG.md > notes.md
+gh release create v3.0.0 --draft --title v3.0.0 --notes-file notes.md
+gh pr edit <release PR> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+gh workflow run release-please.yml -f tag=v3.0.0
+```
+
+The label swap matters: with `autorelease: pending` still on the PR, every
+later run retries that same version instead of moving on. The next push to
+`main` then builds the release PR for what came after.
 
 ## Adding a Bug Fix
 

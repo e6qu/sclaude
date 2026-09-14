@@ -42,11 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Tag the pending release commit
-        # A release created at a commit behind HEAD is refused to the
-        # Actions token once workflow files changed in between (#107), and
-        # that is exactly the state after a failed or cancelled release run.
-        # With the tag already there, the release attaches to it and the
-        # commit is never compared.
+        # The release is a draft (#100) and a draft makes no tag, so the tag
+        # is pushed here for the jobs below to check out. Once a release
+        # commit sits behind HEAD with workflow files changed in between,
+        # the Actions token may neither tag it nor release it (#107): that
+        # is finished by hand, see CONTRIBUTING.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -63,7 +63,10 @@ jobs:
             echo "no merged release PR for $version is pending"
             exit 0
           fi
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null; then
+            echo "::error::GitHub refuses the Actions token a tag at $sha: the release commit is behind HEAD and workflow files changed since (#107). Finish $tag by hand: CONTRIBUTING, 'When a release does not finish'."
+            exit 1
+          fi
           echo "$tag -> $sha"
       - uses: googleapis/release-please-action@v4
         id: release
