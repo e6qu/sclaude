@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/e6qu/sclaude/compare/v3.0.1...v3.1.0) (2026-09-14)
+
+
+### Features
+
+* image clipboard both ways for both agents, and a drop folder for files handed to the agent ([#92](https://github.com/e6qu/sclaude/issues/92)) ([7979075](https://github.com/e6qu/sclaude/commit/7979075545b582e37dd68258048d946b7a49377f))
+
 ## [3.0.1](https://github.com/e6qu/sclaude/compare/v3.0.0...v3.0.1) (2026-09-14)
 
 

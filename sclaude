@@ -24,7 +24,7 @@ YOLO_FLAG="--dangerously-skip-permissions"
 # Subcommands that manage the CLI rather than run a session; they get no
 # yolo flag. Anything else in first position is a prompt.
 NO_YOLO_SUBCOMMANDS="agents attach auth auto-mode doctor gateway import install logs mcp plugin plugins project respawn rm setup-token stop kill ultrareview update upgrade"
-WRAPPER_VERSION="3.0.1" # x-release-please-version
+WRAPPER_VERSION="3.1.0" # x-release-please-version
 PROJECT_REPO="e6qu/sclaude"
 RELEASE_CHECK_INTERVAL_SECONDS="86400"
 ENGINE_CMD=""
