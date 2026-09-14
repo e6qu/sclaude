@@ -179,4 +179,4 @@ your shell startup file is marked `added by sclaude/scodex`.
 
 MIT
 
-Copyright 2026 [Adrian Mârza](https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/).
+Copyright 2025-2026 [Adrian Mârza](https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/).
