@@ -187,9 +187,21 @@ it off.
 **Clipboard** is the host's, both ways, text and images. `pbcopy`, `pbpaste`,
 `xclip`, `xsel`, `wl-copy` and `wl-paste` in the sandbox talk to the host
 clipboard through the wrapper. Selecting in Claude Code's TUI copies to your
-clipboard; Ctrl+V pastes a host screenshot. Works on macOS and Linux
-desktops; a headless Linux host has no clipboard to share. The sandbox can
-read your clipboard at any time; `SAGENT_CLIPBOARD=0` turns this off.
+clipboard; Ctrl+V pastes a host screenshot; `xclip -t image/png < shot.png`
+inside puts an image on your clipboard. Works on macOS and Linux desktops; a
+headless Linux host has no clipboard to share. The sandbox can read your
+clipboard at any time; `SAGENT_CLIPBOARD=0` turns this off. Codex reads
+clipboard images over X11 rather than through these commands, so the sandbox
+runs a small headless X display (`DISPLAY=:99`) whose clipboard is served
+from the host: Ctrl+V of a screenshot works in `scodex` too, and what it
+copies reaches your clipboard.
+
+**Files for the agent**: `~/sagent-drop` (created on first run) is mounted
+read-write in the sandbox at the same path, so a screenshot dropped on the
+terminal, or its path pasted, opens inside for either agent, and a file the
+agent writes there is on your disk. `SAGENT_DROP_DIR` names another folder.
+Nothing else of the host is mounted. To have macOS save screenshots there:
+`defaults write com.apple.screencapture location ~/sagent-drop`.
 
 Terminal identity (`TERM_PROGRAM` etc.) is forwarded, so Shift+Enter,
 clickable links and the selection hint work as on the host. With Claude
@@ -246,6 +258,7 @@ Every `sclaude` command exists for `scodex` too.
 | `SAGENT_CA_BUNDLE` | path to a PEM file with extra CA certificates | unset |
 | `SAGENT_GIT_PROTOCOL` | `ssh`, `https` | your gh setting |
 | `SAGENT_CLIPBOARD` | `0`, `1` — host clipboard in the sandbox | `1` |
+| `SAGENT_DROP_DIR` | the host folder mounted read-write at the same path inside | `~/sagent-drop` |
 | `SAGENT_SESSIONS` | `0`, `1`, `all` — share sessions with the host | `1` |
 | `SAGENT_UBUNTU_VERSION` | a release like `26.04` | `26.04` |
 | `SAGENT_NODE_VERSION` | a major version | `26` |

@@ -60,7 +60,7 @@ HOST_GID=$(id -g)
 
 # The config file is sourced; the environment wins over it. Arrays, not
 # strings: zsh does not word-split unquoted variables (T14).
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_DROP_DIR SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -151,6 +151,48 @@ fi
 # SAGENT_CLIPBOARD=0 keeps the host clipboard out of the sandbox (no bridge).
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
+fi
+# A host directory for files handed to the agent (screenshots, images),
+# mounted read-write inside at the same path so a pasted or dropped path
+# resolves there too. ~/sagent-drop unless SAGENT_DROP_DIR names another;
+# the default is created on first use, a named one must exist.
+DROP_DIR=""
+DROP_HOST_DIR=""
+if [ -z "${SAGENT_DROP_DIR:-}" ]; then
+    DROP_DIR="$HOME/sagent-drop"
+    if [ ! -d "$DROP_DIR" ] && ! mkdir -p "$DROP_DIR" 2>/dev/null; then
+        echo "[$SCRIPT_NAME] ERROR: could not create the drop folder $DROP_DIR; set SAGENT_DROP_DIR to a folder that exists." >&2
+        exit 1
+    fi
+    DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
+else
+    # shellcheck disable=SC2088  # a literal ~/ prefix is what is matched here
+    case "$SAGENT_DROP_DIR" in
+        "~") DROP_DIR="$HOME" ;;
+        "~/"*) DROP_DIR="$HOME/${SAGENT_DROP_DIR#"~/"}" ;;
+        *) DROP_DIR="$SAGENT_DROP_DIR" ;;
+    esac
+    case "$DROP_DIR" in
+        /*) ;;
+        *) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR must be an absolute path or start with ~/: $SAGENT_DROP_DIR" >&2; exit 1 ;;
+    esac
+    DROP_DIR="${DROP_DIR%/}"
+    if [ -z "$DROP_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=/: it would expose the entire host filesystem to the sandbox." >&2
+        exit 1
+    fi
+    if [ ! -d "$DROP_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is not a directory: $DROP_DIR" >&2
+        exit 1
+    fi
+    DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
+    if [ "$DROP_HOST_DIR" = / ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=$DROP_DIR: it resolves to /, the entire host filesystem." >&2
+        exit 1
+    fi
+    case "$DROP_DIR$DROP_HOST_DIR" in
+        *:*) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR contains a colon, which conflicts with Docker volume syntax: $DROP_DIR" >&2; exit 1 ;;
+    esac
 fi
 # 0: no transcripts shared. all: also SESSIONS_EXTRA_DIRS, which hold state
 # from every workspace.
@@ -695,7 +737,7 @@ RUN set -eux; \
 # Clipboard shims: pbcopy, pbpaste, wl-copy, wl-paste, xclip and xsel (what
 # the Claude and Codex CLIs and everyday scripts call) are one script that
 # talks to the wrapper's clipboard agent on the host through the bridge
-# directory mounted at /run/sagent/clipboard: copy, read as text, list the
+# directory mounted at /run/sagent/clipboard: copy text or a PNG, read as text, list the
 # available targets, read a PNG. The host agent runs pbcopy/pbpaste/osascript
 # (macOS) or wl-copy/wl-paste or xclip (Linux). Without the bridge (the image
 # run on its own) a copy goes to the controlling terminal as OSC 52 and reads
@@ -705,7 +747,7 @@ RUN set -eux; \
         '#!/bin/sh' \
         '# sagent host-clipboard: the sandbox'"'"'s clipboard commands, served by the host.' \
         '# With the wrapper'"'"'s bridge mounted, requests go to the host clipboard agent' \
-        '# through /run/sagent/clipboard (copy, text, target list, PNG). Without it' \
+        '# through /run/sagent/clipboard (copy text or a PNG, text, target list, PNG). Without it' \
         '# (the image run on its own), copy goes out as OSC 52 and reads fail.' \
         'bridge=/run/sagent/clipboard' \
         'name=$(basename "$0")' \
@@ -753,13 +795,17 @@ RUN set -eux; \
         '}' \
         '' \
         'if [ "$mode" = copy ]; then' \
+        '    case "$target" in unsupported:*) fail "unsupported clipboard target ${target#unsupported:}" ;; esac' \
         '    if [ -d "$bridge" ]; then' \
+        '        kind=copy' \
+        '        [ "$target" = image/png ] && kind=copy-image' \
         '        id="$$-$(od -An -N4 -tu4 /dev/urandom | tr -d '"'"' '"'"')"' \
         '        cat > "$bridge/req-$id.tmp"' \
-        '        mv "$bridge/req-$id.tmp" "$bridge/req-$id.copy"' \
-        '        wait_gone "$bridge/req-$id.copy"' \
+        '        mv "$bridge/req-$id.tmp" "$bridge/req-$id.$kind"' \
+        '        wait_gone "$bridge/req-$id.$kind"' \
         '        exit 0' \
         '    fi' \
+        '    [ "$target" = image/png ] && fail "an image reaches the host clipboard only through the bridge (the image is running without the wrapper)"' \
         '    data=$(base64 -w0)' \
         '    if ( exec > /dev/tty ) 2>/dev/null; then' \
         '        exec > /dev/tty' \
@@ -791,6 +837,196 @@ RUN set -eux; \
         > /usr/local/bin/host-clipboard; \
     chmod 0755 /usr/local/bin/host-clipboard; \
     for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do ln -s host-clipboard "/usr/local/bin/$n"; done
+
+# An X display for programs that read the clipboard over X11 rather than
+# through xclip (Codex takes images that way): Xvfb, and a selection owner
+# that answers from the host clipboard through the shims. sagent-run
+# starts both for a run with the bridge mounted.
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb python3-xlib && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    mkdir -p /usr/local/lib/sagent; \
+    printf '%s\n' \
+        '#!/usr/bin/python3' \
+        '# sagent x11-clipboard: owns the X CLIPBOARD selection in the sandbox and' \
+        '# serves it from the host clipboard through the bridge shims, for programs' \
+        '# that speak X11 rather than run xclip (Codex reads images that way). What' \
+        '# another client puts on the selection is forwarded to the host, then served' \
+        '# from there again.' \
+        'import os' \
+        'import subprocess' \
+        'from Xlib import X, display' \
+        'from Xlib.protocol import event' \
+        '' \
+        'SHIM = "/usr/local/bin/xclip"' \
+        'READY = "/tmp/sagent-x11-clipboard.ready"' \
+        'CHUNK = 3 * 65536' \
+        '' \
+        '' \
+        'def host(args, data=None):' \
+        '    try:' \
+        '        r = subprocess.run([SHIM, "-selection", "clipboard"] + args, input=data, capture_output=True, timeout=15)' \
+        '    except (OSError, subprocess.SubprocessError):' \
+        '        return None' \
+        '    return r.stdout if r.returncode == 0 else None' \
+        '' \
+        '' \
+        'def host_targets():' \
+        '    out = host(["-t", "TARGETS", "-o"])' \
+        '    return set(out.decode("ascii", "replace").split()) if out else set()' \
+        '' \
+        '' \
+        'd = display.Display()' \
+        'screen = d.screen()' \
+        'win = screen.root.create_window(0, 0, 1, 1, 0, screen.root_depth, event_mask=X.PropertyChangeMask)' \
+        'atom = d.intern_atom' \
+        'CLIPBOARD, TARGETS, TIMESTAMP, INCR = atom("CLIPBOARD"), atom("TARGETS"), atom("TIMESTAMP"), atom("INCR")' \
+        'ATOM, INTEGER, UTF8, TEXT, PNG = atom("ATOM"), atom("INTEGER"), atom("UTF8_STRING"), atom("TEXT"), atom("image/png")' \
+        'TEXT_TARGETS = [UTF8, atom("text/plain;charset=utf-8"), atom("text/plain"), atom("STRING"), TEXT]' \
+        'PROP = atom("SAGENT_CLIPBOARD")' \
+        '' \
+        '' \
+        'def own():' \
+        '    win.set_selection_owner(CLIPBOARD, X.CurrentTime)' \
+        '    d.flush()' \
+        '' \
+        '' \
+        'def put(requestor, prop, kind, fmt, data):' \
+        '    # Appended in pieces: one request has a size limit, the property has not.' \
+        '    if fmt != 8:' \
+        '        requestor.change_property(prop, kind, 32, data)' \
+        '        return' \
+        '    mode = X.PropModeReplace' \
+        '    for i in range(0, max(len(data), 1), CHUNK):' \
+        '        requestor.change_property(prop, kind, 8, data[i:i + CHUNK], mode)' \
+        '        mode = X.PropModeAppend' \
+        '' \
+        '' \
+        'def answer(e):' \
+        '    prop = e.property or e.target' \
+        '    ok = True' \
+        '    if e.target == TARGETS:' \
+        '        targets = [TARGETS, TIMESTAMP] + TEXT_TARGETS' \
+        '        if "image/png" in host_targets():' \
+        '            targets.append(PNG)' \
+        '        put(e.requestor, prop, ATOM, 32, targets)' \
+        '    elif e.target == TIMESTAMP:' \
+        '        put(e.requestor, prop, INTEGER, 32, [0])' \
+        '    elif e.target == PNG:' \
+        '        data = host(["-t", "image/png", "-o"])' \
+        '        ok = data is not None' \
+        '        if ok:' \
+        '            put(e.requestor, prop, PNG, 8, data)' \
+        '    elif e.target in TEXT_TARGETS:' \
+        '        data = host(["-o"])' \
+        '        ok = data is not None' \
+        '        if ok:' \
+        '            put(e.requestor, prop, UTF8 if e.target == TEXT else e.target, 8, data)' \
+        '    else:' \
+        '        ok = False' \
+        '    e.requestor.send_event(event.SelectionNotify(time=e.time, requestor=e.requestor, selection=e.selection, target=e.target, property=prop if ok else 0))' \
+        '    d.flush()' \
+        '' \
+        '' \
+        'def read_property():' \
+        '    r = win.get_full_property(PROP, X.AnyPropertyType)' \
+        '    win.delete_property(PROP)' \
+        '    d.flush()' \
+        '    if r is None:' \
+        '        return None' \
+        '    if r.property_type != INCR:' \
+        '        return r.value' \
+        '    # A large value arrives in pieces, each announced on the property.' \
+        '    parts = []' \
+        '    while True:' \
+        '        e = d.next_event()' \
+        '        if e.type == X.PropertyNotify and e.atom == PROP and e.state == X.PropertyNewValue:' \
+        '            part = win.get_full_property(PROP, X.AnyPropertyType)' \
+        '            win.delete_property(PROP)' \
+        '            d.flush()' \
+        '            if part is None or len(part.value) == 0:' \
+        '                break' \
+        '            parts.append(bytes(part.value))' \
+        '    return b"".join(parts)' \
+        '' \
+        '' \
+        'def fetch(target):' \
+        '    win.convert_selection(CLIPBOARD, target, PROP, X.CurrentTime)' \
+        '    d.flush()' \
+        '    while True:' \
+        '        e = d.next_event()' \
+        '        if e.type == X.SelectionNotify:' \
+        '            return None if e.property == 0 else read_property()' \
+        '        if e.type == X.SelectionRequest and e.selection == CLIPBOARD:' \
+        '            answer(e)' \
+        '' \
+        '' \
+        'def as_bytes(v):' \
+        '    if v is None:' \
+        '        return None' \
+        '    return v.encode("utf-8", "replace") if isinstance(v, str) else bytes(v)' \
+        '' \
+        '' \
+        'def forward():' \
+        '    # Another client owns the selection now: what it holds goes to the host.' \
+        '    names = set()' \
+        '    targets = fetch(TARGETS)' \
+        '    if targets is not None and not isinstance(targets, (bytes, str)):' \
+        '        for a in targets:' \
+        '            try:' \
+        '                names.add(d.get_atom_name(int(a)))' \
+        '            except Exception:' \
+        '                pass' \
+        '    if "image/png" in names:' \
+        '        data = as_bytes(fetch(PNG))' \
+        '        if data:' \
+        '            host(["-t", "image/png"], data)' \
+        '        return' \
+        '    data = as_bytes(fetch(UTF8))' \
+        '    if data is None:' \
+        '        data = as_bytes(fetch(atom("STRING")))' \
+        '    if data is not None:' \
+        '        host([], data)' \
+        '' \
+        '' \
+        'own()' \
+        'with open(READY, "w") as f:' \
+        '    f.write(str(os.getpid()))' \
+        'while True:' \
+        '    ev = d.next_event()' \
+        '    if ev.type == X.SelectionRequest and ev.selection == CLIPBOARD:' \
+        '        try:' \
+        '            answer(ev)' \
+        '        except Exception:' \
+        '            pass' \
+        '    elif ev.type == X.SelectionClear and ev.atom == CLIPBOARD:' \
+        '        try:' \
+        '            forward()' \
+        '        except Exception:' \
+        '            pass' \
+        '        own()' \
+        > /usr/local/lib/sagent/x11-clipboard.py; \
+    printf '%s\n' \
+        '#!/bin/bash' \
+        '# sagent-run: starts the X display and its clipboard for a run with the host' \
+        '# bridge mounted, then runs the tool in its place.' \
+        'if [ -n "${DISPLAY:-}" ] && [ -d /run/sagent/clipboard ]; then' \
+        '    mkdir -p /tmp/.X11-unix 2>/dev/null || true' \
+        '    Xvfb "$DISPLAY" -screen 0 8x8x24 -nolisten tcp >/tmp/sagent-xvfb.log 2>&1 &' \
+        '    for _ in $(seq 1 60); do' \
+        '        [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] && break' \
+        '        sleep 0.05' \
+        '    done' \
+        '    rm -f /tmp/sagent-x11-clipboard.ready' \
+        '    /usr/bin/python3 /usr/local/lib/sagent/x11-clipboard.py >/tmp/sagent-x11-clipboard.log 2>&1 &' \
+        '    for _ in $(seq 1 100); do' \
+        '        [ -e /tmp/sagent-x11-clipboard.ready ] && break' \
+        '        sleep 0.05' \
+        '    done' \
+        '    [ -e /tmp/sagent-x11-clipboard.ready ] || echo "[sagent] the X clipboard did not come up in 5s; see /tmp/sagent-x11-clipboard.log" >&2' \
+        'fi' \
+        'exec "$@"' \
+        > /usr/local/bin/sagent-run; \
+    chmod 0755 /usr/local/lib/sagent/x11-clipboard.py /usr/local/bin/sagent-run
 
 # git on the host's behalf: gh serves the credentials it holds (synced from
 # the host's gh login, or GH_TOKEN) to git for GitHub over HTTPS. Whether
@@ -1364,6 +1600,7 @@ config_validate() {
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
+        SAGENT_DROP_DIR) ;;
         SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
         SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
         SAGENT_AI_ATTRIBUTION) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
@@ -1879,6 +2116,9 @@ EOF
         printf '%-13s %s\n' "Workspace:" "$PWD ($git_line; mounted from $(pwd -P))"
     else
         printf '%-13s %s\n' "Workspace:" "$PWD ($git_line)"
+    fi
+    if [ -n "$DROP_DIR" ]; then
+        printf '%-13s %s\n' "Drop dir:" "$DROP_DIR (read-write in the sandbox$([ -n "${SAGENT_DROP_DIR:-}" ] && echo ", SAGENT_DROP_DIR" || echo "; SAGENT_DROP_DIR names another"))"
     fi
 }
 
@@ -3243,6 +3483,20 @@ validate_workspace() {
                 exit 1
                 ;;
         esac
+        if [ -n "$DROP_HOST_DIR" ]; then
+            case "$DROP_HOST_DIR" in
+                "$home_host" | "$home_host"/* | "$extra_share" | "$extra_share"/*) ;;
+                *)
+                    echo "[$SCRIPT_NAME] ERROR: $tool shares only $home_host and $extra_share with its VM; SAGENT_DROP_DIR would mount empty:" >&2
+                    echo "  $DROP_HOST_DIR" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+    fi
+    if [ -n "$DROP_DIR" ] && { [ "$DROP_DIR" = "$WORKSPACE_PATH" ] || [ "$DROP_HOST_DIR" = "$WORKSPACE_HOST_PATH" ]; }; then
+        echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is the workspace itself ($DROP_DIR), which is mounted already." >&2
+        exit 1
     fi
 }
 
@@ -3288,6 +3542,13 @@ host_clipboard_copy() {   # stdin -> host clipboard
         macos) pbcopy ;;
         wayland) wl-copy ;;
         x11) xclip -selection clipboard ;;
+    esac
+}
+host_clipboard_copy_image() {   # PNG file -> host clipboard
+    case "$(host_clipboard_kind)" in
+        macos) osascript -e 'set the clipboard to (read (POSIX file "'"$1"'") as «class PNGf»)' >/dev/null ;;
+        wayland) wl-copy --type image/png < "$1" ;;
+        x11) xclip -selection clipboard -t image/png < "$1" ;;
     esac
 }
 
@@ -3341,8 +3602,9 @@ host_clipboard_paste() {
     esac
 }
 
-# Serves req-ID.copy (text to copy) and req-ID.paste (a target, answered with
-# res-ID.ok or res-ID.fail). Files land by rename, so visible means complete.
+# Serves req-ID.copy (text to copy), req-ID.copy-image (a PNG to copy) and
+# req-ID.paste (a target, answered with res-ID.ok or res-ID.fail). Files land
+# by rename, so visible means complete.
 clipboard_bridge_serve() {
     local dir="$1" parent=$$ f id target
     # $$ is the wrapper's pid even in this background subshell: stop with it
@@ -3351,6 +3613,11 @@ clipboard_bridge_serve() {
         for f in "$dir"/req-*.copy; do
             [ -e "$f" ] || continue
             host_clipboard_copy < "$f" || true
+            rm -f "$f"
+        done
+        for f in "$dir"/req-*.copy-image; do
+            [ -e "$f" ] || continue
+            host_clipboard_copy_image "$f" || true
             rm -f "$f"
         done
         for f in "$dir"/req-*.paste; do
@@ -3404,7 +3671,9 @@ start_clipboard_bridge() {
     clipboard_bridge_serve "$dir" &
     CLIPBOARD_BRIDGE_PID=$!
     printf '%s\n' "$CLIPBOARD_BRIDGE_PID" > "$dir/.agent-pid"
-    CLIPBOARD_BRIDGE_ARGS=(-v "$dir:/run/sagent/clipboard:rw" -e WAYLAND_DISPLAY=sagent-clipboard)
+    # DISPLAY names the X display sagent-run starts in the sandbox; its
+    # clipboard is served from this bridge.
+    CLIPBOARD_BRIDGE_ARGS=(-v "$dir:/run/sagent/clipboard:rw" -e WAYLAND_DISPLAY=sagent-clipboard -e DISPLAY=:99)
 }
 
 stop_clipboard_bridge() {
@@ -3466,6 +3735,10 @@ run_tool() {
 
     start_clipboard_bridge
     build_session_mount_args
+    local DROP_MOUNT_ARGS=()
+    if [ -n "$DROP_DIR" ]; then
+        DROP_MOUNT_ARGS=(-v "$DROP_HOST_DIR:$DROP_DIR:rw")
+    fi
 
     # label=disable: SELinux hosts cannot read the workspace otherwise (#57).
     # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
@@ -3475,6 +3748,7 @@ run_tool() {
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
         "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
+        "${DROP_MOUNT_ARGS[@]+"${DROP_MOUNT_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \
@@ -3528,7 +3802,7 @@ run_tool() {
         -e TERMINAL_EMULATOR \
         -e ZED_TERM \
         "$IMAGE_NAME" \
-        "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}" || rc=$?
+        sagent-run "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}" || rc=$?
     stop_clipboard_bridge
     return "$rc"
 }

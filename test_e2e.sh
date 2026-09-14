@@ -530,6 +530,8 @@ done
 out=$(printf hello | pbcopy 2>&1)
 [ "$out" = "$(printf "\033]52;c;aGVsbG8=\033\\\\")" ]
 printf hello | xclip -selection clipboard 2>&1 | grep -q "52;c;aGVsbG8="
+# An image cannot go out as OSC 52; without the bridge that fails loudly.
+printf png | xclip -selection clipboard -t image/png 2>&1 | grep -q "only through the bridge"
 # Without the bridge, reads fail loudly and print nothing on stdout.
 for c in pbpaste wl-paste "xclip -selection clipboard -t TARGETS -o" "xsel --clipboard --output"; do
     out=$($c 2>/dev/null) && { echo "$c should fail" >&2; exit 1; }
@@ -564,6 +566,7 @@ EOF
 #!/bin/sh
 case "\$*" in
     *"clipboard info"*) echo "«class PNGf», 9, string, 4" ;;
+    *"set the clipboard"*) in=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\([^\"]*\\)\".*/\\1/p"); cp "\$in" "$TMP/clip.png" ;;
     *PNGf*) out=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\(.*\\)\" with.*/\\1/p"); cp "$TMP/image.png" "\$out" ;;
 esac
 EOF
@@ -571,7 +574,7 @@ EOF
 #!/bin/sh
 target=UTF8_STRING; out=0
 while [ \$# -gt 0 ]; do case "\$1" in -t) target=\$2; shift ;; -o) out=1 ;; esac; shift; done
-if [ \$out = 0 ]; then cat > "$TMP/clip.txt"; exit 0; fi
+if [ \$out = 0 ]; then if [ "\$target" = image/png ]; then cat > "$TMP/clip.png"; else cat > "$TMP/clip.txt"; fi; exit 0; fi
 case "\$target" in
     TARGETS) printf "TARGETS\\nimage/png\\ntext/plain\\n" ;;
     image/png) cat "$TMP/image.png" ;;
@@ -615,9 +618,13 @@ EOF
         printf to-host-2 | wl-copy
         printf to-host-3 | xclip -selection clipboard
         printf to-host-4 | xsel --clipboard --input
+        printf png-to-host | xclip -selection clipboard -t image/png
+        printf png-to-host-2 | wl-copy --type image/png
+        ! printf x | xclip -selection clipboard -t text/html 2>/dev/null
         [ \"\$(ls -A /run/sagent/clipboard)\" = \"\" ]
     "
     [ "$(cat "$TMP/clip.txt")" = to-host-4 ]
+    [ "$(cat "$TMP/clip.png")" = png-to-host-2 ]
     # A request nobody answers fails loudly instead of hanging.
     kill "$AGENT"; wait "$AGENT" 2>/dev/null || true
     "$ENGINE" run --rm $SAGENT_TEST_USERNS -v "$BRIDGE_HOST:/run/sagent/clipboard:rw" "$SUITE_IMG" bash -ec "
@@ -655,10 +662,13 @@ STUB
     out=$("$1" shell -c "
         [ -d /run/sagent/clipboard ] || { echo NO-SPOOL; exit 1; }
         [ \"\$WAYLAND_DISPLAY\" = sagent-clipboard ] || { echo NO-DISPLAY; exit 1; }
+        [ \"\$DISPLAY\" = :99 ] || { echo NO-X-DISPLAY; exit 1; }
+        [ -S /tmp/.X11-unix/X99 ] || { echo NO-X-SOCKET; exit 1; }
+        [ -e /tmp/sagent-x11-clipboard.ready ] || { echo NO-X-CLIPBOARD; exit 1; }
         printf %s \"\$(pbpaste)\"
         printf to-the-host | pbcopy
     " 2>&1) || { echo "$out" >&2; exit 1; }
-    case "$out" in *NO-SPOOL*|*NO-DISPLAY*) echo "$out" >&2; exit 1 ;; esac
+    case "$out" in *NO-SPOOL*|*NO-DISPLAY*|*NO-X-*) echo "$out" >&2; exit 1 ;; esac
     # What the sandbox pasted came from the host stub...
     case "$out" in *from-the-host*) ;; *) echo "paste did not reach the host: $out" >&2; exit 1 ;; esac
     # ...and what it copied reached the host.
@@ -1694,7 +1704,7 @@ run_test "T38: tools/config commands" bash -ec '
 run_test "T39: status snapshot" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" status)
-    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard Volumes Workspace; do
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" Volumes Workspace; do
         echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
     done
     echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
@@ -2324,5 +2334,154 @@ STUB
     done
     SAGENT_VOLUME_SUFFIX=-t52 "$1" volumes | grep -q "^  sclaude-config-t52 "
 ' _ "$SCLAUDE" "$SCODEX" "${BASH_SOURCE[0]}"
+
+# ── T53: the drop folder, a host folder for files handed to the agent ─
+# ~/sagent-drop by default, created on first use; SAGENT_DROP_DIR names
+# another. Mounted read-write at its own path, so a pasted or dropped path
+# resolves inside; unsafe values are refused with a reason.
+run_test "T53: drop dir is mounted at its own path, unsafe values refused" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t53.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/drop" "$tmp/ws"
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    W="$1"
+    stub() { (cd "$tmp/ws" && env SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$@" "$W" mcp list 2>&1); }
+    # Mounted at its own path; a trailing slash is dropped.
+    stub SAGENT_DROP_DIR="$tmp/drop/" | grep -q -- "-v $tmp/drop:$tmp/drop:rw"
+    # Not set: the default folder, made on first use.
+    home_real=$(cd "$HOME" && pwd -P)
+    stub | grep -q -- "-v $home_real/sagent-drop:$HOME/sagent-drop:rw"
+    [ -d "$HOME/sagent-drop" ]
+    if stub | grep -q -- "$tmp/drop"; then echo "a named drop dir was mounted without the setting" >&2; exit 1; fi
+    refuse() {
+        want="$1"; shift
+        if out=$(stub "$@"); then echo "accepted: $*" >&2; exit 1; fi
+        echo "$out" | grep -q "$want" || { echo "wrong reason for $*: $out" >&2; exit 1; }
+    }
+    refuse "absolute path" SAGENT_DROP_DIR=relative/dir
+    refuse "not a directory: $tmp/missing" SAGENT_DROP_DIR="$tmp/missing"
+    refuse "not a directory: $HOME/sagent-t53-missing" SAGENT_DROP_DIR="~/sagent-t53-missing"
+    refuse "entire host filesystem" SAGENT_DROP_DIR=/
+    refuse "the workspace itself" SAGENT_DROP_DIR="$tmp/ws"
+    # A real run: a file put there on the host is read inside, one written
+    # inside is on the host afterwards.
+    printf in > "$tmp/drop/in.txt"
+    out=$(cd "$tmp/ws" && SAGENT_DROP_DIR="$tmp/drop" "$W" shell -c "cat $tmp/drop/in.txt; echo out > $tmp/drop/out.txt" 2>/dev/null)
+    [ "$out" = in ]
+    [ "$(cat "$tmp/drop/out.txt")" = out ]
+' _ "$SCLAUDE"
+
+# ── T54: the X clipboard in the sandbox is the host clipboard ────────
+# Codex reads images over X11, not through xclip. A real run against a
+# fake host clipboard: an X client (what arboard does) lists the targets,
+# reads the PNG and the text, then owns the selection with its own text,
+# which reaches the host, after which the sandbox takes the selection back.
+run_test "T54: X11 clipboard served from the host, both ways" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t54.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/bin" "$TMP/ws"
+    printf "png-bytes" > "$TMP/image.png"
+    printf "from-host" > "$TMP/clip.txt"
+    cat > "$TMP/bin/pbcopy" <<EOF
+#!/bin/sh
+cat > "$TMP/clip.txt"
+EOF
+    cat > "$TMP/bin/pbpaste" <<EOF
+#!/bin/sh
+cat "$TMP/clip.txt"
+EOF
+    cat > "$TMP/bin/osascript" <<EOF
+#!/bin/sh
+case "\$*" in
+    *"clipboard info"*) echo "«class PNGf», 9, string, 4" ;;
+    *"set the clipboard"*) in=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\([^\"]*\\)\".*/\\1/p"); cp "\$in" "$TMP/clip.png" ;;
+    *PNGf*) out=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\(.*\\)\" with.*/\\1/p"); cp "$TMP/image.png" "\$out" ;;
+esac
+EOF
+    cat > "$TMP/bin/xclip" <<EOF
+#!/bin/sh
+target=UTF8_STRING; out=0
+while [ \$# -gt 0 ]; do case "\$1" in -t) target=\$2; shift ;; -o) out=1 ;; esac; shift; done
+if [ \$out = 0 ]; then if [ "\$target" = image/png ]; then cat > "$TMP/clip.png"; else cat > "$TMP/clip.txt"; fi; exit 0; fi
+case "\$target" in
+    TARGETS) printf "TARGETS\\nimage/png\\ntext/plain\\n" ;;
+    image/png) cat "$TMP/image.png" ;;
+    *) cat "$TMP/clip.txt" ;;
+esac
+EOF
+    chmod +x "$TMP"/bin/*
+    export PATH="$TMP/bin:$PATH" DISPLAY=:9 SAGENT_SKIP_RELEASE_CHECK=1
+    unset WAYLAND_DISPLAY
+    # The X client, run inside from the workspace mount.
+    cat > "$TMP/ws/xclient.py" <<"EOF"
+import signal
+from Xlib import X, display
+from Xlib.protocol import event
+signal.alarm(30)
+d = display.Display()
+s = d.screen()
+w = s.root.create_window(0, 0, 1, 1, 0, s.root_depth, event_mask=X.PropertyChangeMask)
+A = d.intern_atom
+CLIP, TARGETS, UTF8, PNG, PROP = A("CLIPBOARD"), A("TARGETS"), A("UTF8_STRING"), A("image/png"), A("XCLIENT")
+def fetch(target):
+    w.convert_selection(CLIP, target, PROP, X.CurrentTime)
+    d.flush()
+    while True:
+        e = d.next_event()
+        if e.type == X.SelectionNotify:
+            if e.property == 0:
+                return None
+            r = w.get_full_property(PROP, X.AnyPropertyType)
+            w.delete_property(PROP)
+            d.flush()
+            return r.value if r else None
+owner = d.get_selection_owner(CLIP)
+assert getattr(owner, "id", owner) != 0, "nobody owns CLIPBOARD"
+names = {d.get_atom_name(int(a)) for a in fetch(TARGETS)}
+assert "image/png" in names and "UTF8_STRING" in names, names
+png = fetch(PNG)
+png = png.encode() if isinstance(png, str) else bytes(png)
+assert png == b"png-bytes", png
+txt = fetch(UTF8)
+txt = txt.encode() if isinstance(txt, str) else bytes(txt)
+assert txt == b"from-host", txt
+w.set_selection_owner(CLIP, X.CurrentTime)
+d.flush()
+while True:
+    e = d.next_event()
+    if e.type == X.SelectionRequest:
+        prop = e.property or e.target
+        if e.target == TARGETS:
+            e.requestor.change_property(prop, A("ATOM"), 32, [TARGETS, UTF8])
+        elif e.target == UTF8:
+            e.requestor.change_property(prop, UTF8, 8, b"from-codex")
+        else:
+            prop = 0
+        e.requestor.send_event(event.SelectionNotify(time=e.time, requestor=e.requestor, selection=e.selection, target=e.target, property=prop))
+        d.flush()
+    elif e.type == X.SelectionClear:
+        break
+print("X-CLIENT-OK")
+EOF
+    # The clipboard is owned before the tool starts: the first thing a run
+    # does may already be a paste.
+    out=$(cd "$TMP/ws" && "$1" shell -c "[ -e /tmp/sagent-x11-clipboard.ready ] || { echo NO-X-CLIPBOARD; exit 1; }; /usr/bin/python3 $TMP/ws/xclient.py" 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *X-CLIENT-OK*) ;; *) echo "$out" >&2; exit 1 ;; esac
+    [ "$(cat "$TMP/clip.txt")" = from-codex ]
+' _ "$SCLAUDE"
 
 print_results
