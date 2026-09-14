@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.1.1](https://github.com/e6qu/sclaude/compare/v3.1.0...v3.1.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* build downloads back off for up to three minutes ([#96](https://github.com/e6qu/sclaude/issues/96)) ([0046917](https://github.com/e6qu/sclaude/commit/0046917fcaff5145a212f937514ad97c3bcdf1e9))
+* build-time downloads retry, and CI shows a failed build's error ([#94](https://github.com/e6qu/sclaude/issues/94)) ([f716a7a](https://github.com/e6qu/sclaude/commit/f716a7a939596a3bf084ba17b798b92df2fde5fe))
+* every build download lands in a file before it is unpacked or run ([#97](https://github.com/e6qu/sclaude/issues/97)) ([d84d14a](https://github.com/e6qu/sclaude/commit/d84d14acd5546172ef3c4a04d0a23363902467c4))
+
 ## [3.1.0](https://github.com/e6qu/sclaude/compare/v3.0.1...v3.1.0) (2026-09-14)
 
 
