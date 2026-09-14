@@ -1,15 +1,15 @@
-# E2E Testing
+# Testing
 
-A single cross-platform test suite (`test_e2e.sh`) that runs on macOS and
-Linux, against Docker or Podman.
+One test suite, `test_e2e.sh`, runs on macOS and Linux against Docker or
+Podman.
 
 ## Prerequisites
 
 - Docker or Podman installed and running
-- bash (for running the test script)
-- zsh (for zsh compatibility tests; skipped gracefully if absent)
+- bash
+- zsh, for the zsh compatibility test; skipped when absent
 
-## Test Matrix
+## Test matrix
 
 | Test | What it validates | Bugs covered |
 |---|---|---|
@@ -91,15 +91,12 @@ Linux, against Docker or Podman.
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
-## Running the Tests
+## Running the tests
 
-**The suite is destructive to sandbox state on the selected engine**: T09
-and T37 delete `sclaude-`/`scodex-`/`sagent-` volumes (persisted credentials,
-packages, sessions), T36 replaces the pip volume, T10 force-rebuilds the
-shared image, and T31 builds a second image with a throwaway CA bundle
-(removed afterwards). Credentials
-re-sync automatically on the next run, but shell history, preferences, and
-installed packages in the sandbox are lost.
+The suite runs on its own volumes, named with the `-e2e` suffix, so your
+sandbox state is not touched. It builds the shared image, rebuilds it once
+without cache (T10), and builds a second image with a throwaway CA bundle
+(T31), which it removes afterwards.
 
 From the repo root on macOS or Linux:
 
@@ -147,7 +144,7 @@ devcontainer exec --workspace-folder . bash /workspaces/sclaude/test_e2e.sh
 These two configurations exercise real platform differences: SELinux label
 enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
 
-### CI (GitHub Actions)
+### CI
 
 For pushes to main and same-repo PRs, CI runs the suite across the full
 engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
@@ -183,7 +180,7 @@ own output away. `FAIL_OUTPUT_LINES` sets how many lines are shown (30).
 Only the test's own shell is traced; the wrappers and scripts it runs are
 not, so capturing their stderr is safe. The one thing the trace does reach
 is a group, subshell or shell function whose stderr is captured inside the
-test — `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)` — because the
+test, `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)`, because the
 trace follows file descriptor 2 into the capture. Do not assert on those;
 capture an external command instead. (`BASH_XTRACEFD`, which would avoid
 this, does not exist in the bash 3.2 that macOS ships.)
