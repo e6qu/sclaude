@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.3](https://github.com/e6qu/sclaude/compare/v2.19.2...v2.19.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* publish releases only once their wrappers are attached, and update T42 ([#85](https://github.com/e6qu/sclaude/issues/85)) ([89a7570](https://github.com/e6qu/sclaude/commit/89a7570387362ac59a274af5deb2427eec001d8e))
+
 ## [2.19.2](https://github.com/e6qu/sclaude/compare/v2.19.1...v2.19.2) (2026-09-13)
 
 
