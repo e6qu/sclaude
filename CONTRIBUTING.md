@@ -141,8 +141,9 @@ without review.
 
 ### When a release does not finish
 
-A release is created as a draft and published only once both wrappers are
-attached and verified, so `latest` never points at a release without them.
+A release is created as a draft, on a tag the workflow pushes first, and
+published only once both wrappers are attached and verified, so `latest`
+never points at a release without them.
 The next release PR is built after that, from the published tag; while a
 release is stuck as a draft there is no release PR, and none should be
 merged until the draft is published.
