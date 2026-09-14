@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/e6qu/sclaude/compare/v3.1.1...v3.1.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* T55 joins lines portably, and the rustup installer is removed after use ([#99](https://github.com/e6qu/sclaude/issues/99)) ([8d8e6ba](https://github.com/e6qu/sclaude/commit/8d8e6ba6b212aedcb9e5bd587cbf08f15af119bb))
+
 ## [3.1.1](https://github.com/e6qu/sclaude/compare/v3.1.0...v3.1.1) (2026-09-14)
 
 
