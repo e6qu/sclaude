@@ -1,6 +1,7 @@
 # sclaude / scodex
 
-Run [Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
+A claude/codex wrapper originally by Adrian Mârza. It runs
+[Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
 in a Docker or Podman sandbox. The CLI behaves as it does on the host, but it
 can only reach the current directory, one folder for files you hand it, and
 the host state listed below.
@@ -177,3 +178,5 @@ your shell startup file is marked `added by sclaude/scodex`.
 ## License
 
 MIT
+
+Copyright 2026 [Adrian Mârza](https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/).

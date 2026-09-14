@@ -26,8 +26,9 @@ You need Docker or Podman, bash, and shellcheck.
 - `sclaude` and `scodex` stay identical apart from the tool constants at
   the top. Test T24 fails when a shared function diverges.
 - Docs change in the same PR as the code. Delete what is no longer true.
-- Docs are plain ASCII: no em dashes, no emoji, no box-drawing. A hook
-  checks. Headings are sentence case; say what happens and stop.
+- Docs are plain ASCII apart from accented letters in names: no em
+  dashes, no emoji, no arrows, no box-drawing. A hook checks. Headings are
+  sentence case; say what happens and stop.
 
 Shell rules: `#!/usr/bin/env bash`, `printf` rather than `echo -e`, `[ ]`
 rather than `[[ ]]` unless you need pattern matching, `$(command)` rather

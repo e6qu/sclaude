@@ -34,9 +34,9 @@ repos:
   - repo: local
     hooks:
       - id: ascii-only-docs
-        name: docs are plain ASCII (no em dashes, no emoji, no box drawing)
+        name: docs are plain ASCII apart from accented letters (no em dashes, emoji, arrows or box drawing)
         language: pygrep
-        entry: '[^\x00-\x7F]'
+        entry: '[^\x00-\x7F\u00C0-\u024F]'
         files: ^(README|CONTRIBUTING|BUGS)\.md$|^docs/.*\.md$
 
       - id: forbid-pull-request-target
