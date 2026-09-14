@@ -104,6 +104,7 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 102 | A working sandbox login turned into a login prompt: the host credential was copied over the sandbox's on every run, and refresh tokens rotate, so a host copy older than the sandbox's refreshed one was a logout (Codex `auth.json` had the same sync) | The newer copy wins: Claude by `expiresAt`, Codex by `last_refresh` (an API-key `auth.json` has none and is copied as is) |
 | 103 | The sandbox policy file used `includeCoAuthoredBy`, which Claude Code deprecated in 2.0.62 for `attribution` and which only ever covered the commit trailer, so pull requests could still end with "Generated with Claude Code" | The policy file sets `attribution` with both `commit` and `pr` empty |
 | 104 | scodex appended a "do not sign your work" rule to the staged `AGENTS.md` (#80), but Codex's attribution is a setting of the signed-in ChatGPT workspace: the CLI fetches it on each run and, when it is on, injects instructions that say to ignore any earlier instruction disabling attribution; the rule was a no-op either way | The rule is gone; the README says where the switch is |
+| 105 | T31's image build on main failed with "Unable to connect to azure.archive.ubuntu.com" for every package of one `install`, seconds after the `update` in the same step had used that mirror: a connection the mirror dropped failed the build outright | The sandbox and dev container images set `Acquire::Retries "5"`, so apt retries a failed download itself, with its own backoff |
 
 ## False Positives
 

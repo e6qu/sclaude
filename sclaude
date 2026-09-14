@@ -397,6 +397,10 @@ DOCKERFILE_HEAD
 
     cat <<'DOCKERFILE_END'
 ENV DEBIAN_FRONTEND=noninteractive
+
+# A mirror can drop a connection between `update` and `install` (#105); apt
+# retries a failed download itself, with backoff, when told to.
+RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
 DOCKERFILE_END
 
     # A policy file outranks anything in the config volume. `attribution`

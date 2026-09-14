@@ -18,3 +18,7 @@ RUN set -eux; \
         done; \
         grep -Rqs -- "${APT_MIRROR}" /etc/apt/sources.list /etc/apt/sources.list.d/; \
     fi
+
+# A mirror can drop a connection between `update` and `install` (#105); apt
+# retries a failed download itself, with backoff, when told to.
+RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
