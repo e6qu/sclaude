@@ -2247,12 +2247,15 @@ STUB
     # Codex sessions keep it too.
     "$2" exec "query" | grep "STUB-RUN" | tail -1 | grep -qF -- "--dangerously-bypass-approvals-and-sandbox"
 
-    # For real: a server added through the wrapper is there on the next run,
-    # so it lives in the config volume.
-    unset SAGENT_CONTAINER_ENGINE
-    "$1" mcp add --transport http --scope user sagent-t50 https://example.invalid/mcp >/dev/null 2>&1
-    "$1" mcp list 2>/dev/null | grep -q "sagent-t50"
-    "$1" mcp remove --scope user sagent-t50 >/dev/null 2>&1
+    # For real, on the suite'"'"'s engine: a server added through the wrapper is
+    # there on the next run, so it lives in the config volume. (Unsetting the
+    # engine here let the wrapper pick docker on the podman job and build a
+    # second image from scratch, whose failure was thrown away, #111.)
+    export SAGENT_CONTAINER_ENGINE="$ENGINE"
+    out=$("$1" mcp add --transport http --scope user sagent-t50 https://example.invalid/mcp 2>&1) || { echo "$out" >&2; exit 1; }
+    out=$("$1" mcp list 2>&1) || { echo "$out" >&2; exit 1; }
+    echo "$out" | grep -q "sagent-t50" || { echo "the added server is not listed:" >&2; echo "$out" >&2; exit 1; }
+    out=$("$1" mcp remove --scope user sagent-t50 2>&1) || { echo "$out" >&2; exit 1; }
     if "$1" mcp list 2>/dev/null | grep -q "sagent-t50"; then
         echo "mcp remove left the server behind" >&2
         exit 1
@@ -2270,7 +2273,7 @@ run_test "T51: scodex mcp add persists under a host config.toml" bash -ec '
     printf "model = \"gpt-5\"\n" > "$tmp/codex/config.toml"
     export SAGENT_SKIP_RELEASE_CHECK=1 CODEX_HOME="$tmp/codex"
     "$ENGINE" volume rm scodex-config$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
-    "$1" mcp add sagent-t51 -- echo hi >/dev/null 2>&1
+    out=$("$1" mcp add sagent-t51 -- echo hi 2>&1) || { echo "$out" >&2; exit 1; }
     "$1" mcp list 2>/dev/null | grep -q sagent-t51
     # A run with the host file unchanged keeps the sandbox'"'"'s edit.
     "$1" mcp list 2>/dev/null | grep -q sagent-t51
