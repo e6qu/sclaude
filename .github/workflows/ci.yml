@@ -25,6 +25,9 @@ env:
   SAGENT_APT_MIRROR: http://azure.archive.ubuntu.com/ubuntu/
   # A cold image build does not fit the harness's default 600s.
   TEST_TIMEOUT_SECONDS: "1200"
+  # A build failure's own error sits above the Dockerfile excerpt the engine
+  # prints, beyond the default 30 lines (#110).
+  FAIL_OUTPUT_LINES: "120"
 
 jobs:
   # A run with every job filtered out is a failure to GitHub (#89). This job
