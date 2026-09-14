@@ -444,7 +444,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # curl, which fetches every toolchain below (#110): its settings file is
 # read by each later step of this build.
 RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries \
-    && printf 'retry = 5\nretry-delay = 3\nretry-all-errors\n' > /root/.curlrc
+    && printf 'retry = 8\nretry-max-time = 180\nretry-all-errors\n' > /root/.curlrc
 DOCKERFILE_END
 
     # A policy file outranks anything in the config volume. `attribution`
