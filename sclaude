@@ -831,6 +831,186 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/host-clipboard; \
     for n in pbcopy pbpaste wl-copy wl-paste xclip xsel; do ln -s host-clipboard "/usr/local/bin/$n"; done
 
+# An X display for programs that read the clipboard over X11 rather than
+# through xclip (Codex takes images that way): Xvfb, and a selection owner
+# that answers from the host clipboard through the shims. sagent-run
+# starts both for a run with the bridge mounted.
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb python3-xlib && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    mkdir -p /usr/local/lib/sagent; \
+    printf '%s\n' \
+        '#!/usr/bin/python3' \
+        '# sagent x11-clipboard: owns the X CLIPBOARD selection in the sandbox and' \
+        '# serves it from the host clipboard through the bridge shims, for programs' \
+        '# that speak X11 rather than run xclip (Codex reads images that way). What' \
+        '# another client puts on the selection is forwarded to the host, then served' \
+        '# from there again.' \
+        'import subprocess' \
+        'from Xlib import X, display' \
+        'from Xlib.protocol import event' \
+        '' \
+        'SHIM = "/usr/local/bin/xclip"' \
+        'CHUNK = 3 * 65536' \
+        '' \
+        '' \
+        'def host(args, data=None):' \
+        '    try:' \
+        '        r = subprocess.run([SHIM, "-selection", "clipboard"] + args, input=data, capture_output=True, timeout=15)' \
+        '    except (OSError, subprocess.SubprocessError):' \
+        '        return None' \
+        '    return r.stdout if r.returncode == 0 else None' \
+        '' \
+        '' \
+        'def host_targets():' \
+        '    out = host(["-t", "TARGETS", "-o"])' \
+        '    return set(out.decode("ascii", "replace").split()) if out else set()' \
+        '' \
+        '' \
+        'd = display.Display()' \
+        'screen = d.screen()' \
+        'win = screen.root.create_window(0, 0, 1, 1, 0, screen.root_depth, event_mask=X.PropertyChangeMask)' \
+        'atom = d.intern_atom' \
+        'CLIPBOARD, TARGETS, TIMESTAMP, INCR = atom("CLIPBOARD"), atom("TARGETS"), atom("TIMESTAMP"), atom("INCR")' \
+        'ATOM, INTEGER, UTF8, TEXT, PNG = atom("ATOM"), atom("INTEGER"), atom("UTF8_STRING"), atom("TEXT"), atom("image/png")' \
+        'TEXT_TARGETS = [UTF8, atom("text/plain;charset=utf-8"), atom("text/plain"), atom("STRING"), TEXT]' \
+        'PROP = atom("SAGENT_CLIPBOARD")' \
+        '' \
+        '' \
+        'def own():' \
+        '    win.set_selection_owner(CLIPBOARD, X.CurrentTime)' \
+        '    d.flush()' \
+        '' \
+        '' \
+        'def put(requestor, prop, kind, fmt, data):' \
+        '    # Appended in pieces: one request has a size limit, the property has not.' \
+        '    if fmt != 8:' \
+        '        requestor.change_property(prop, kind, 32, data)' \
+        '        return' \
+        '    mode = X.PropModeReplace' \
+        '    for i in range(0, max(len(data), 1), CHUNK):' \
+        '        requestor.change_property(prop, kind, 8, data[i:i + CHUNK], mode)' \
+        '        mode = X.PropModeAppend' \
+        '' \
+        '' \
+        'def answer(e):' \
+        '    prop = e.property or e.target' \
+        '    ok = True' \
+        '    if e.target == TARGETS:' \
+        '        targets = [TARGETS, TIMESTAMP] + TEXT_TARGETS' \
+        '        if "image/png" in host_targets():' \
+        '            targets.append(PNG)' \
+        '        put(e.requestor, prop, ATOM, 32, targets)' \
+        '    elif e.target == TIMESTAMP:' \
+        '        put(e.requestor, prop, INTEGER, 32, [0])' \
+        '    elif e.target == PNG:' \
+        '        data = host(["-t", "image/png", "-o"])' \
+        '        ok = data is not None' \
+        '        if ok:' \
+        '            put(e.requestor, prop, PNG, 8, data)' \
+        '    elif e.target in TEXT_TARGETS:' \
+        '        data = host(["-o"])' \
+        '        ok = data is not None' \
+        '        if ok:' \
+        '            put(e.requestor, prop, UTF8 if e.target == TEXT else e.target, 8, data)' \
+        '    else:' \
+        '        ok = False' \
+        '    e.requestor.send_event(event.SelectionNotify(time=e.time, requestor=e.requestor, selection=e.selection, target=e.target, property=prop if ok else 0))' \
+        '    d.flush()' \
+        '' \
+        '' \
+        'def read_property():' \
+        '    r = win.get_full_property(PROP, X.AnyPropertyType)' \
+        '    win.delete_property(PROP)' \
+        '    d.flush()' \
+        '    if r is None:' \
+        '        return None' \
+        '    if r.property_type != INCR:' \
+        '        return r.value' \
+        '    # A large value arrives in pieces, each announced on the property.' \
+        '    parts = []' \
+        '    while True:' \
+        '        e = d.next_event()' \
+        '        if e.type == X.PropertyNotify and e.atom == PROP and e.state == X.PropertyNewValue:' \
+        '            part = win.get_full_property(PROP, X.AnyPropertyType)' \
+        '            win.delete_property(PROP)' \
+        '            d.flush()' \
+        '            if part is None or len(part.value) == 0:' \
+        '                break' \
+        '            parts.append(bytes(part.value))' \
+        '    return b"".join(parts)' \
+        '' \
+        '' \
+        'def fetch(target):' \
+        '    win.convert_selection(CLIPBOARD, target, PROP, X.CurrentTime)' \
+        '    d.flush()' \
+        '    while True:' \
+        '        e = d.next_event()' \
+        '        if e.type == X.SelectionNotify:' \
+        '            return None if e.property == 0 else read_property()' \
+        '        if e.type == X.SelectionRequest and e.selection == CLIPBOARD:' \
+        '            answer(e)' \
+        '' \
+        '' \
+        'def as_bytes(v):' \
+        '    if v is None:' \
+        '        return None' \
+        '    return v.encode("utf-8", "replace") if isinstance(v, str) else bytes(v)' \
+        '' \
+        '' \
+        'def forward():' \
+        '    # Another client owns the selection now: what it holds goes to the host.' \
+        '    names = set()' \
+        '    targets = fetch(TARGETS)' \
+        '    if targets is not None and not isinstance(targets, (bytes, str)):' \
+        '        for a in targets:' \
+        '            try:' \
+        '                names.add(d.get_atom_name(int(a)))' \
+        '            except Exception:' \
+        '                pass' \
+        '    if "image/png" in names:' \
+        '        data = as_bytes(fetch(PNG))' \
+        '        if data:' \
+        '            host(["-t", "image/png"], data)' \
+        '        return' \
+        '    data = as_bytes(fetch(UTF8))' \
+        '    if data is None:' \
+        '        data = as_bytes(fetch(atom("STRING")))' \
+        '    if data is not None:' \
+        '        host([], data)' \
+        '' \
+        '' \
+        'own()' \
+        'while True:' \
+        '    ev = d.next_event()' \
+        '    if ev.type == X.SelectionRequest and ev.selection == CLIPBOARD:' \
+        '        try:' \
+        '            answer(ev)' \
+        '        except Exception:' \
+        '            pass' \
+        '    elif ev.type == X.SelectionClear and ev.atom == CLIPBOARD:' \
+        '        try:' \
+        '            forward()' \
+        '        except Exception:' \
+        '            pass' \
+        '        own()' \
+        > /usr/local/lib/sagent/x11-clipboard.py; \
+    printf '%s\n' \
+        '#!/bin/bash' \
+        '# sagent-run: starts the X display and its clipboard for a run with the host' \
+        '# bridge mounted, then runs the tool in its place.' \
+        'if [ -n "${DISPLAY:-}" ] && [ -d /run/sagent/clipboard ]; then' \
+        '    mkdir -p /tmp/.X11-unix 2>/dev/null || true' \
+        '    Xvfb "$DISPLAY" -screen 0 8x8x24 -nolisten tcp >/tmp/sagent-xvfb.log 2>&1 &' \
+        '    for _ in $(seq 1 60); do' \
+        '        [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] && break' \
+        '        sleep 0.05' \
+        '    done' \
+        '    /usr/bin/python3 /usr/local/lib/sagent/x11-clipboard.py >/tmp/sagent-x11-clipboard.log 2>&1 &' \
+        'fi' \
+        'exec "$@"' \
+        > /usr/local/bin/sagent-run; \
+    chmod 0755 /usr/local/lib/sagent/x11-clipboard.py /usr/local/bin/sagent-run
+
 # git on the host's behalf: gh serves the credentials it holds (synced from
 # the host's gh login, or GH_TOKEN) to git for GitHub over HTTPS. Whether
 # SSH remotes are rewritten to HTTPS is decided per run (SAGENT_GIT_PROTOCOL)
@@ -3450,7 +3630,9 @@ start_clipboard_bridge() {
     clipboard_bridge_serve "$dir" &
     CLIPBOARD_BRIDGE_PID=$!
     printf '%s\n' "$CLIPBOARD_BRIDGE_PID" > "$dir/.agent-pid"
-    CLIPBOARD_BRIDGE_ARGS=(-v "$dir:/run/sagent/clipboard:rw" -e WAYLAND_DISPLAY=sagent-clipboard)
+    # DISPLAY names the X display sagent-run starts in the sandbox; its
+    # clipboard is served from this bridge.
+    CLIPBOARD_BRIDGE_ARGS=(-v "$dir:/run/sagent/clipboard:rw" -e WAYLAND_DISPLAY=sagent-clipboard -e DISPLAY=:99)
 }
 
 stop_clipboard_bridge() {
@@ -3563,7 +3745,7 @@ run_tool() {
         -e TERMINAL_EMULATOR \
         -e ZED_TERM \
         "$IMAGE_NAME" \
-        "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}" || rc=$?
+        sagent-run "$TOOL_BIN" "${tool_args[@]+"${tool_args[@]}"}" || rc=$?
     stop_clipboard_bridge
     return "$rc"
 }

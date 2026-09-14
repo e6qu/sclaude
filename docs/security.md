@@ -274,6 +274,12 @@ drop request files there; the agent answers with the host's `pbcopy`,
 `pbpaste` and `osascript` (or `wl-copy`/`wl-paste`/`xclip`). Request data is
 only ever clipboard content, text or a PNG, never a command.
 
+Programs that read the clipboard over X11 rather than by running `xclip`
+(Codex does, for images) see the same clipboard: `sagent-run` starts a
+headless `Xvfb` on `DISPLAY=:99` (unix socket only, no TCP) and a small
+daemon that owns the X selection and answers from the bridge. What another
+X client puts on the selection is forwarded to the host the same way.
+
 This means the agent can read your clipboard at any time (a password you
 just copied) and set it to anything. `SAGENT_CLIPBOARD=0` turns the bridge
 off; copies then go out as OSC 52 through the terminal and reads fail.

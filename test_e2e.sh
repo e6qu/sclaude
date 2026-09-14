@@ -662,10 +662,12 @@ STUB
     out=$("$1" shell -c "
         [ -d /run/sagent/clipboard ] || { echo NO-SPOOL; exit 1; }
         [ \"\$WAYLAND_DISPLAY\" = sagent-clipboard ] || { echo NO-DISPLAY; exit 1; }
+        [ \"\$DISPLAY\" = :99 ] || { echo NO-X-DISPLAY; exit 1; }
+        [ -S /tmp/.X11-unix/X99 ] || { echo NO-X-SOCKET; exit 1; }
         printf %s \"\$(pbpaste)\"
         printf to-the-host | pbcopy
     " 2>&1) || { echo "$out" >&2; exit 1; }
-    case "$out" in *NO-SPOOL*|*NO-DISPLAY*) echo "$out" >&2; exit 1 ;; esac
+    case "$out" in *NO-SPOOL*|*NO-DISPLAY*|*NO-X-*) echo "$out" >&2; exit 1 ;; esac
     # What the sandbox pasted came from the host stub...
     case "$out" in *from-the-host*) ;; *) echo "paste did not reach the host: $out" >&2; exit 1 ;; esac
     # ...and what it copied reached the host.
@@ -2375,6 +2377,104 @@ STUB
     out=$(cd "$tmp/ws" && SAGENT_DROP_DIR="$tmp/drop" "$W" shell -c "cat $tmp/drop/in.txt; echo out > $tmp/drop/out.txt" 2>/dev/null)
     [ "$out" = in ]
     [ "$(cat "$tmp/drop/out.txt")" = out ]
+' _ "$SCLAUDE"
+
+# ── T54: the X clipboard in the sandbox is the host clipboard ────────
+# Codex reads images over X11, not through xclip. A real run against a
+# fake host clipboard: an X client (what arboard does) lists the targets,
+# reads the PNG and the text, then owns the selection with its own text,
+# which reaches the host, after which the sandbox takes the selection back.
+run_test "T54: X11 clipboard served from the host, both ways" bash -ec '
+    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t54.XXXXXX")
+    trap "rm -rf \"$TMP\"" EXIT
+    TMP=$(cd "$TMP" && pwd -P)
+    mkdir -p "$TMP/bin" "$TMP/ws"
+    printf "png-bytes" > "$TMP/image.png"
+    printf "from-host" > "$TMP/clip.txt"
+    cat > "$TMP/bin/pbcopy" <<EOF
+#!/bin/sh
+cat > "$TMP/clip.txt"
+EOF
+    cat > "$TMP/bin/pbpaste" <<EOF
+#!/bin/sh
+cat "$TMP/clip.txt"
+EOF
+    cat > "$TMP/bin/osascript" <<EOF
+#!/bin/sh
+case "\$*" in
+    *"clipboard info"*) echo "«class PNGf», 9, string, 4" ;;
+    *"set the clipboard"*) in=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\([^\"]*\\)\".*/\\1/p"); cp "\$in" "$TMP/clip.png" ;;
+    *PNGf*) out=\$(printf "%s\\n" "\$@" | sed -n "s/.*POSIX file \"\\(.*\\)\" with.*/\\1/p"); cp "$TMP/image.png" "\$out" ;;
+esac
+EOF
+    cat > "$TMP/bin/xclip" <<EOF
+#!/bin/sh
+target=UTF8_STRING; out=0
+while [ \$# -gt 0 ]; do case "\$1" in -t) target=\$2; shift ;; -o) out=1 ;; esac; shift; done
+if [ \$out = 0 ]; then if [ "\$target" = image/png ]; then cat > "$TMP/clip.png"; else cat > "$TMP/clip.txt"; fi; exit 0; fi
+case "\$target" in
+    TARGETS) printf "TARGETS\\nimage/png\\ntext/plain\\n" ;;
+    image/png) cat "$TMP/image.png" ;;
+    *) cat "$TMP/clip.txt" ;;
+esac
+EOF
+    chmod +x "$TMP"/bin/*
+    export PATH="$TMP/bin:$PATH" DISPLAY=:9 SAGENT_SKIP_RELEASE_CHECK=1
+    unset WAYLAND_DISPLAY
+    # The X client, run inside from the workspace mount.
+    cat > "$TMP/ws/xclient.py" <<"EOF"
+import signal
+from Xlib import X, display
+from Xlib.protocol import event
+signal.alarm(30)
+d = display.Display()
+s = d.screen()
+w = s.root.create_window(0, 0, 1, 1, 0, s.root_depth, event_mask=X.PropertyChangeMask)
+A = d.intern_atom
+CLIP, TARGETS, UTF8, PNG, PROP = A("CLIPBOARD"), A("TARGETS"), A("UTF8_STRING"), A("image/png"), A("XCLIENT")
+def fetch(target):
+    w.convert_selection(CLIP, target, PROP, X.CurrentTime)
+    d.flush()
+    while True:
+        e = d.next_event()
+        if e.type == X.SelectionNotify:
+            if e.property == 0:
+                return None
+            r = w.get_full_property(PROP, X.AnyPropertyType)
+            w.delete_property(PROP)
+            d.flush()
+            return r.value if r else None
+owner = d.get_selection_owner(CLIP)
+assert getattr(owner, "id", owner) != 0, "nobody owns CLIPBOARD"
+names = {d.get_atom_name(int(a)) for a in fetch(TARGETS)}
+assert "image/png" in names and "UTF8_STRING" in names, names
+png = fetch(PNG)
+png = png.encode() if isinstance(png, str) else bytes(png)
+assert png == b"png-bytes", png
+txt = fetch(UTF8)
+txt = txt.encode() if isinstance(txt, str) else bytes(txt)
+assert txt == b"from-host", txt
+w.set_selection_owner(CLIP, X.CurrentTime)
+d.flush()
+while True:
+    e = d.next_event()
+    if e.type == X.SelectionRequest:
+        prop = e.property or e.target
+        if e.target == TARGETS:
+            e.requestor.change_property(prop, A("ATOM"), 32, [TARGETS, UTF8])
+        elif e.target == UTF8:
+            e.requestor.change_property(prop, UTF8, 8, b"from-codex")
+        else:
+            prop = 0
+        e.requestor.send_event(event.SelectionNotify(time=e.time, requestor=e.requestor, selection=e.selection, target=e.target, property=prop))
+        d.flush()
+    elif e.type == X.SelectionClear:
+        break
+print("X-CLIENT-OK")
+EOF
+    out=$(cd "$TMP/ws" && "$1" shell -c "/usr/bin/python3 $TMP/ws/xclient.py" 2>&1) || { echo "$out" >&2; exit 1; }
+    case "$out" in *X-CLIENT-OK*) ;; *) echo "$out" >&2; exit 1 ;; esac
+    [ "$(cat "$TMP/clip.txt")" = from-codex ]
 ' _ "$SCLAUDE"
 
 print_results

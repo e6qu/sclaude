@@ -191,9 +191,10 @@ clipboard; Ctrl+V pastes a host screenshot; `xclip -t image/png < shot.png`
 inside puts an image on your clipboard. Works on macOS and Linux desktops; a
 headless Linux host has no clipboard to share. The sandbox can read your
 clipboard at any time; `SAGENT_CLIPBOARD=0` turns this off. Codex reads
-clipboard images through the display protocol rather than these commands,
-so Ctrl+V of an image in `scodex` says "clipboard unavailable": hand it a
-file instead.
+clipboard images over X11 rather than through these commands, so the sandbox
+runs a small headless X display (`DISPLAY=:99`) whose clipboard is served
+from the host: Ctrl+V of a screenshot works in `scodex` too, and what it
+copies reaches your clipboard.
 
 **Files for the agent**: `SAGENT_DROP_DIR="~/Screenshots"` mounts that host
 folder read-write in the sandbox at the same path, so a screenshot dropped
