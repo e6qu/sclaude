@@ -83,6 +83,9 @@ Run the E2E test suite:
 bash test_e2e.sh
 ```
 
+The suite runs on its own `-e2e` volumes (`SAGENT_VOLUME_SUFFIX`), so a
+local run leaves your sandbox state alone.
+
 All tests must pass. The test matrix in
 [docs/e2e-testing.md](docs/e2e-testing.md) documents what each test covers.
 

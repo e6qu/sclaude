@@ -23,6 +23,8 @@ ENGINE="${SAGENT_CONTAINER_ENGINE:-docker}"
 # just $HOME), so such jobs point this somewhere under the home directory.
 SAGENT_TEST_TMPDIR="${SAGENT_TEST_TMPDIR:-/tmp}"
 export SAGENT_TEST_TMPDIR
+# The suite runs on its own set of volumes; yours stay untouched (#101).
+export SAGENT_VOLUME_SUFFIX="-e2e"
 # Tests that replicate run_tool's bind mounts need the wrapper's rootless-podman
 # user mapping too (#75); empty on every other engine.
 SAGENT_TEST_USERNS=""
@@ -76,31 +78,38 @@ run_test "T04: --yolo flag" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version -
 # ── T04b: --docker / --no-docker flags parse ─────────────────────────
 run_test "T04b: --docker flags" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 "$1" version --no-docker >/dev/null 2>&1 && SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_DOCKER=0 "$2" version >/dev/null 2>&1' _ "$SCLAUDE" "$SCODEX"
 
-# ── T05: credential sync ─────────────────────────────────────────────
+# ── T05: credential sync keeps the newer of host and sandbox ─────────
+# Refresh tokens rotate (#102): the copy that expires later is the one
+# refreshed last, and it wins whichever side holds it. macOS reads the
+# keychain, which the suite must not touch, so the run there is a smoke test.
 if [ "$OS" = "Darwin" ]; then
-    # The suite's own image, not one pulled from Docker Hub: a peek into a
-    # volume should not depend on a registry, its rate limit or the VM's DNS.
     run_test "T05: credential sync (macOS)" bash -ec '
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
-        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$SUITE_IMG" ls /c/ >/dev/null
+        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" ls /c/ >/dev/null
     ' _ "$SCLAUDE"
 else
-    run_test "T05: credential sync (Linux)" bash -ec '
+    run_test "T05: credential sync keeps the newer copy (Linux)" bash -ec '
+        export SAGENT_SKIP_RELEASE_CHECK=1
         mkdir -p ~/.claude
-        echo "{\"test_cred\":true}" > ~/.claude/.credentials.json
+        if [ -e ~/.claude/.credentials.json ]; then
+            echo "refusing to overwrite the real ~/.claude/.credentials.json" >&2
+            exit 1
+        fi
         trap "rm -f ~/.claude/.credentials.json" EXIT
-        "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
-        IMG="$SUITE_IMG"
-        if ! "$ENGINE" image inspect "$IMG" >/dev/null 2>&1; then echo "No image" >&2; exit 1; fi
-        printf "{\"test_cred\":true}" | "$ENGINE" run --rm -i --user root \
-            -v sclaude-config:/vol-config \
-            "$IMG" bash -c "
-                CREDS=\$(cat)
-                if [ -n \"\$CREDS\" ] && printf \"%s\" \"\$CREDS\" | python3 -m json.tool >/dev/null 2>&1; then
-                    printf \"%s\" \"\$CREDS\" > /vol-config/.credentials.json
-                fi
-            "
-        "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config:/c "$IMG" cat /c/.credentials.json | grep -q test_cred
+        cred() { printf "{\"claudeAiOauth\": {\"accessToken\": \"%s\", \"refreshToken\": \"r\", \"expiresAt\": %s}}" "$1" "$2"; }
+        peek() { "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" cat /c/.credentials.json; }
+        "$ENGINE" volume rm sclaude-config$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+        cred host-old 2000 > ~/.claude/.credentials.json
+        "$1" mcp list >/dev/null 2>&1
+        peek | grep -q host-old
+        # The sandbox refreshed since: its newer token survives the next run.
+        cred sandbox-new 3000 | "$ENGINE" run --rm -i $SAGENT_TEST_USERNS --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" bash -c "cat > /c/.credentials.json"
+        "$1" mcp list >/dev/null 2>&1
+        peek | grep -q sandbox-new
+        # The host signed in again since: its newer token replaces the sandbox one.
+        cred host-new 4000 > ~/.claude/.credentials.json
+        "$1" mcp list >/dev/null 2>&1
+        peek | grep -q host-new
     ' _ "$SCLAUDE"
 fi
 
@@ -108,7 +117,7 @@ fi
 # Tests actual write access (not stat ownership, which is unreliable
 # with Podman's rootless UID remapping).
 run_test "T06: volume permissions" bash -ec '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config$SAGENT_VOLUME_SUFFIX scodex-config$SAGENT_VOLUME_SUFFIX sagent-rootfs$SAGENT_VOLUME_SUFFIX sagent-npm$SAGENT_VOLUME_SUFFIX sagent-pip$SAGENT_VOLUME_SUFFIX sagent-share$SAGENT_VOLUME_SUFFIX sagent-apt-cache$SAGENT_VOLUME_SUFFIX sagent-apt-lists$SAGENT_VOLUME_SUFFIX sagent-containers$SAGENT_VOLUME_SUFFIX; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
     IMG="$SUITE_IMG"
@@ -119,19 +128,19 @@ run_test "T06: volume permissions" bash -ec '
     HOST_UID="$(id -u)"
     HOST_GID="$(id -g)"
     "$ENGINE" run --rm --user root \
-        -v sclaude-config:/vol-config \
-        -v sagent-rootfs:/vol-rootfs \
-        -v sagent-npm:/vol-npm \
-        -v sagent-pip:/vol-pip \
-        -v sagent-apt-cache:/vol-apt-cache \
-        -v sagent-apt-lists:/vol-apt-lists \
+        -v sclaude-config$SAGENT_VOLUME_SUFFIX:/vol-config \
+        -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/vol-rootfs \
+        -v sagent-npm$SAGENT_VOLUME_SUFFIX:/vol-npm \
+        -v sagent-pip$SAGENT_VOLUME_SUFFIX:/vol-pip \
+        -v sagent-apt-cache$SAGENT_VOLUME_SUFFIX:/vol-apt-cache \
+        -v sagent-apt-lists$SAGENT_VOLUME_SUFFIX:/vol-apt-lists \
         "$IMG" \
         bash -c "chown -R \"$HOST_UID:$HOST_GID\" /vol-config /vol-rootfs /vol-npm /vol-pip && mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial" 2>/dev/null || true
     "$ENGINE" run --rm \
-        -v sclaude-config:/sclaude-config:rw \
-        -v sagent-rootfs:/home/agent:rw \
-        -v sagent-npm:/home/agent/.npm-global:rw \
-        -v sagent-pip:/home/agent/.local:rw \
+        -v sclaude-config$SAGENT_VOLUME_SUFFIX:/sclaude-config:rw \
+        -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/home/agent:rw \
+        -v sagent-npm$SAGENT_VOLUME_SUFFIX:/home/agent/.npm-global:rw \
+        -v sagent-pip$SAGENT_VOLUME_SUFFIX:/home/agent/.local:rw \
         "$IMG" bash -c "
             for d in /sclaude-config /home/agent /home/agent/.npm-global /home/agent/.local; do
                 if ! touch \"\$d/.perm-test\" 2>/dev/null; then
@@ -145,11 +154,11 @@ run_test "T06: volume permissions" bash -ec '
 
 # ── T07: volume persistence ──────────────────────────────────────────
 run_test "T07: volume persistence" bash -ec '
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/home/agent "$SUITE_IMG" \
         sh -c "echo sagent-test-marker > /home/agent/.test_persist"
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/home/agent "$SUITE_IMG" \
         cat /home/agent/.test_persist | grep -q sagent-test-marker
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs:/home/agent "$SUITE_IMG" \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/home/agent "$SUITE_IMG" \
         rm -f /home/agent/.test_persist
 '
 
@@ -159,7 +168,7 @@ run_test "T08: cleanup" bash -ec 'SAGENT_SKIP_RELEASE_CHECK=1 "$1" cleanup 2>&1'
 # ── T09: reset command (non-interactive) ──────────────────────────────
 run_test "T09: reset (auto-confirm)" bash -ec '
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config$SAGENT_VOLUME_SUFFIX scodex-config$SAGENT_VOLUME_SUFFIX sagent-rootfs$SAGENT_VOLUME_SUFFIX sagent-npm$SAGENT_VOLUME_SUFFIX sagent-pip$SAGENT_VOLUME_SUFFIX sagent-share$SAGENT_VOLUME_SUFFIX sagent-apt-cache$SAGENT_VOLUME_SUFFIX sagent-apt-lists$SAGENT_VOLUME_SUFFIX sagent-containers$SAGENT_VOLUME_SUFFIX; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "Volume $vol still exists after reset" >&2
             exit 1
@@ -171,14 +180,14 @@ run_test "T09: reset (auto-confirm)" bash -ec '
 # #64: reset must not report success while a running container keeps a
 # volume alive.
 run_test "T09b: reset reports pinned volumes" bash -ec '
-    "$ENGINE" volume create sclaude-config >/dev/null 2>&1 || true
-    "$ENGINE" run -d --name sagent-t09b-pinner -v sclaude-config:/c "$SUITE_IMG" sleep 120 >/dev/null
+    "$ENGINE" volume create sclaude-config$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" run -d --name sagent-t09b-pinner -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" sleep 120 >/dev/null
     trap "\"$ENGINE\" rm -f sagent-t09b-pinner >/dev/null 2>&1" EXIT
     if SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset 2>/tmp/t09b-err; then
-        echo "reset should have failed while a running container pins sclaude-config" >&2
+        echo "reset should have failed while a running container pins sclaude-config$SAGENT_VOLUME_SUFFIX" >&2
         exit 1
     fi
-    grep -q "still in use by a container, not removed: sclaude-config" /tmp/t09b-err
+    grep -q "still in use by a container, not removed: sclaude-config$SAGENT_VOLUME_SUFFIX" /tmp/t09b-err
     rm -f /tmp/t09b-err
 ' _ "$SCLAUDE"
 
@@ -297,7 +306,7 @@ run_test "T13: volumes report (no literal -e)" bash -ec '
     # The disk usage report lists the current image, every volume with a
     # size or state, and the caches total.
     echo "$OUTPUT" | grep -q "^  ${SUITE_IMG#*:} .* current"
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config$SAGENT_VOLUME_SUFFIX scodex-config$SAGENT_VOLUME_SUFFIX sagent-rootfs$SAGENT_VOLUME_SUFFIX sagent-npm$SAGENT_VOLUME_SUFFIX sagent-pip$SAGENT_VOLUME_SUFFIX sagent-share$SAGENT_VOLUME_SUFFIX sagent-apt-cache$SAGENT_VOLUME_SUFFIX sagent-apt-lists$SAGENT_VOLUME_SUFFIX sagent-containers$SAGENT_VOLUME_SUFFIX; do
         echo "$OUTPUT" | grep -qE "^  $vol +([0-9.]+[kMGT]?B|n/a|\(not created\))"
     done
     echo "$OUTPUT" | grep -q "^Volumes total: .*; caches: "
@@ -412,13 +421,13 @@ run_test "T18: sudo apt works in sandbox" bash -ec '
         echo "No sagent image found" >&2
         exit 1
     fi
-    "$ENGINE" volume create sagent-rootfs >/dev/null 2>&1 || true
-    "$ENGINE" volume create sagent-apt-cache >/dev/null 2>&1 || true
-    "$ENGINE" volume create sagent-apt-lists >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-rootfs$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-apt-cache$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-apt-lists$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
     "$ENGINE" run --rm \
-        -v sagent-rootfs:/home/agent:rw \
-        -v sagent-apt-cache:/var/cache/apt:rw \
-        -v sagent-apt-lists:/var/lib/apt/lists:rw \
+        -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/home/agent:rw \
+        -v sagent-apt-cache$SAGENT_VOLUME_SUFFIX:/var/cache/apt:rw \
+        -v sagent-apt-lists$SAGENT_VOLUME_SUFFIX:/var/lib/apt/lists:rw \
         --cap-drop=ALL \
         --cap-add=CHOWN \
         --cap-add=DAC_OVERRIDE \
@@ -437,11 +446,11 @@ run_test "T18b: pip install --user works in sandbox" bash -ec '
         echo "No sagent image found" >&2
         exit 1
     fi
-    "$ENGINE" volume create sagent-pip >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-pip$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
     # Fresh volumes mount root-owned; mirror the ownership fix sclaude applies.
-    "$ENGINE" run --rm --user root -v sagent-pip:/vol-pip "$IMG" \
+    "$ENGINE" run --rm --user root -v sagent-pip$SAGENT_VOLUME_SUFFIX:/vol-pip "$IMG" \
         chown -R "$(id -u):$(id -g)" /vol-pip
-    "$ENGINE" run --rm -v sagent-pip:/home/agent/.local:rw "$IMG" \
+    "$ENGINE" run --rm -v sagent-pip$SAGENT_VOLUME_SUFFIX:/home/agent/.local:rw "$IMG" \
         bash -c "pip3 install --user --quiet cowsay >/dev/null && python3 -c \"import cowsay\""
 ' _ "$SCLAUDE"
 
@@ -693,7 +702,7 @@ run_test "T19e: sessions shared both ways" bash -ec '
     host_dir="$CLAUDE_CONFIG_DIR/projects/$key"
 
     # A session recorded inside the sandbox before sharing existed.
-    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" bash -ec "
         mkdir -p /c/projects/$key && echo stranded > /c/projects/$key/older.jsonl
     "
     # One the host already has.
@@ -711,7 +720,7 @@ run_test "T19e: sessions shared both ways" bash -ec '
     # ...the stranded one was moved out to the host and is readable inside...
     echo "$out" | grep -qx stranded
     [ -f "$host_dir/older.jsonl" ]
-    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" \
+    "$ENGINE" run --rm --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" \
         bash -ec "[ ! -e /c/projects/$key/older.jsonl ]"
     # ...and what the sandbox wrote is on the host, owned by this user.
     [ "$(cat "$host_dir/from-sandbox.jsonl")" = from-sandbox ]
@@ -735,7 +744,7 @@ run_test "T19f: SAGENT_SESSIONS=all shares file-history" bash -ec '
     echo host-snapshot > "$TMP/claude/file-history/from-host/aaa@v1"
 
     # Rewind data the sandbox recorded before anyone opted in.
-    "$ENGINE" run --rm --user root -v sclaude-config:/c "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sclaude-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" bash -ec "
         mkdir -p /c/file-history/from-volume && echo volume-snapshot > /c/file-history/from-volume/bbb@v1
     "
 
@@ -812,7 +821,7 @@ EOF
     chmod +x "$TMP/bin/gh"
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig" GH_CONFIG_DIR="$TMP/gh" GH_TOKEN=envtoken \
         SAGENT_GIT_PROTOCOL=https SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
-    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/h "$SUITE_IMG" bash -ec "
         cfg=/h/.config/git/config
         [ \"\$(git config --file \$cfg --get user.name)\" = \"Sync Test\" ]
         [ \"\$(git config --file \$cfg --get alias.st)\" = \"status --short\" ]
@@ -836,14 +845,14 @@ EOF
     # Synced files mirror the host. Unset, the protocol follows the host gh
     # (ssh here): ~/.ssh synced by manifest, a sandbox-made key left alone.
     printf "[core]\n\texcludesfile = %s\n" "$TMP/missing" > "$TMP/gitconfig2"
-    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/h "$SUITE_IMG" bash -ec "
         mkdir -p /h/.ssh && echo sandbox-key > /h/.ssh/id_sandbox
     "
     # The sync mirrors ~/.ssh only when it exists; a CI runner may have none.
     if [ ! -d ~/.ssh ]; then mkdir -m 700 ~/.ssh; fi
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
-    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/h "$SUITE_IMG" bash -ec "
         ! git config --file /h/.config/git/config --get user.name
         [ ! -e /h/.config/git/ignore ]
         grep -q \"git_protocol: ssh\" /h/.config/gh/hosts.yml
@@ -857,7 +866,7 @@ EOF
     "
     PATH="$TMP/bin:$PATH" GIT_CONFIG_GLOBAL="$TMP/gitconfig2" GH_CONFIG_DIR="$TMP/gh" \
         SAGENT_GIT_PROTOCOL=https SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
-    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/h "$SUITE_IMG" bash -ec "
         [ ! -e /h/.ssh/.sagent-synced ]
         [ -f /h/.ssh/id_sandbox ]
         [ \"\$(ls -A /h/.ssh | wc -l)\" -eq 1 ]
@@ -881,7 +890,7 @@ run_test "T20c: workspace git identity syncs" bash -ec '
         cd "$TMP/ws"
         GIT_CONFIG_GLOBAL="$TMP/gitconfig" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo --help >/dev/null
     )
-    "$ENGINE" run --rm --user root -v sagent-rootfs:/h "$SUITE_IMG" bash -ec "
+    "$ENGINE" run --rm --user root -v sagent-rootfs$SAGENT_VOLUME_SUFFIX:/h "$SUITE_IMG" bash -ec "
         [ \"\$(git config --file /h/.config/git/config --get user.name)\" = \"Repo Identity\" ]
         [ \"\$(git config --file /h/.config/git/config --get user.email)\" = repo@example.com ]
     "
@@ -916,10 +925,21 @@ run_test "T20: scodex config sync" bash -ec '
     trap "rm -rf \"$TMP_CODEX_HOME\"" EXIT
     printf "%s" "{\"test_codex_auth\":true}" > "$TMP_CODEX_HOME/auth.json"
     printf "%s\n" "model = \"gpt-5\"" > "$TMP_CODEX_HOME/config.toml"
-    "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
+    "$ENGINE" volume rm scodex-config$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
     CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/auth.json | grep -q test_codex_auth
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" cat /c/config.toml | grep -q "model"
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" cat /c/auth.json | grep -q test_codex_auth
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" cat /c/config.toml | grep -q "model"
+    # Codex refreshes its tokens too (#102): last_refresh says which copy is
+    # newer, and that one wins. A copy without it (an API key) is copied as is.
+    auth() { printf "{\"tokens\": {\"id_token\": \"%s\"}, \"last_refresh\": \"%s\"}" "$1" "$2"; }
+    peek() { "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" cat /c/auth.json; }
+    auth sandbox-new 2030-01-02T00:00:00Z | "$ENGINE" run --rm -i $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" bash -c "cat > /c/auth.json"
+    auth host-old 2030-01-01T00:00:00Z > "$TMP_CODEX_HOME/auth.json"
+    CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
+    peek | grep -q sandbox-new
+    auth host-new 2030-01-03T00:00:00Z > "$TMP_CODEX_HOME/auth.json"
+    CODEX_HOME="$TMP_CODEX_HOME" SAGENT_SKIP_RELEASE_CHECK=1 "$1" --no-yolo exec --help >/dev/null
+    peek | grep -q host-new
 ' _ "$SCODEX"
 
 # ── T21: release check is non-fatal and cache-safe ───────────────────
@@ -1001,11 +1021,11 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         echo "No sagent image found" >&2
         exit 1
     fi
-    "$ENGINE" volume create sagent-containers >/dev/null 2>&1 || true
-    "$ENGINE" run --rm --user root -v sagent-containers:/vol-containers "$IMG" \
+    "$ENGINE" volume create sagent-containers$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" run --rm --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
         chown -R "$(id -u):$(id -g)" /vol-containers
     "$ENGINE" run --rm \
-        -v sagent-containers:/home/agent/.local/share/containers:rw \
+        -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \
         --security-opt apparmor=unconfined \
@@ -1080,7 +1100,7 @@ run_test "T30: sandbox isolation assertions" bash -ec '
     trap "rm -rf \"$WS\" \"$SIBLING\"" EXIT
     "$ENGINE" run --rm $SAGENT_TEST_USERNS \
         -v "$(cd "$WS" && pwd -P):$WS:rw" \
-        -v sclaude-config:/sclaude-config:rw \
+        -v sclaude-config$SAGENT_VOLUME_SUFFIX:/sclaude-config:rw \
         -w "$WS" \
         --cap-drop=ALL \
         --security-opt label=disable \
@@ -1483,43 +1503,43 @@ run_test "T35: toolchain version settings validated and hashed" bash -ec '
 # ── T36: cache volumes are cleared when their toolchain changes (#76) ─
 run_test "T36: stale toolchain caches cleared automatically" bash -ec '
     IMG="$SUITE_IMG"
-    "$ENGINE" volume rm sagent-pip >/dev/null 2>&1 || true
-    "$ENGINE" volume create sagent-pip >/dev/null
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-pip:/v "$IMG" bash -c "
+    "$ENGINE" volume rm sagent-pip$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-pip$SAGENT_VOLUME_SUFFIX >/dev/null
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-pip$SAGENT_VOLUME_SUFFIX:/v "$IMG" bash -c "
         mkdir -p /v/lib/python3.9/site-packages && echo old > /v/lib/python3.9/site-packages/old.py
         echo python=3.9 > /v/.sagent-stamp
     "
     out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
     echo "$out" | grep -q "Sandbox Python changed (python=3.9 -> python="
     py=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" version | sed -n "s/.*python=\([^ ]*\).*/\1/p")
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -ec "
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip$SAGENT_VOLUME_SUFFIX:/v "$IMG" bash -ec "
         [ ! -e /v/lib ]
         [ \"\$(cat /v/.sagent-stamp)\" = python=$py ]
     "
     # A second run with the same toolchain leaves the volume alone (and is quiet).
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" bash -c "echo keep > /v/keep"
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip$SAGENT_VOLUME_SUFFIX:/v "$IMG" bash -c "echo keep > /v/keep"
     out=$(SAGENT_SKIP_RELEASE_CHECK=1 "$1" --help 2>&1 >/dev/null || true)
     if echo "$out" | grep -q "changed ("; then
         echo "unchanged toolchain must not clear caches" >&2
         exit 1
     fi
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip:/v "$IMG" test -f /v/keep
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS -v sagent-pip$SAGENT_VOLUME_SUFFIX:/v "$IMG" test -f /v/keep
 ' _ "$SCLAUDE"
 
 # ── T37: reset-caches keeps credentials, config and home ─────────────
 run_test "T37: reset-caches clears only cache volumes" bash -ec '
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-npm sagent-pip sagent-share sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sclaude-config$SAGENT_VOLUME_SUFFIX scodex-config$SAGENT_VOLUME_SUFFIX sagent-rootfs$SAGENT_VOLUME_SUFFIX sagent-npm$SAGENT_VOLUME_SUFFIX sagent-pip$SAGENT_VOLUME_SUFFIX sagent-share$SAGENT_VOLUME_SUFFIX sagent-apt-cache$SAGENT_VOLUME_SUFFIX sagent-apt-lists$SAGENT_VOLUME_SUFFIX sagent-containers$SAGENT_VOLUME_SUFFIX; do
         "$ENGINE" volume create "$vol" >/dev/null 2>&1 || true
     done
     SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_ASSUME_YES=1 "$1" reset-caches
-    for vol in sagent-npm sagent-pip sagent-apt-cache sagent-apt-lists sagent-containers; do
+    for vol in sagent-npm$SAGENT_VOLUME_SUFFIX sagent-pip$SAGENT_VOLUME_SUFFIX sagent-apt-cache$SAGENT_VOLUME_SUFFIX sagent-apt-lists$SAGENT_VOLUME_SUFFIX sagent-containers$SAGENT_VOLUME_SUFFIX; do
         if "$ENGINE" volume inspect "$vol" >/dev/null 2>&1; then
             echo "cache volume $vol survived reset-caches" >&2
             exit 1
         fi
     done
     # sagent-share holds tools someone installed (uv), not a cache.
-    for vol in sclaude-config scodex-config sagent-rootfs sagent-share; do
+    for vol in sclaude-config$SAGENT_VOLUME_SUFFIX scodex-config$SAGENT_VOLUME_SUFFIX sagent-rootfs$SAGENT_VOLUME_SUFFIX sagent-share$SAGENT_VOLUME_SUFFIX; do
         "$ENGINE" volume inspect "$vol" >/dev/null
     done
 ' _ "$SCLAUDE"
@@ -1532,9 +1552,9 @@ run_test "T37b: share volume, migrated from the pip volume" bash -ec '
     WS=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t37b.XXXXXX")
     trap "rm -rf \"$WS\"" EXIT
     cd "$WS"
-    "$ENGINE" volume rm sagent-share >/dev/null 2>&1 || true
-    "$ENGINE" volume create sagent-pip >/dev/null 2>&1 || true
-    "$ENGINE" run --rm --user root -v sagent-pip:/p "$SUITE_IMG" bash -ec "
+    "$ENGINE" volume rm sagent-share$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" volume create sagent-pip$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
+    "$ENGINE" run --rm --user root -v sagent-pip$SAGENT_VOLUME_SUFFIX:/p "$SUITE_IMG" bash -ec "
         mkdir -p /p/share/uv/tools/marker && echo carried > /p/share/uv/tools/marker/f
     "
     rc=0
@@ -2158,20 +2178,14 @@ BROKEN
 ' _ "$SCLAUDE"
 
 # ── T49: no agent attribution in commits or pull requests ────────────
-# Claude via its policy file, Codex via its standing instructions; both
-# come back with SAGENT_AI_ATTRIBUTION=1.
+# Claude via its policy file; it comes back with SAGENT_AI_ATTRIBUTION=1.
+# Codex has no local switch (#104), so there is nothing of it to test here.
 run_test "T49: agent attribution is off by default" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
-    TMP=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t49.XXXXXX")
-    trap "rm -rf \"$TMP\"" EXIT
-    TMP=$(cd "$TMP" && pwd -P)
-
     # The image the suite built carries the policy, and it says what it should.
     "$ENGINE" run --rm "$SUITE_IMG" bash -ec "
         [ -f /etc/claude-code/managed-settings.json ]
-        grep -q \"includeCoAuthoredBy\" /etc/claude-code/managed-settings.json
-        grep -q false /etc/claude-code/managed-settings.json
-        python3 -m json.tool /etc/claude-code/managed-settings.json >/dev/null
+        python3 -c \"import json; a = json.load(open(\\\"/etc/claude-code/managed-settings.json\\\"))[\\\"attribution\\\"]; assert a == {\\\"commit\\\": \\\"\\\", \\\"pr\\\": \\\"\\\"}, a\"
     "
     # Asking for attribution leaves the policy out, and is a different image.
     base=$("$1" version | sed -n "s/^Image hash: //p")
@@ -2186,38 +2200,7 @@ run_test "T49: agent attribution is off by default" bash -ec '
         echo "an invalid SAGENT_AI_ATTRIBUTION was accepted" >&2
         exit 1
     fi
-
-    # Codex: the staged instructions gain the rule, the host file does not.
-    # A real run reaches the volume, which is the end-to-end proof.
-    mkdir -p "$TMP/codex"
-    printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
-    before=$(cat "$TMP/codex/AGENTS.md")
-    CODEX_HOME="$TMP/codex" "$2" --no-yolo --help >/dev/null
-    [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
-    "$ENGINE" run --rm --user root -v scodex-config:/c "$SUITE_IMG" bash -ec "
-        grep -q \"Be brief.\" /c/AGENTS.md
-        grep -qi \"Do not sign your work\" /c/AGENTS.md
-    "
-
-    # The staging function itself: running scodex with the setting flipped
-    # would build a whole other image.
-    awk "/^stage_codex_config_files\\(\\)/,/^}\$/" "$2" > "$TMP/stage.sh"
-    for want in 0 1; do
-        rm -rf "$TMP/staged"; mkdir -p "$TMP/staged/config"
-        printf "# My instructions\n\nBe brief.\n" > "$TMP/codex/AGENTS.md"
-        ( CODEX_HOME="$TMP/codex" SAGENT_AI_ATTRIBUTION=$want
-          . "$TMP/stage.sh"
-          stage_codex_config_files "$TMP/staged" )
-        grep -q "Be brief." "$TMP/staged/config/AGENTS.md"
-        if [ "$want" = 0 ]; then
-            grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"
-        elif grep -qi "Do not sign your work" "$TMP/staged/config/AGENTS.md"; then
-            echo "the rule was staged with SAGENT_AI_ATTRIBUTION=1" >&2
-            exit 1
-        fi
-        [ "$(cat "$TMP/codex/AGENTS.md")" = "$before" ]
-    done
-' _ "$SCLAUDE" "$SCODEX"
+' _ "$SCLAUDE"
 
 # ── T50: `mcp` and other management subcommands get no yolo flag ─────
 # The flag belongs to a session. A stub engine records the argv the tool
@@ -2276,12 +2259,12 @@ run_test "T51: scodex mcp add persists under a host config.toml" bash -ec '
     mkdir -p "$tmp/codex"
     printf "model = \"gpt-5\"\n" > "$tmp/codex/config.toml"
     export SAGENT_SKIP_RELEASE_CHECK=1 CODEX_HOME="$tmp/codex"
-    "$ENGINE" volume rm scodex-config >/dev/null 2>&1 || true
+    "$ENGINE" volume rm scodex-config$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
     "$1" mcp add sagent-t51 -- echo hi >/dev/null 2>&1
     "$1" mcp list 2>/dev/null | grep -q sagent-t51
     # A run with the host file unchanged keeps the sandbox'"'"'s edit.
     "$1" mcp list 2>/dev/null | grep -q sagent-t51
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5\"" /c/config.toml
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" grep -q "^model = \"gpt-5\"" /c/config.toml
     # A changed host file wins, edits and all.
     printf "model = \"gpt-5-mini\"\n" > "$tmp/codex/config.toml"
     "$1" --no-yolo exec --help >/dev/null 2>&1
@@ -2289,7 +2272,57 @@ run_test "T51: scodex mcp add persists under a host config.toml" bash -ec '
         echo "a changed host config.toml did not replace the sandbox copy" >&2
         exit 1
     fi
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config:/c "$SUITE_IMG" grep -q "^model = \"gpt-5-mini\"" /c/config.toml
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v scodex-config$SAGENT_VOLUME_SUFFIX:/c "$SUITE_IMG" grep -q "^model = \"gpt-5-mini\"" /c/config.toml
 ' _ "$SCODEX"
+
+# ── T52: the suite runs on its own volumes ───────────────────────────
+# A local run used to wipe the user's sandbox state: reset, volume rm and
+# real tool runs all went to the real volume names (#101).
+run_test "T52: volume suffix keeps the suite off the real volumes" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    [ "$SAGENT_VOLUME_SUFFIX" = "-e2e" ]
+    names=""
+    for n in sclaude scodex; do names="$names $n-config"; done
+    for n in rootfs npm pip share apt-cache apt-lists containers; do names="$names sagent-$n"; done
+    # No test names a real volume: every mention carries the suffix variable.
+    for name in $names; do
+        if grep -vE "^[[:space:]]*#" "$3" | grep -nE "(^|[^/A-Za-z0-9_-])$name([^A-Za-z0-9_\$-]|\$)"; then
+            echo "the suite names the real volume $name" >&2
+            exit 1
+        fi
+    done
+    # The wrapper puts the suffix on every volume it mounts, and refuses a bad one.
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t52.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    for w in "$1" "$2"; do
+        out=$(SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_VOLUME_SUFFIX=-t52 "$w" mcp list 2>/dev/null)
+        own="$(basename "$w")-config"
+        for name in $names; do
+            case "$name" in *-config) [ "$name" = "$own" ] || continue ;; esac
+            echo "$out" | grep -q -- "-v $name-t52:" || { echo "$(basename "$w") mounts $name without the suffix" >&2; exit 1; }
+        done
+        if echo "$out" | grep -qE -- "-v ($(echo $names | tr " " "|")):"; then
+            echo "$(basename "$w") still mounts a real volume" >&2
+            exit 1
+        fi
+        if SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_VOLUME_SUFFIX="bad name" "$w" version >/dev/null 2>&1; then
+            echo "a suffix with a space was accepted" >&2
+            exit 1
+        fi
+    done
+    SAGENT_VOLUME_SUFFIX=-t52 "$1" volumes | grep -q "^  sclaude-config-t52 "
+' _ "$SCLAUDE" "$SCODEX" "${BASH_SOURCE[0]}"
 
 print_results

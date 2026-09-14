@@ -61,7 +61,7 @@ HOST_GID=$(id -g)
 
 # The config file is sourced; the environment wins over it. Arrays, not
 # strings: zsh does not word-split unquoted variables (T14).
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -130,6 +130,19 @@ fi
 if [ -n "${SAGENT_APT_MIRROR:-}" ]; then
     validate_version_setting SAGENT_APT_MIRROR "$SAGENT_APT_MIRROR" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/'
     case "$SAGENT_APT_MIRROR" in */) ;; *) SAGENT_APT_MIRROR="$SAGENT_APT_MIRROR/" ;; esac
+fi
+# A suffix on every volume name: a second, separate set of sandbox state.
+# The e2e suite runs on "-e2e" volumes so it never touches yours (#101).
+if [ -n "${SAGENT_VOLUME_SUFFIX:-}" ]; then
+    validate_version_setting SAGENT_VOLUME_SUFFIX "$SAGENT_VOLUME_SUFFIX" '^[A-Za-z0-9_.-]+$' 'letters, digits, dot, dash or underscore, like -e2e'
+    CONFIG_VOLUME="$CONFIG_VOLUME$SAGENT_VOLUME_SUFFIX"
+    ROOTFS_VOLUME="$ROOTFS_VOLUME$SAGENT_VOLUME_SUFFIX"
+    NPM_VOLUME="$NPM_VOLUME$SAGENT_VOLUME_SUFFIX"
+    PIP_VOLUME="$PIP_VOLUME$SAGENT_VOLUME_SUFFIX"
+    SHARE_VOLUME="$SHARE_VOLUME$SAGENT_VOLUME_SUFFIX"
+    APT_CACHE_VOLUME="$APT_CACHE_VOLUME$SAGENT_VOLUME_SUFFIX"
+    APT_LISTS_VOLUME="$APT_LISTS_VOLUME$SAGENT_VOLUME_SUFFIX"
+    CONTAINERS_VOLUME="$CONTAINERS_VOLUME$SAGENT_VOLUME_SUFFIX"
 fi
 # Agent footers in commits and PRs ("Co-Authored-By: Claude"). Off by
 # default: the work is the user's.
@@ -386,12 +399,14 @@ DOCKERFILE_HEAD
 ENV DEBIAN_FRONTEND=noninteractive
 DOCKERFILE_END
 
-    # A policy file outranks anything in the config volume. Codex has no local
-    # switch; scodex adds the rule to its standing instructions instead.
+    # A policy file outranks anything in the config volume. `attribution`
+    # covers the commit trailer and the PR line; the older includeCoAuthoredBy
+    # only ever covered the trailer (#103). Codex has no local switch: its
+    # attribution is a setting of the signed-in workspace (#104).
     if [ "${SAGENT_AI_ATTRIBUTION:-0}" = "0" ]; then
         printf '\n# No agent attribution in commits or pull requests.\n'
         printf 'RUN mkdir -p /etc/claude-code \\\n'
-        printf '    && printf %%s "{\\"includeCoAuthoredBy\\": false}" > /etc/claude-code/managed-settings.json\n'
+        printf '    && printf %%s "{\\"attribution\\": {\\"commit\\": \\"\\", \\"pr\\": \\"\\"}}" > /etc/claude-code/managed-settings.json\n'
     fi
 
     # The rewrite is checked: a sources layout it does not understand fails
@@ -1234,8 +1249,8 @@ show_volumes() {
             printf '  %-20s %-10s %s\n' "$name" "$size" "$purpose"
         fi
     done <<EOF
-sclaude-config|Claude credentials, config, sessions|
-scodex-config|Codex auth and config|
+sclaude-config${SAGENT_VOLUME_SUFFIX:-}|Claude credentials, config, sessions|
+scodex-config${SAGENT_VOLUME_SUFFIX:-}|Codex auth and config|
 $ROOTFS_VOLUME|home directory: shell state, git/gh/ssh sync, Go, cargo, Maven, Gradle caches|
 $NPM_VOLUME|npm global packages|cache
 $PIP_VOLUME|pip user packages|cache
@@ -1830,14 +1845,14 @@ status_command() {
         printf '%-13s %s\n' "Nested:" "on (--no-docker or SAGENT_DOCKER=0 to disable)"
     fi
     printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
-    printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (synced each run)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
+    printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (the newer of host and sandbox wins)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
     printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line); protocol: $(git_protocol_line) (synced into the sandbox each run)"
     printf '%-13s %s\n' "Clipboard:" "$(clipboard_bridge_line)"
     printf '%-13s %s\n' "Sessions:" "$(sessions_line)"
 
     if [ -n "$ENGINE_CMD" ]; then
         vol_count=0
-        for v in sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
+        for v in "sclaude-config${SAGENT_VOLUME_SUFFIX:-}" "scodex-config${SAGENT_VOLUME_SUFFIX:-}" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"; do
             if "$ENGINE_CMD" volume inspect "$v" >/dev/null 2>&1; then vol_count=$((vol_count + 1)); fi
         done
         while read -r v size; do
@@ -2160,7 +2175,7 @@ EOF
 
     # credentials
     if host_has_claude_credentials; then
-        doctor_report PASS auth:claude "Claude credentials found on the host (synced into the sandbox each run)"
+        doctor_report PASS auth:claude "Claude credentials found on the host (the newer of host and sandbox wins)"
     else
         doctor_report WARN auth:claude "no Claude credentials on the host; run \`claude\` once here, or log in inside the sandbox (persisted in sclaude-config)"
     fi
@@ -2625,7 +2640,7 @@ reset_volumes() {
     # them first so the volume removal can succeed. Running containers are left
     # alone and keep their volumes pinned (reported by remove_volumes).
     remove_stale_sandbox_containers
-    remove_volumes sclaude-config scodex-config "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
+    remove_volumes "sclaude-config${SAGENT_VOLUME_SUFFIX:-}" "scodex-config${SAGENT_VOLUME_SUFFIX:-}" "$ROOTFS_VOLUME" "$NPM_VOLUME" "$PIP_VOLUME" "$SHARE_VOLUME" "$APT_CACHE_VOLUME" "$APT_LISTS_VOLUME" "$CONTAINERS_VOLUME"
     echo "[$SCRIPT_NAME] Reset complete. Volumes will be recreated on next run." >&2
 }
 
@@ -3121,11 +3136,29 @@ sync_state() {
                 fi
             done
             mkdir -p /tmp/sync && tar -xmf - -C /tmp/sync
+            # The token that expires later is the one refreshed last. Refresh
+            # tokens rotate, so an older host copy over a newer sandbox one
+            # is a logout (#102).
             if [ -f /tmp/sync/config/.credentials.json ]; then
                 if python3 -m json.tool /tmp/sync/config/.credentials.json >/dev/null 2>&1; then
-                    cp /tmp/sync/config/.credentials.json /vol-config/.credentials.json
-                    chown "$TARGET_UID:$TARGET_GID" /vol-config/.credentials.json
-                    chmod 600 /vol-config/.credentials.json
+                    python3 - /tmp/sync/config/.credentials.json /vol-config/.credentials.json <<"NEWEST"
+import json, shutil, sys
+host, sandbox = sys.argv[1], sys.argv[2]
+def expires(path):
+    try:
+        return int(json.load(open(path))["claudeAiOauth"]["expiresAt"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+h = expires(host)
+if h is not None:
+    s = expires(sandbox)
+    if s is None or h > s:
+        shutil.copyfile(host, sandbox)
+NEWEST
+                    if [ -f /vol-config/.credentials.json ]; then
+                        chown "$TARGET_UID:$TARGET_GID" /vol-config/.credentials.json
+                        chmod 600 /vol-config/.credentials.json
+                    fi
                 else
                     echo "['"$SCRIPT_NAME"'] Warning: credentials found but appear malformed, skipping sync" >&2
                 fi
