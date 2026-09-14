@@ -2487,4 +2487,24 @@ EOF
     [ "$(cat "$TMP/clip.txt")" = from-codex ]
 ' _ "$SCLAUDE"
 
+# ── T55: build downloads land in a file before anything reads them ───
+# curl retries a transfer cut part way, and on a pipe the retry appends the
+# whole body after the partial one, so `curl | tar` unpacks garbage the
+# moment a retry happens (#113). Metadata reads into $(...) are bytes, not
+# archives; they are the one shape allowed to pipe.
+run_test "T55: build downloads go to a file first" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    joined=$("$1" dockerfile | sed -e ":a" -e "/\\\\$/N; s/\\\\\\n//; ta")
+    if echo "$joined" | grep -oE "curl [^|;]*\\| *(tar|sh|bash|env|gpg|unzip|tee)\\b" | grep -q .; then
+        echo "a build download is piped into its consumer:" >&2
+        echo "$joined" | grep -oE "curl [^|;]*\\| *(tar|sh|bash|env|gpg|unzip|tee)\\b" >&2
+        exit 1
+    fi
+    # The file downloads are cleaned up in the same step.
+    for f in node.tar.xz uv-install.sh go.tar.gz rustup-init.sh jdk.tar.gz maven.tar.gz spring.tar.gz microsoft.asc; do
+        echo "$joined" | grep -q -- "-o /tmp/$f" || { echo "no file download for $f" >&2; exit 1; }
+        echo "$joined" | grep -q "rm /tmp/$f" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
+    done
+' _ "$SCLAUDE"
+
 print_results

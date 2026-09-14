@@ -442,7 +442,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # A mirror can drop a connection between `update` and `install` (#105); apt
 # retries a failed download itself, with backoff, when told to. So does
 # curl, which fetches every toolchain below (#110): its settings file is
-# read by each later step of this build.
+# read by each later step of this build. Every download below lands in a
+# file before it is unpacked or run: a retry after a cut mid-transfer
+# rewrites a file, but appends to a pipe (#113).
 RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries \
     && printf 'retry = 8\nretry-max-time = 180\nretry-all-errors\n' > /root/.curlrc
 DOCKERFILE_END
@@ -514,8 +516,10 @@ RUN set -eux; \
     base="https://nodejs.org/dist/latest-v${NODE_VERSION}.x"; \
     tarball="$(curl -fsSL "$base/SHASUMS256.txt" | grep -o "node-v[0-9.]*-linux-${arch}.tar.xz" | head -1)"; \
     [ -n "$tarball" ]; \
-    curl -fsSL "$base/$tarball" | tar -xJ -C /usr/local --strip-components=1 \
+    curl -fsSL "$base/$tarball" -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
         --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
+    rm /tmp/node.tar.xz; \
     node --version && npm --version
 
 # Python: a uv-managed CPython of the configured minor version (latest
@@ -523,7 +527,9 @@ RUN set -eux; \
 # It ships pip; PIP_BREAK_SYSTEM_PACKAGES below lets `pip install --user`
 # through uv's externally-managed marker into the sagent-pip volume.
 RUN set -eux; \
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh; \
+    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh; \
+    env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh; \
+    rm /tmp/uv-install.sh; \
     UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin uv python install --default "${PYTHON_VERSION}"; \
     pybin="$(python3 -c 'import os, sys; print(os.path.join(sys.prefix, "bin"))')"; \
     ln -sf "$pybin/pip3" /usr/local/bin/pip3; \
@@ -547,7 +553,9 @@ RUN set -eux; \
             | grep -oE "\"version\": ?\"go${GO_VERSION}(\.[0-9]+)?\"" | head -1 | grep -oE 'go[0-9.]+')" ;; \
     esac; \
     [ -n "$release" ]; \
-    curl -fsSL "https://go.dev/dl/${release}.linux-${arch}.tar.gz" | tar -xz -C /usr/local; \
+    curl -fsSL "https://go.dev/dl/${release}.linux-${arch}.tar.gz" -o /tmp/go.tar.gz; \
+    tar -xzf /tmp/go.tar.gz -C /usr/local; \
+    rm /tmp/go.tar.gz; \
     /usr/local/go/bin/go version
 DOCKERFILE_END
     fi
@@ -560,8 +568,9 @@ DOCKERFILE_END
 # work for the agent; CARGO_HOME is left unset at runtime so registries and
 # `cargo install` land in the persistent home directory.
 RUN set -eux; \
-    curl -fsSL https://sh.rustup.rs | env RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo \
-        sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+    curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh; \
+    env RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo \
+        sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
         --component rustfmt --component clippy; \
     chmod -R a+w /opt/rust/rustup; \
     RUSTUP_HOME=/opt/rust/rustup /opt/rust/cargo/bin/cargo --version
@@ -577,7 +586,9 @@ RUN set -eux; \
     case "$(dpkg --print-architecture)" in amd64) arch=x64 ;; arm64) arch=aarch64 ;; esac; \
     mkdir -p /opt/java; \
     curl -fsSL "https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${arch}/jdk/hotspot/normal/eclipse" \
-        | tar -xz -C /opt/java --strip-components=1; \
+        -o /tmp/jdk.tar.gz; \
+    tar -xzf /tmp/jdk.tar.gz -C /opt/java --strip-components=1; \
+    rm /tmp/jdk.tar.gz; \
     /opt/java/bin/java -version
 ENV JAVA_HOME=/opt/java
 
@@ -596,7 +607,9 @@ DOCKERFILE_END
         | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
     mkdir -p /opt/maven; \
     curl -fsSL "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/${mvn_v}/apache-maven-${mvn_v}-bin.tar.gz" \
-        | tar -xz -C /opt/maven --strip-components=1; \
+        -o /tmp/maven.tar.gz; \
+    tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1; \
+    rm /tmp/maven.tar.gz; \
 DOCKERFILE_END
             java_checks+=("/opt/maven/bin/mvn -v")
         fi
@@ -626,7 +639,9 @@ DOCKERFILE_END
         | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | sed 's/<[^>]*>//g' | sort -V | tail -1)"; \
     mkdir -p /opt/spring; \
     curl -fsSL "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-cli/${spring_v}/spring-boot-cli-${spring_v}-bin.tar.gz" \
-        | tar -xz -C /opt/spring --strip-components=1; \
+        -o /tmp/spring.tar.gz; \
+    tar -xzf /tmp/spring.tar.gz -C /opt/spring --strip-components=1; \
+    rm /tmp/spring.tar.gz; \
 DOCKERFILE_END
             java_checks+=("/opt/spring/bin/spring --version")
         fi
@@ -1172,8 +1187,9 @@ DOCKERFILE_END
 RUN set -eux; \
     . /etc/os-release; \
     install -d -m 0755 /usr/share/keyrings; \
-    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-        | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg; \
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o /tmp/microsoft.asc; \
+    gpg --dearmor -o /usr/share/keyrings/microsoft.gpg < /tmp/microsoft.asc; \
+    rm /tmp/microsoft.asc; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg]" \
         "https://packages.microsoft.com/repos/azure-cli/ ${VERSION_CODENAME} main" \
         > /etc/apt/sources.list.d/azure-cli.list; \
