@@ -7,9 +7,8 @@ setting that changes it. [Security](security.md) covers what that exposes;
 ## The workspace
 
 The current directory is mounted read-write at the same path, so paths in
-transcripts and tool state match on both sides. The physical path (symlinks
-resolved) is the mount source, because VM-backed engines can only find their
-shared directories that way. `/` is refused as a workspace.
+transcripts and tool state match on both sides. `/` is refused as a
+workspace.
 
 ## The drop folder
 

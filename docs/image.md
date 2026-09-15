@@ -45,9 +45,8 @@ at the end. A new CLI release therefore rebuilds one layer, which is what
 `sclaude update` does. The build metadata is an image label rather than a
 file, so a rebuild with nothing to do is a no-op.
 
-Every download in the build lands in a file before it is unpacked, and both
-apt and curl retry with backoff, so one dropped connection does not fail
-the build.
+apt and curl retry with backoff, and every download lands in a file before
+it is unpacked, so one dropped connection does not fail the build.
 
 ### Mirrors
 
