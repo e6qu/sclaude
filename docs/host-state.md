@@ -38,10 +38,9 @@ so the sandbox runs a small headless X display (`DISPLAY=:99`) whose
 clipboard is served from the host. Ctrl+V of a screenshot works in `scodex`
 too, and what Codex copies reaches your clipboard.
 
-This works on macOS and on Linux desktops. A headless Linux host has no
-clipboard to share. The sandbox can read your clipboard at any time;
-`SAGENT_CLIPBOARD=0` turns the bridge off, after which copies go out through
-the terminal (OSC 52) and reads fail.
+This works on macOS and on Linux desktops; a headless Linux host has no
+clipboard to share. `SAGENT_CLIPBOARD=0` turns the bridge off, after which
+copies go out through the terminal (OSC 52) and reads fail.
 
 ## Sessions
 
