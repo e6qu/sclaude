@@ -18,8 +18,9 @@ run from a directory under it.
 
 ## Install
 
-sclaude ships as two self-contained shell scripts and nothing else. Both
-go to `~/.local/bin`, without sudo:
+sclaude ships as two self-contained shell scripts and nothing else. `install`
+puts both in `~/.local/bin`, without sudo, and adds that directory to your
+shell startup file if it is not on PATH:
 
 ```bash
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
@@ -28,12 +29,16 @@ chmod +x sclaude scodex
 ./sclaude install
 ```
 
+From a clone, `./sclaude install` links the scripts instead of copying
+them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory.
+
 The sandbox image is not shipped. The first run builds it locally, for your
 user and your settings, which takes a few minutes and about 5.5 GB (8 GB
 free needed). Behind a TLS-inspecting proxy the build takes the proxy's CA
 from your trust store; if the host does not trust it either, see
-[corporate proxies](docs/image.md#corporate-proxies). Prebuilt images exist
-for CI and dev containers; see [published images](docs/image.md#published-images).
+[corporate proxies](docs/image.md#corporate-proxies). Prebuilt images for
+CI and dev containers are listed under
+[published images](docs/image.md#published-images).
 
 ## Update
 
@@ -56,10 +61,7 @@ takes several minutes. A new sclaude version that changes the image (a
 version default, a tool, a layer) rebuilds it on the next run without being
 asked.
 
-From a clone, `./sclaude install` links the scripts instead of copying them,
-so updating is `git pull && sclaude --build`. `install DIR` or
-`SAGENT_INSTALL_DIR` picks another directory; when it is not on PATH,
-`install` adds it to your shell startup file, once.
+From a clone: `git pull && sclaude --build`.
 
 ## Use
 
@@ -78,8 +80,8 @@ so updating is `git pull && sclaude --build`. `install DIR` or
 
 Every native CLI flag passes through. Yolo means
 `--dangerously-skip-permissions` for Claude and
-`--dangerously-bypass-approvals-and-sandbox` for Codex. The sandbox is what
-makes that acceptable.
+`--dangerously-bypass-approvals-and-sandbox` for Codex; the sandbox is what
+makes that safe to leave on.
 
 Commit before you start. Afterwards, review with `git diff` and commit or
 `git reset --hard`.

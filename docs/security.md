@@ -137,23 +137,16 @@ This workspace's Claude Code transcripts, and Codex's whole session tree,
 are bind-mounted from the host so either side can resume the other's work.
 The agent can read and write them. `SAGENT_SESSIONS=0` keeps them out.
 `SAGENT_SESSIONS=all` also shares `~/.claude/file-history`, which holds
-file contents from every workspace. The rest of what the tools keep on the
-host stays there: shell snapshots and session environments describe the
-host, `history.jsonl` is appended by both sides, and the paste cache and
-plans are not per project.
+file contents from every workspace. Nothing else of what the tools keep on
+the host is mounted.
 
 ### Clipboard
 
-A per-run spool directory (`~/.cache/sagent/clipboard.*`, mode 700, removed
-afterwards) is mounted at `/run/sagent/clipboard`. The sandbox's clipboard
-commands drop request files there and an agent on the host answers with
-`pbcopy`, `pbpaste` and `osascript`, or `wl-copy`, `wl-paste` and `xclip`.
-Request data is clipboard content, text or a PNG, never a command. A
-headless X display inside the sandbox (unix socket only) serves the same
-clipboard to programs that read it over X11, and forwards what they copy.
-
-The agent can read your clipboard at any time and set it to anything.
-`SAGENT_CLIPBOARD=0` turns the bridge off.
+The sandbox's clipboard commands, and its X display, are served by an agent
+on the host through a per-run spool directory (`~/.cache/sagent/clipboard.*`,
+mode 700, removed afterwards). Request data is clipboard content, text or a
+PNG, never a command. The agent can read your clipboard at any time and set
+it to anything. `SAGENT_CLIPBOARD=0` turns the bridge off.
 
 ### The drop folder
 
