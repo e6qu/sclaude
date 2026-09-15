@@ -1,9 +1,9 @@
 # sclaude / scodex
 
 Run [Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
-in a Docker or Podman sandbox. The CLI works as it does on the host. It can
-reach the current directory, one folder for files you hand it, and the host
-state listed below. Nothing else.
+in a Docker or Podman sandbox. The CLI runs as it does on the host. It can
+reach the current directory, one folder for files you hand it, the host
+state listed below, and the network.
 
 ## Requirements
 
@@ -13,15 +13,16 @@ machine. Rootless podman works through the podman CLI. Rootless Docker is
 not supported.
 
 Rancher Desktop and colima share only your home directory with their VM.
-Run from a directory under it.
+Run from a directory under it, or set `SAGENT_SKIP_SHARE_CHECK=1` for a
+path you shared yourself.
 
-`sclaude doctor` checks all of this and names the fix for anything wrong.
+`sclaude doctor` checks these and names the fix for what it finds.
 
 ## Install
 
 sclaude ships as two self-contained shell scripts. `install` puts both in
 `~/.local/bin` without sudo, and adds that directory to your shell startup
-file if it is missing from PATH.
+file if it is missing from PATH. Open a new shell afterwards.
 
 ```bash
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
@@ -33,12 +34,13 @@ chmod +x sclaude scodex
 From a clone, `./sclaude install` links the scripts, so `git pull` updates
 them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory.
 
-The sandbox image is not shipped. The first run builds it on your machine,
-for your user and your settings. That takes a few minutes and about 5.5 GB
-of disk, with 8 GB free needed during the build. Behind a TLS-inspecting
-proxy the build takes the proxy's CA from your trust store. If the host does
-not trust it either, see [corporate proxies](docs/image.md#corporate-proxies).
-Prebuilt images for CI and dev containers are listed under
+No image is downloaded. The first run builds the sandbox image on your
+machine, for your user and your settings. That takes a few minutes and
+about 5.5 GB of disk, with 8 GB free needed during the build. Behind a
+TLS-inspecting proxy the build takes the proxy's CA from your trust store.
+If the host does not trust it either, see
+[corporate proxies](docs/image.md#corporate-proxies). Prebuilt images for
+CI and dev containers are listed under
 [published images](docs/image.md#published-images).
 
 ## Update
@@ -52,7 +54,7 @@ image whenever either has a new release, even when sclaude itself has none.
 The two CLIs are the last image layer, so that takes about a minute.
 
 `sclaude update --force-rebuild` rebuilds the whole image and updates
-everything else in it, each to its newest release at build time: the Ubuntu
+everything else in it to the newest release its source offers: the Ubuntu
 base image and packages, `gh`, git, Node.js, Python, Go, Rust and Java
 within the configured versions, the tool groups (TypeScript, bun, yarn,
 pnpm; Maven, Gradle, Quarkus, Spring Boot; kubectl, Helm, Terraform,
@@ -60,7 +62,8 @@ Terragrunt; AWS, Azure and Google Cloud CLIs), and the two agent CLIs. That
 takes several minutes. A new sclaude version that changes the image rebuilds
 it on the next run.
 
-From a clone: `git pull && sclaude --build`.
+From a clone, `update` leaves the scripts to `git pull` and updates the
+image: `git pull && sclaude update`.
 
 ## Use
 
@@ -68,22 +71,22 @@ From a clone: `git pull && sclaude --build`.
 |---|---|
 | `sclaude` | Interactive session. Permission prompts are off (yolo) |
 | `sclaude "fix the bug"` | Direct prompt |
-| `sclaude --resume` | Resume the last session |
+| `sclaude --continue` | Continue the last session in this directory. `--resume` picks one |
 | `sclaude -p "query"` | Print mode, no TTY needed |
 | `sclaude --no-yolo` | Keep the permission prompts |
-| `sclaude --no-docker` | No docker or podman inside the sandbox |
+| `sclaude --no-docker` | Turn off nested containers for this run |
 | `sclaude shell` | Bash in the sandbox for this directory |
-| `sclaude mcp add ...` | `claude mcp add ...` inside. Every other `claude` subcommand works the same way |
+| `sclaude mcp add ...` | `claude mcp add ...` inside. Other `claude` subcommands pass through the same way, apart from the wrapper's own commands below |
 | `scodex` | The same for Codex |
 | `scodex exec "query"` | Non-interactive Codex |
 
 Every native CLI flag passes through. Yolo means
 `--dangerously-skip-permissions` for Claude and
-`--dangerously-bypass-approvals-and-sandbox` for Codex. The sandbox is what
-makes that safe to leave on.
+`--dangerously-bypass-approvals-and-sandbox` for Codex. The sandbox limits
+what that can reach. [Security](docs/security.md) says how far.
 
 Commit before you start. Afterwards, review with `git diff`, then commit or
-`git reset --hard`.
+`git reset --hard`, which discards every uncommitted change.
 
 ## What the sandbox shares with the host
 
@@ -96,9 +99,10 @@ Commit before you start. Afterwards, review with `git diff`, then commit or
 - Session transcripts. A conversation can be resumed on either side.
 - Your git identity and config, your `gh` login, and with SSH remotes your
   `~/.ssh`.
-- Your Claude and Codex sign-in. Signing in inside the sandbox works too.
+- Your sign-in for the agent you run. Signing in inside the sandbox works
+  too.
 
-Each of these has a setting that turns it off or narrows it.
+Most of these have a setting that turns them off or narrows them.
 [Host state in the sandbox](docs/host-state.md) has the details and
 [security](docs/security.md) has the trade-offs.
 
@@ -123,31 +127,33 @@ everything and covers builds, mirrors and disk use.
 | `sclaude tools` | List tools. `enable` and `disable` change the selection |
 | `sclaude config` | Show the settings file. `set`, `unset`, `get`, `path` |
 | `sclaude volumes` | Disk use per image and volume |
-| `sclaude cleanup` | Remove old images |
-| `sclaude reset-caches` | Clear the cache volumes, keep credentials and home |
-| `sclaude reset` | Delete all persisted state |
+| `sclaude cleanup` | Remove the sandbox images other than the current one |
+| `sclaude reset-caches` | Clear the npm, pip, apt and nested-container volumes. Credentials and home stay |
+| `sclaude reset` | Delete every sandbox volume. The workspace, the drop folder, host transcripts and the image stay |
 | `sclaude --build` | Build the image without running |
 | `sclaude dockerfile` | Print the Dockerfile a build would use |
 | `sclaude version` | Wrapper, image, toolchain and tool versions |
 | `sclaude check-update` | Check for a newer wrapper |
 
-`scodex` has every command too.
+Both wrappers have these commands.
 
 ## Settings
 
 Settings live in `~/.config/sagent/config`, a bash file that is sourced.
-`sclaude config set KEY VALUE` writes it. Environment variables and flags
-win over the file.
+`sclaude config set KEY VALUE` writes it. For the `SAGENT_` settings, an
+environment variable wins over the file. The resource limits are read from
+the file only.
 
 | Setting | Meaning | Default |
 |---|---|---|
 | `MEMORY_LIMIT` | Memory limit, a size like `8g` | `4g` |
 | `CPU_LIMIT` | CPU limit, a number | `2` |
-| `PIDS_LIMIT` | Process limit | `100`, or `512` with container tooling |
+| `PIDS_LIMIT` | Process limit without nested containers | `100` |
+| `PIDS_LIMIT_NESTED` | Process limit with nested containers | `512` |
 | `SAGENT_DOCKER` | `1` for docker and podman inside the sandbox, `0` for none | `1` |
 | `SAGENT_CONTAINER_ENGINE` | `docker` or `podman` | docker, then podman |
 | `SAGENT_CA_BUNDLE` | PEM file with extra CA certificates for the image | unset |
-| `SAGENT_GIT_PROTOCOL` | `ssh` or `https` for GitHub | your gh setting |
+| `SAGENT_GIT_PROTOCOL` | `ssh` or `https` for GitHub | your gh setting, else `https` |
 | `SAGENT_CLIPBOARD` | `1` to share the host clipboard, `0` to keep it out | `1` |
 | `SAGENT_DROP_DIR` | Host folder mounted read-write at the same path inside | `~/sagent-drop` |
 | `SAGENT_SESSIONS` | `1` to share transcripts, `0` to keep them out, `all` to share `/rewind` snapshots too | `1` |
@@ -159,8 +165,8 @@ win over the file.
 | `SAGENT_JAVA_VERSION` | Java major version, or `none` | `26` |
 | `SAGENT_TOOLS` | `all`, `none`, group names, or tool names | `all` |
 | `SAGENT_APT_MIRROR` | Ubuntu mirror URL for image builds | Ubuntu's archive |
-| `SAGENT_AI_ATTRIBUTION` | `1` to let Claude Code sign commits and PRs, `0` to stop it | `0` |
-| `SAGENT_VOLUME_SUFFIX` | Suffix on every volume name, for a separate set of sandbox state | none |
+| `SAGENT_AI_ATTRIBUTION` | `0` keeps Claude Code's commit and PR attribution off. `1` leaves it to Claude's own settings | `0` |
+| `SAGENT_VOLUME_SUFFIX` | Suffix on every volume name, for a second set of volumes | none |
 
 `SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a
 setting can differ per wrapper:
@@ -177,11 +183,12 @@ docker images sagent-sandbox -q | xargs -r docker rmi
 rm ~/.local/bin/sclaude ~/.local/bin/scodex
 ```
 
-`install DIR` may have put the wrappers elsewhere. An install from before
-2.16 lives in `/usr/local/bin`. The PATH block `install` added to your shell
-startup file is marked `added by sclaude/scodex`.
+With podman, replace `docker` with `podman`. `install DIR` may have put the
+wrappers elsewhere. An install from before 2.16 lives in `/usr/local/bin`.
+The PATH block `install` added to your shell startup file is marked
+`added by sclaude/scodex`. The settings file and `~/sagent-drop` stay.
 
-## More
+## Documentation
 
 - [Host state in the sandbox](docs/host-state.md): sessions, clipboard, the
   drop folder, git, gh, ssh, sign-in, MCP servers, attribution.
@@ -196,6 +203,6 @@ startup file is marked `added by sclaude/scodex`.
 
 ## License
 
-MIT
+[MIT](LICENSE)
 
 Copyright 2025-2026 [Adrian Mârza](https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/).

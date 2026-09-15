@@ -1,13 +1,14 @@
 # Testing
 
-One test suite, `test_e2e.sh`, runs on macOS and Linux against Docker or
-Podman.
+`test_e2e.sh` tests the wrappers on macOS and Linux with Docker or Podman.
+`test_devcontainers.sh` builds and smoke-tests the dev containers.
 
 ## Prerequisites
 
 - Docker or Podman installed and running
 - bash
 - zsh, for the zsh compatibility test; skipped when absent
+- `npm install -g @devcontainers/cli` for `test_devcontainers.sh`
 
 ## Test matrix
 
@@ -15,10 +16,10 @@ Podman.
 |---|---|---|
 | T01: `version` command | Basic execution, hashing (`shasum` vs `sha256sum`) | #13 |
 | T02: Image build | Dockerfile generation, UID/GID mapping | #1, #4, #35 |
-| T03: Piped input (no TTY) | Non-TTY detection, `-it` flag handling | #6 |
-| T04: `--yolo` flag conversion | Flag rewriting | -- |
+| T03: Piped input (no TTY) | `version` runs with stdin piped | #6 |
+| T04: `--yolo` flags | `version` accepts `--yolo` and `--no-yolo` in both wrappers | -- |
 | T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
-| T05: Credential sync keeps the newer copy | Linux: the host copy lands in the volume, a newer sandbox copy survives the next run, a newer host copy replaces it. macOS: the keychain read runs | #12, #14, #16, #102 |
+| T05: Credential sync keeps the newer copy | Linux: the host copy lands in the volume, a newer sandbox copy survives the next run, a newer host copy replaces it. macOS: a run completes and the config volume exists; the keychain is left alone | #12, #14, #16, #102 |
 | T06: Volume creation & permissions | Shared user volumes writable by agent user | #22 |
 | T07: Volume persistence | Data survives across container runs | -- |
 | T08: Cleanup command | Old image removal | -- |
@@ -65,7 +66,7 @@ Podman.
 | T32c: Refreshed CA bundle re-staged | A stub engine fails TLS once so the wrapper takes the CA from the host trust store; the build context then carries the refreshed bundle | -- |
 | T32d: Build guidance survives a broken engine | With every container after the TLS probe failing, a failed build still prints the whole guidance instead of stopping at its first line | -- |
 | T33: VM share check | Stub engine reporting the `rancher-desktop` and `colima` contexts: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass; other contexts are not checked | #74 |
-| T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused before any engine call; `version` still works | #75 |
+| T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused after the engine probe, before any build, volume or run call | #75 |
 | T35: Toolchain settings | Invalid versions rejected up front; each setting changes the image hash; config file applies and the environment wins | -- |
 | T36: Toolchain stamps | A pip volume stamped for another Python is cleared with a warning on the next run; an unchanged toolchain leaves it alone | #76 |
 | T37: `reset-caches` | Cache volumes removed; credentials, config and home volumes kept | -- |
@@ -94,26 +95,28 @@ Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 ## Running the tests
 
-The suite runs on its own volumes, named with the `-e2e` suffix, so your
-sandbox state is not touched. It builds the shared image, rebuilds it once
-without cache (T10), and builds a second image with a throwaway CA bundle
-(T31), which it removes afterwards.
+The suite uses volumes with the `-e2e` suffix, so your sandbox volumes are
+left alone. It shares the engine's image store with your normal runs, and
+some tests write under your home directory and clean up after themselves.
+A full run builds the shared image, rebuilds it once without cache (T10),
+and builds a second image with a throwaway CA bundle (T31), which it
+removes afterwards.
 
-From the repo root on macOS or Linux:
+Run the suite from the repository root:
 
 ```bash
 bash test_e2e.sh
 ```
 
-Against Podman instead of Docker:
+To select Podman:
 
 ```bash
 SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 ```
 
-Test bodies run under `bash -ec`, so every command in a test is an
-assertion (#72). Guard a command that is allowed to fail with `|| true` or
-an `if`.
+Test bodies run under `bash -ec`, so a failing command ends the test,
+within bash's `errexit` rules (#72). Check an expected failure with an
+`if`. Use `|| true` when the result does not matter.
 
 Fixtures that get bind-mounted into containers are created under
 `SAGENT_TEST_TMPDIR` (default `/tmp`). Point it under your home directory for
@@ -121,21 +124,23 @@ engines that share only `$HOME` with their VM, such as Rancher Desktop. Tests
 that replicate `run_tool`'s mounts pass `$SAGENT_TEST_USERNS`, which the
 suite sets to the wrapper's keep-id mapping on rootless podman.
 
-Each test has a portable timeout, so an engine hang fails that test and
-the suite goes on. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
-a slow builder.
+Each test body has a timeout of 600 seconds, so an engine hang fails that
+test and the suite goes on. Set `TEST_TIMEOUT_SECONDS=1200` on a slow
+builder. Engine recovery and suite setup run outside that timeout.
 
 ### Testing Linux from a macOS host
 
-Any Linux VM with a container engine works. Rootless Podman inside the
-Podman machine VM (SELinux-enforcing Fedora CoreOS):
+A Linux VM needs the checkout and a supported engine. For rootless Podman
+in the Podman machine VM, an SELinux-enforcing Fedora CoreOS, replace the
+machine name and the path:
 
 ```bash
 podman machine ssh --username core podman-machine-default \
     'SAGENT_CONTAINER_ENGINE=podman bash /path/to/sclaude/test_e2e.sh'
 ```
 
-Docker inside this repo's docker-in-docker dev container (UID-1000 Ubuntu):
+To run the suite in this repository's dev container, a UID-1000 Ubuntu
+with Docker inside:
 
 ```bash
 npm install -g @devcontainers/cli
@@ -143,46 +148,58 @@ devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . bash /workspaces/sclaude/test_e2e.sh
 ```
 
-These two configurations exercise real platform differences: SELinux label
-enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
-
 ### CI
 
-For pushes to main and same-repo PRs, CI runs the suite across the full
-engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
+CI runs the suite on pushes to `main` and on same-repository PRs, except
+the release PR. The lint jobs and the PR title check run on every other PR,
+fork PRs included.
+[`ci.yml`](../.github/workflows/ci.yml) has the job conditions.
 
-| Job | Topology |
+| Job | Environment |
 |---|---|
-| what-ran | Runs on every event, including the release PR where every other job filters itself out, so the run always has a job to conclude on (#89) |
+| what-ran | Runs on every event, so the release PR, where every other job skips itself, still has a job to conclude on (#89) |
 | test-linux | docker CLI on docker server (Ubuntu, AppArmor enforcing) |
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| build-macos-image | Builds the trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) once on Linux for the macOS runners' uid/gid, and publishes it as an artifact (#98) |
-| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Loads the prebuilt image and checks it is the one the wrapper there computes. Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
-| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, image and skips as test-macos (Rancher Desktop shares only `$HOME`) |
+| build-macos-image | Builds the trimmed image for the macOS jobs on Linux and publishes it as an artifact (#98) |
+| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM, two slices on two runners (#96) |
+| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; the same slices as test-macos |
 | test-devcontainers | UID-1000 docker-in-docker dev container, building the dev containers and then running the whole suite inside |
 
-T27 adds one more nesting level inside each job (nested podman in the
-sandbox), so the devcontainer and macOS jobs run three to four layers deep.
+The macOS jobs run on Intel runners, because the Apple Silicon runners lack
+nested virtualization. Building the image there would take most of the
+job, so build-macos-image builds it once on Linux, trimmed to
+`SAGENT_TOOLS=none` with no Go, Rust or Java, for the macOS runners' uid
+and gid. Each macOS job loads that image and checks it is the one the
+wrapper there computes. Those jobs skip T02, T10, T10b and T31, whose full
+image builds do not depend on the engine and run in the Linux jobs, and
+T12b, because colima shares only `$HOME` and `/tmp/colima` with its VM and
+Rancher Desktop only `$HOME`.
+
+T27 runs a container inside the sandbox through nested podman.
 
 ## Running part of the suite
 
-`SAGENT_TEST_SKIP="T02 T10"` skips named tests, reported as SKIP.
-`SAGENT_TEST_SHARD="1/2"` runs one slice: every second test starting from the
-first. Tests are numbered in file order, skipped or not, so every slice
-agrees on which test is which and together the slices run each test exactly
-once. CI runs the macOS jobs as two slices on parallel runners.
+`SAGENT_TEST_SKIP="T02 T10"` skips the named tests, reported as SKIP.
 
-A failing test prints the tail of its capture, and its shell runs traced, so
-the last lines name the command that failed even when that command sent its
-own output away. `FAIL_OUTPUT_LINES` sets how many lines are shown (30).
+`SAGENT_TEST_SHARD="1/2"` runs every second test starting from the first,
+and `"2/2"` the others. Tests are numbered in file order, skipped or not,
+so the slices agree on which test is which and together cover each test
+once. A test in `SAGENT_TEST_SKIP` stays skipped in its slice. CI runs
+each macOS engine as two slices on two runners.
 
-Only the test's own shell is traced; the wrappers and scripts it runs are
-not, so capturing their stderr is safe. The one thing the trace does reach
-is a group, subshell or shell function whose stderr is captured inside the
-test, `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)`, because the
-trace follows file descriptor 2 into the capture. Do not assert on those;
-capture an external command instead. (`BASH_XTRACEFD`, which would avoid
-this, does not exist in the bash 3.2 that macOS ships.)
+On failure the harness prints the last 30 lines of the test's output.
+`FAIL_OUTPUT_LINES` changes that. Test bodies run with `-x`, so the tail
+usually names the command that failed, even when that command sent its
+own output elsewhere.
+
+The trace covers the test's own shell only. The wrappers and scripts it
+runs are untraced, so their captured stderr is clean. Capturing the stderr
+of a group, subshell or shell function inside the test, as in
+`$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )` or `$(fn 2>&1)`, picks up trace
+lines, because the trace follows file descriptor 2 into the capture. Do
+not assert on those captures. Capture an external command instead. The
+bash 3.2 that macOS ships lacks `BASH_XTRACEFD`, which would send the trace
+elsewhere.
 
