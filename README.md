@@ -43,8 +43,18 @@ sclaude update
 
 This updates both wrappers, and it updates Claude Code and Codex in the
 image whenever either has a new release, even when sclaude itself has no
-new version. The CLIs are the last image layer, so that takes about a
-minute. `sclaude update --force-rebuild` rebuilds the whole image.
+new version. The two CLIs are the last image layer, so that takes about a
+minute.
+
+`sclaude update --force-rebuild` rebuilds the whole image from scratch and
+updates everything else in it, each to its newest release at build time:
+the Ubuntu base image and packages, `gh`, git, Node.js, Python, Go, Rust
+and Java within the configured versions, the tool groups (TypeScript, bun,
+yarn, pnpm; Maven, Gradle, Quarkus, Spring Boot; kubectl, Helm, Terraform,
+Terragrunt; AWS, Azure and Google Cloud CLIs), and the two agent CLIs. That
+takes several minutes. A new sclaude version that changes the image (a
+version default, a tool, a layer) rebuilds it on the next run without being
+asked.
 
 From a clone, `./sclaude install` links the scripts instead of copying them,
 so updating is `git pull && sclaude --build`. `install DIR` or
