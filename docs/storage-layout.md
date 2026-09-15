@@ -88,9 +88,8 @@ per-run clipboard spool, mounted from `~/.cache/sagent/clipboard.*`.
 
 Before every run the wrapper stages what the sandbox gets from the host and
 streams it as one tar over stdin into a root helper container, which writes
-it into the volumes owned by your uid, secrets mode 600. A tar over stdin
-rather than a bind mount, because a host bind mount is denied on SELinux
-hosts and breaks on paths with colons.
+it into the volumes owned by your uid, secrets mode 600. A host bind mount
+would be denied on SELinux hosts and would break on paths with colons.
 
 | What | Source on the host |
 |---|---|
@@ -108,7 +107,7 @@ newer sandbox one would be a logout.
 `sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
 credentials, the gh token, and with ssh your private keys.
 
-## Why volumes rather than host directories
+## Why volumes
 
 The sandbox is Linux and the host may be macOS. Mounting `~/.claude` or
 `~/.npm` from the host would mix two filesystems' ownership rules and two

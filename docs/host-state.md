@@ -32,9 +32,8 @@ that talk to an agent the wrapper runs on the host. Selecting in Claude
 Code's TUI copies to your clipboard; Ctrl+V pastes a host screenshot;
 `xclip -t image/png < shot.png` inside puts an image on your clipboard.
 
-Codex reads clipboard images over X11 rather than through those commands,
-so the sandbox runs a small headless X display (`DISPLAY=:99`) whose
-clipboard is served from the host. Ctrl+V of a screenshot works in `scodex`
+Codex reads clipboard images over X11, so the sandbox runs a small headless
+X display (`DISPLAY=:99`) whose clipboard is served from the host. Ctrl+V of a screenshot works in `scodex`
 too, and what Codex copies reaches your clipboard.
 
 This works on macOS and on Linux desktops; a headless Linux host has no
@@ -45,9 +44,10 @@ copies go out through the terminal (OSC 52) and reads fail.
 
 Session transcripts are shared both ways. A conversation started on the host
 can be resumed inside (`claude --resume`) and one started inside can be
-resumed outside. It is one bind-mounted directory, not a copy: for Claude
-Code, this workspace's transcripts under `~/.claude/projects`; for Codex, its
-whole `~/.codex/sessions` tree, which it does not split per project.
+resumed outside. Both sides use the same bind-mounted directory: for
+Claude Code, this workspace's transcripts under `~/.claude/projects`; for
+Codex, its whole `~/.codex/sessions` tree, which it does not split per
+project.
 
 Sessions the sandbox recorded before sharing existed move out to the host on
 the next run.

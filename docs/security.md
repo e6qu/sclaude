@@ -103,9 +103,9 @@ persist.
 
 ### `sclaude shell`
 
-`shell` runs bash with exactly the tool container's mounts, capabilities
-and limits, or attaches to the sandbox already running for the workspace.
-It is the same sandbox, not a side door.
+`shell` runs bash with the tool container's mounts, capabilities and
+limits, or attaches to the sandbox already running for the workspace. It
+has the same confinement as a session.
 
 ## What is let through on purpose
 

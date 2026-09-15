@@ -29,7 +29,7 @@ chmod +x sclaude scodex
 ./sclaude install
 ```
 
-From a clone, `./sclaude install` links the scripts instead of copying
+From a clone, `./sclaude install` links the scripts, so `git pull` updates
 them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory.
 
 The sandbox image is not shipped. The first run builds it locally, for your

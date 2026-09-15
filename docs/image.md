@@ -42,8 +42,8 @@ trimmed (`podman machine ssh sudo fstrim -av`) or restarted.
 Layers are ordered by how often they change: base image, OS packages and
 toolchains first, then the user and the shims, and the two agent CLIs alone
 at the end. A new CLI release therefore rebuilds one layer, which is what
-`sclaude update` does. The build metadata is an image label rather than a
-file, so a rebuild with nothing to do is a no-op.
+`sclaude update` does. The build metadata is an image label, so a rebuild
+with nothing to do is a no-op.
 
 apt and curl retry with backoff, and every download lands in a file before
 it is unpacked, so one dropped connection does not fail the build.
@@ -58,9 +58,9 @@ sclaude config set SAGENT_APT_MIRROR http://azure.archive.ubuntu.com/ubuntu/
 
 The mirror has to match what you are building: amd64 images want an archive
 mirror, arm64 images a `ubuntu-ports` one. A sources layout the rewrite does
-not recognise fails the build rather than using the slow default. The image
-keeps the sources, so `sudo apt install` inside the sandbox uses the mirror
-too. The published images are built without one.
+not recognise fails the build. The image keeps the sources, so `sudo apt
+install` inside the sandbox uses the mirror too. The published images are
+built without one.
 
 ### Corporate proxies
 

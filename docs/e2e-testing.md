@@ -120,8 +120,8 @@ engines that share only `$HOME` with their VM, such as Rancher Desktop. Tests
 that replicate `run_tool`'s mounts pass `$SAGENT_TEST_USERNS`, which the
 suite sets to the wrapper's keep-id mapping on rootless podman.
 
-Each test has a portable timeout so engine hangs fail cleanly instead of
-blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
+Each test has a portable timeout, so an engine hang fails that test and
+the suite goes on. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
 a slow builder.
 
 ### Testing Linux from a macOS host
