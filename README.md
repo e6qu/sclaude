@@ -1,7 +1,6 @@
 # sclaude / scodex
 
-A claude/codex wrapper originally by Adrian Mârza. It runs
-[Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
+Run [Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
 in a Docker or Podman sandbox. The CLI behaves as it does on the host, but it
 can only reach the current directory, one folder for files you hand it, and
 the host state listed below.
@@ -19,7 +18,8 @@ run from a directory under it.
 
 ## Install
 
-Both wrappers go to `~/.local/bin`, without sudo:
+sclaude ships as two self-contained shell scripts and nothing else. Both
+go to `~/.local/bin`, without sudo:
 
 ```bash
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
@@ -28,20 +28,28 @@ chmod +x sclaude scodex
 ./sclaude install
 ```
 
-From a clone, `./sclaude install` links them instead, so `git pull` updates
-them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory. When
-that directory is not on PATH, `install` adds it to your shell startup file,
-once.
+The sandbox image is not shipped. The first run builds it locally, for your
+user and your settings, which takes a few minutes and about 5.5 GB (8 GB
+free needed). Behind a TLS-inspecting proxy the build takes the proxy's CA
+from your trust store; if the host does not trust it either, see
+[corporate proxies](docs/image.md#corporate-proxies). Prebuilt images exist
+for CI and dev containers; see [published images](docs/image.md#published-images).
 
-`sclaude update` updates both wrappers and, when Claude Code or Codex has a
-new release, reinstalls them in the image. That is the last image layer, so
-it takes a minute; `sclaude update --force-rebuild` rebuilds everything.
-From a clone: `git pull && sclaude --build`.
+## Update
 
-The first run builds the image. It is about 5.5 GB and needs 8 GB free.
-Behind a TLS-inspecting proxy the build takes the proxy's CA from your trust
-store; if the host does not trust it either, see
-[corporate proxies](docs/image.md#corporate-proxies).
+```bash
+sclaude update
+```
+
+This updates both wrappers, and it updates Claude Code and Codex in the
+image whenever either has a new release, even when sclaude itself has no
+new version. The CLIs are the last image layer, so that takes about a
+minute. `sclaude update --force-rebuild` rebuilds the whole image.
+
+From a clone, `./sclaude install` links the scripts instead of copying them,
+so updating is `git pull && sclaude --build`. `install DIR` or
+`SAGENT_INSTALL_DIR` picks another directory; when it is not on PATH,
+`install` adds it to your shell startup file, once.
 
 ## Use
 
