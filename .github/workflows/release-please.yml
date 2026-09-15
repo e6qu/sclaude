@@ -46,7 +46,7 @@ jobs:
         # is pushed here for the jobs below to check out. Once a release
         # commit sits behind HEAD with workflow files changed in between,
         # the Actions token may neither tag it nor release it (#107): that
-        # is finished by hand, see CONTRIBUTING.
+        # is finished by hand, see docs/releasing.md.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -64,7 +64,7 @@ jobs:
             exit 0
           fi
           if ! gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null; then
-            echo "::error::GitHub refuses the Actions token a tag at $sha: the release commit is behind HEAD and workflow files changed since (#107). Finish $tag by hand: CONTRIBUTING, 'When a release does not finish'."
+            echo "::error::GitHub refuses the Actions token a tag at $sha: the release commit is behind HEAD and workflow files changed since (#107). Finish $tag by hand: docs/releasing.md, 'When a release does not finish'."
             exit 1
           fi
           echo "$tag -> $sha"

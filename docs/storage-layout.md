@@ -1,27 +1,25 @@
 # Storage layout
 
-What persists between runs lives in named volumes: one image and one set of
-home and cache volumes for both wrappers, and a config volume per tool for its
-credentials. Nothing is written to the host except the workspace, the shared
-session directory and the clipboard spool.
+What persists between runs lives in named volumes: one set of home and cache
+volumes for both wrappers, and a config volume per tool for its credentials.
+On the host, only the workspace, the drop folder, the shared session
+directory and the clipboard spool are written to.
 
 ## Volumes
 
-```
-Docker Volume              Container Mount                   Purpose
-─────────────────────────  ────────────────────────────────  ────────────────────────────────
-sclaude-config          →  /sclaude-config/                  Claude Code config & credentials
-scodex-config           →  /scodex-config/                   Codex auth and config
-sagent-rootfs           →  /home/agent/                      Shared home directory & preferences; Go, cargo, Maven/Gradle caches
-sagent-npm              →  /home/agent/.npm-global/          Shared npm global packages
-sagent-pip              →  /home/agent/.local/                Shared pip user packages and pip scripts
-sagent-share            →  /home/agent/.local/share/          uv tools, uv-managed Pythons, other XDG data (not a cache)
-sagent-apt-cache        →  /var/cache/apt/                   Shared apt package cache
-sagent-apt-lists        →  /var/lib/apt/lists/               Shared apt package lists
-sagent-containers       →  /home/agent/.local/share/containers/  Nested container images/state (--docker mode)
-$(pwd -P)               →  $(pwd)                            Current workspace directory (physical path mounted at the logical path)
-~/sagent-drop           →  same path                          Files for the agent (read-write; SAGENT_DROP_DIR names another folder)
-```
+| Volume | Mounted at | Holds |
+|---|---|---|
+| `sclaude-config` | `/sclaude-config/` | Claude Code config and credentials |
+| `scodex-config` | `/scodex-config/` | Codex auth and config |
+| `sagent-rootfs` | `/home/agent/` | Home directory and preferences; Go, cargo, Maven and Gradle caches |
+| `sagent-npm` | `/home/agent/.npm-global/` | npm global packages |
+| `sagent-pip` | `/home/agent/.local/` | pip user packages and scripts |
+| `sagent-share` | `/home/agent/.local/share/` | uv tools, uv-managed Pythons, other XDG data (not a cache) |
+| `sagent-apt-cache` | `/var/cache/apt/` | apt package cache |
+| `sagent-apt-lists` | `/var/lib/apt/lists/` | apt package lists |
+| `sagent-containers` | `/home/agent/.local/share/containers/` | Nested container images and state |
+| the workspace, `$(pwd -P)` | `$(pwd)` | The current directory, physical path mounted at the logical one |
+| `~/sagent-drop` | the same path | Files for the agent, read-write; `SAGENT_DROP_DIR` names another folder |
 
 ## Toolchain stamps
 
@@ -44,7 +42,7 @@ run after a version change; `sclaude volumes` shows usage and
 - `PATH` puts `~/.npm-global/bin`, `~/.local/bin`, `~/.cargo/bin` and `~/go/bin` (all persistent) ahead of the system toolchains in `/usr/local/go/bin`, `/opt/rust/cargo/bin` and `/opt/java/bin`
 - `CODEX_HOME=/scodex-config` - Tells Codex where to find auth and runtime state
 - `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` - Always set: the uv-built Python's OpenSSL expects `/etc/ssl/cert.pem`, which Ubuntu lacks; Codex reads it too
-- `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set only when the image was built with `SAGENT_CA_BUNDLE`; they point Node, requests and pip at the extra trust anchors (README, "Corporate networks")
+- `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT` - Set only when the image was built with `SAGENT_CA_BUNDLE`; they point Node, requests and pip at the extra trust anchors ([corporate proxies](image.md#corporate-proxies))
 
 ## Key files and directories
 
@@ -79,30 +77,32 @@ run after a version change; `sclaude volumes` shows usage and
 
 ## Host state sync
 
-sclaude and scodex carry credentials and host state into Docker volumes on each run:
+Before every run the wrapper stages what the sandbox gets from the host and
+streams it as one tar over stdin into a root helper container, which writes
+it into the volumes owned by your uid, secrets mode 600. A tar over stdin
+rather than a bind mount, because a host bind mount is denied on SELinux
+hosts and breaks on paths with colons.
 
-**macOS**: Extracts OAuth token from Keychain (`security find-generic-password`)
-**Linux**: Reads from `~/.claude/.credentials.json` or `$XDG_CONFIG_HOME/claude-code/credentials.json`
-**Codex**: Reads from `${CODEX_HOME:-$HOME/.codex}/auth.json` and common config files
-**git**: `git config --global --includes --list`, filtered, plus the excludes file
-**gh**: `gh auth token --hostname H` per host in `hosts.yml` (`GH_TOKEN` masked for the lookup)
-**ssh**: with `SAGENT_GIT_PROTOCOL=ssh`, `~/.ssh`; `config` loses `UseKeychain`, `$HOME` becomes `~`
+| What | Source on the host |
+|---|---|
+| Claude sign-in | macOS keychain, or `~/.claude/.credentials.json` / `$XDG_CONFIG_HOME/claude-code/credentials.json` on Linux |
+| Codex sign-in and config | `${CODEX_HOME:-$HOME/.codex}`: `auth.json`, `config.toml`, `instructions.md`, `AGENTS.md` |
+| git | `git config --global --includes --list`, filtered, plus the excludes file |
+| gh | `gh auth token --hostname H` per host in `hosts.yml` (`GH_TOKEN` masked for the lookup) |
+| ssh | with `SAGENT_GIT_PROTOCOL=ssh`, `~/.ssh`; `config` loses `UseKeychain` and `$HOME` becomes `~` |
 
-1. Stage everything in a temporary directory on the host
-2. Stream it as a tar over stdin into a root helper container (no host bind mount: SELinux, colons in paths)
-3. Validate the credentials are JSON
-4. Write to the config volume and the home volume, owned by your UID, secrets 600
-
-Credentials go in only when the host copy is the newer one: Claude by
-`expiresAt`, Codex by `last_refresh`. Refresh tokens rotate, and the sandbox
-refreshes on its own, so an older host copy over a newer sandbox one was a
-logout (#102).
+Sign-in files are copied only when the host copy is newer than the one in
+the volume: Claude by `expiresAt`, Codex by `last_refresh`. Refresh tokens
+rotate and the sandbox refreshes on its own, so an older host copy over a
+newer sandbox one would be a logout. Codex's `config.toml` is copied again
+only when the host file changes.
 
 `sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
-credentials, the gh token, with ssh your private keys.
+credentials, the gh token, and with ssh your private keys.
 
-`SAGENT_VOLUME_SUFFIX` puts a suffix on every volume name, a second set of
-sandbox state. The e2e suite runs on `-e2e` volumes and never touches yours.
+`SAGENT_VOLUME_SUFFIX` puts a suffix on every volume name, giving a second
+set of sandbox state. The test suite runs on `-e2e` volumes and never
+touches yours.
 
 ## Why volumes rather than host directories
 
@@ -112,7 +112,7 @@ platforms' binaries. Volumes hold Linux-shaped state, and only what the
 sandbox needs from the host is copied in each run (credentials, git and gh
 state) or bind-mounted where both sides must see the same files (the
 workspace, mounted at its own path so per-directory state keys match, and
-the session transcripts — see the README, "Sessions are shared").
+the session transcripts; see [host state](host-state.md#sessions)).
 
 ## Volume management
 
@@ -124,7 +124,7 @@ sclaude volumes
 
 ### Reset all data
 
-Deletes all persistent data — credentials, packages, preferences:
+Deletes all persistent data: credentials, packages, preferences.
 
 ```bash
 sclaude reset

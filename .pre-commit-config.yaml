@@ -33,6 +33,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: plain-docs
+        name: docs are plain ASCII apart from accented letters
+        language: script
+        entry: .githooks/plain-docs.py
+        files: ^(README|CONTRIBUTING|BUGS)\.md$|^docs/.*\.md$
+
       - id: forbid-pull-request-target
         name: forbid pull_request_target in GitHub Actions workflows
         language: pygrep

@@ -2260,14 +2260,14 @@ ensure_build_tls() {
     count=$(grep -c -- '-----BEGIN CERTIFICATE-----' "$candidate" || true)
     if [ "$count" -eq 0 ]; then
         echo "[$SCRIPT_NAME] ERROR: the host trust store exported no certificates, so the CA for \"$issuer\" cannot be taken from it." >&2
-        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see README, \"Corporate networks\")." >&2
+        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see docs/image.md, corporate proxies)." >&2
         exit 1
     fi
     result=$(build_tls_probe "$candidate")
     status=$(printf '%s\n' "$result" | sed -n 1p)
     if [ "$status" != "TLS-OK" ]; then
         echo "[$SCRIPT_NAME] ERROR: the host trust store ($count certificate(s)) does not contain a CA for \"$issuer\" either." >&2
-        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see README, \"Corporate networks\")." >&2
+        echo "[$SCRIPT_NAME] Obtain that CA as PEM from whoever runs the proxy and set SAGENT_CA_BUNDLE to it (see docs/image.md, corporate proxies)." >&2
         exit 1
     fi
     mkdir -p "$bundle_dir"
@@ -2402,7 +2402,7 @@ EOF
             if [ "$rc" -eq 0 ]; then
                 doctor_report PASS network "the sandbox reaches https://registry.npmjs.org with a trusted certificate"
             elif printf '%s' "$out" | grep -qE 'curl: \(60\)|certificate'; then
-                doctor_report FAIL network "TLS verification fails inside the sandbox (a TLS-inspecting proxy?): export its CA and set SAGENT_CA_BUNDLE (README, \"Corporate networks\")"
+                doctor_report FAIL network "TLS verification fails inside the sandbox (a TLS-inspecting proxy?): export its CA and set SAGENT_CA_BUNDLE (docs/image.md, corporate proxies)"
             else
                 doctor_report FAIL network "no HTTPS from inside the sandbox: $(printf '%s' "$out" | tail -1)"
             fi

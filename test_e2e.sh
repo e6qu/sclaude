@@ -2501,10 +2501,13 @@ run_test "T55: build downloads go to a file first" bash -ec '
         echo "$joined" | grep -oE "curl [^|;]*\\| *(tar|sh|bash|env|gpg|unzip|tee)\\b" >&2
         exit 1
     fi
-    # The file downloads are cleaned up in the same step.
-    for f in node.tar.xz uv-install.sh go.tar.gz rustup-init.sh jdk.tar.gz maven.tar.gz spring.tar.gz microsoft.asc; do
-        echo "$joined" | grep -q -- "-o /tmp/$f" || { echo "no file download for $f" >&2; exit 1; }
-        echo "$joined" | grep -q "rm /tmp/$f" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
+    # Every file download is removed in the same step. Which downloads exist
+    # depends on the toolchains and tools this host has configured, so the
+    # list comes from the Dockerfile itself; node is always there.
+    files=$(echo "$joined" | grep -oE -- "-o /tmp/[A-Za-z0-9._-]+" | sed "s#-o /tmp/##" | sort -u)
+    echo "$files" | grep -q "^node.tar.xz$" || { echo "no file download for node.tar.xz" >&2; exit 1; }
+    for f in $files; do
+        echo "$joined" | grep -qE "rm( -[a-zA-Z]+)*( \"?/tmp/[^ ;\"]+\"?)* /tmp/$f( |;|\"|$)" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
     done
 ' _ "$SCLAUDE"
 
