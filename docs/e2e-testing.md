@@ -1,13 +1,14 @@
 # Testing
 
-One test suite, `test_e2e.sh`, runs on macOS and Linux against Docker or
-Podman.
+`test_e2e.sh` tests the wrappers on macOS and Linux with Docker or Podman.
+`test_devcontainers.sh` builds and smoke-tests the dev containers.
 
 ## Prerequisites
 
 - Docker or Podman installed and running
 - bash
 - zsh, for the zsh compatibility test; skipped when absent
+- `npm install -g @devcontainers/cli` for `test_devcontainers.sh`
 
 ## Test matrix
 
@@ -15,10 +16,10 @@ Podman.
 |---|---|---|
 | T01: `version` command | Basic execution, hashing (`shasum` vs `sha256sum`) | #13 |
 | T02: Image build | Dockerfile generation, UID/GID mapping | #1, #4, #35 |
-| T03: Piped input (no TTY) | Non-TTY detection, `-it` flag handling | #6 |
-| T04: `--yolo` flag conversion | Flag rewriting | -- |
+| T03: Piped input (no TTY) | `version` runs with stdin piped | #6 |
+| T04: `--yolo` flags | `version` accepts `--yolo` and `--no-yolo` in both wrappers | -- |
 | T04b: `--docker` flags | `--docker`/`--no-docker`/`SAGENT_DOCKER` parse | -- |
-| T05: Credential sync keeps the newer copy | Linux: a host credential lands in the volume, a sandbox copy with a later `expiresAt` survives the next run, a newer host copy replaces it; macOS: the keychain read runs | #12, #14, #16, #102 |
+| T05: Credential sync keeps the newer copy | Linux: the host copy lands in the volume, a newer sandbox copy survives the next run, a newer host copy replaces it. macOS: a run completes and the config volume exists; the keychain is left alone | #12, #14, #16, #102 |
 | T06: Volume creation & permissions | Shared user volumes writable by agent user | #22 |
 | T07: Volume persistence | Data survives across container runs | -- |
 | T08: Cleanup command | Old image removal | -- |
@@ -41,14 +42,14 @@ Podman.
 | T18b: pip install --user works | PEP 668 override lands packages in `sagent-pip` | #51 |
 | T19: Image contents | Claude, Codex and GitHub CLIs plus the configured Node, Python/pip/uv, Go, Rust (rustfmt, clippy), Java and podman/pasta at the versions the wrapper reports; every selected tool (the js, java, infra and cloud groups: TypeScript through shadcn, Maven through Spring Boot CLI, kubectl, Helm, Terraform, Terragrunt, the AWS, Azure and Google Cloud CLIs) present and every unselected one absent | #40 |
 | T19b: Clipboard shims, git defaults, locale | Without the bridge, `pbcopy`/`xclip`/`wl-copy`/`xsel` emit OSC 52 and the read shims fail with a message; `/etc/gitconfig` has the gh credential helper and LFS filters and no URL rewrite; `LANG=C.UTF-8` | -- |
-| T19c: Clipboard bridge round trip | The wrapper's clipboard agent (sourced from the wrapper, against a fake host clipboard) serves the sandbox shims through a mounted bridge: text read by `pbpaste`/`wl-paste`/`xclip -o`, target listing, PNG read, unsupported target refused, copies through all four shims reach the host, the spool is left clean; with no agent a read fails after its timeout; a PNG copied inside with `xclip -t image/png` or `wl-copy --type image/png` reaches the host clipboard as an image, an unsupported copy target is refused | -- |
-| T19d: Clipboard bridge in a real run | With the host clipboard stubbed (so it runs headless too), a run mounts the spool and sets `WAYLAND_DISPLAY`, paste reads the host and copy reaches it, the spool is gone afterwards, and with `SAGENT_CLIPBOARD=0` there is no spool and copy falls back to OSC 52; `DISPLAY=:99` is set and the X socket exists | -- |
+| T19c: Clipboard bridge round trip | Against a fake host clipboard, the sandbox shims read text, targets and a PNG, and copy text and a PNG back; an unsupported target is refused; an unanswered request fails within 10 s | #92, #93 |
+| T19d: Clipboard bridge in a real run | A run mounts the spool, sets `WAYLAND_DISPLAY` and `DISPLAY`, brings the X clipboard up before the tool starts, and pastes and copies through the host; the spool is gone afterwards; with the bridge off none of it exists | #91 |
 | T19e: Sessions shared both ways | A session the host has is readable inside, one the sandbox writes lands on the host owned by the user, a session recorded in the volume before sharing moves out to the host, and `SAGENT_SESSIONS=0` shares nothing | -- |
 | T19f: `SAGENT_SESSIONS=all` shares file-history | The host store is readable inside, what the sandbox writes lands on the host owned by the user, rewind data recorded in the volume beforehand moves out, and the default shares none of it | -- |
 | T20a: Host git config, gh login and SSH sync | Host global git config lands in the home volume minus host-only keys (signing, credential helpers, editor, host paths), multi-valued keys and the excludes file intact; gh tokens per host (env token masked); with `SAGENT_GIT_PROTOCOL=https` every host gets the SSH-to-HTTPS rewrite and no `~/.ssh` is synced; unset it follows the host gh (ssh): no rewrite, `~/.ssh` synced 700/600 by manifest, a sandbox-made key untouched, and removed again on the next https run; `~/.gitconfig` exists; synced git files mirror the host | -- |
 | T20c: Workspace git identity | An identity only the repo provides (invisible to a global-config read) is carried into the sandbox, so commits there have an author | -- |
 | T20b: Sync tar quiet on clock skew | The extraction command read out of the wrapper stays silent on a tarball dated in the future (a host clock ahead of the engine VM made GNU tar warn per file) | -- |
-| T20: scodex config sync | Codex `auth.json` and `config.toml` sync to `scodex-config`; an `auth.json` with a later `last_refresh` in the volume survives the next run and a newer host copy replaces it | #40, #102 |
+| T20: scodex config sync | `auth.json` and `config.toml` land in `scodex-config`; an `auth.json` with a later `last_refresh` in the volume survives, a newer host copy replaces it | #40, #102 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
 | T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
@@ -62,10 +63,10 @@ Podman.
 | T31: `SAGENT_CA_BUNDLE` | Bundle validation, hash coverage, and a real build whose curl/Python/Node trust a certificate issued by a bundled CA | #68 |
 | T32: Dockerfile generation | Stub engine: CA block emitted only with a bundle, one file per certificate in the context, build-failure guidance printed; FROM/ARG carry the toolchain versions, `none` omits a toolchain, `SAGENT_TOOLS` selects exactly the named tools | #68 |
 | T32b: dockerfile command | Prints the build's Dockerfile: `FROM`, the version hash as a label (no metadata file layer), the agent CLI install last and behind `ARG AGENT_CLI_REFRESH`; `SAGENT_IMAGE_UID`/`GID` change the hash; identical from both wrappers | -- |
-| T32c: Refreshed CA bundle re-staged | A stub engine fails TLS once so the wrapper takes the CA from the host trust store; the build context must then carry the refreshed bundle, not the stale one it was staged with | -- |
+| T32c: Refreshed CA bundle re-staged | A stub engine fails TLS once so the wrapper takes the CA from the host trust store; the build context then carries the refreshed bundle | -- |
 | T32d: Build guidance survives a broken engine | With every container after the TLS probe failing, a failed build still prints the whole guidance instead of stopping at its first line | -- |
 | T33: VM share check | Stub engine reporting the `rancher-desktop` and `colima` contexts: a workspace outside `$HOME` is refused, `SAGENT_SKIP_SHARE_CHECK=1` and a `$HOME` workspace pass; other contexts are not checked | #74 |
-| T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused before any engine call; `version` still works | #75 |
+| T34: docker CLI on rootless daemon | Stub engine reporting a rootless podman server: the run is refused after the engine probe, before any build, volume or run call | #75 |
 | T35: Toolchain settings | Invalid versions rejected up front; each setting changes the image hash; config file applies and the environment wins | -- |
 | T36: Toolchain stamps | A pip volume stamped for another Python is cleared with a warning on the next run; an unchanged toolchain leaves it alone | #76 |
 | T37: `reset-caches` | Cache volumes removed; credentials, config and home volumes kept | -- |
@@ -82,36 +83,40 @@ Podman.
 | T46: Timeout helper reaps its own timer | After a command finishes, the harness's timer subshell and its `sleep` are both gone | -- |
 | T47: Apt mirror rewrites the image sources | Unset, no mirror layer and the default archive; set, the layer appears, the image hash changes, a missing trailing slash is added, and the `sed` it emits rewrites every stanza of a real sources file (security and ports included); a non-URL is refused | -- |
 | T48: A test is retried only when the engine went away | The dead-engine signature is recognised and a plain assertion failure is not; a test that fails that way once is retried and reported as a pass, saying RETRY; a real failure is reported once, unretried | -- |
-| T49: Agent attribution is off by default | The image carries Claude Code's policy file with `attribution.commit` and `attribution.pr` empty; `SAGENT_AI_ATTRIBUTION=1` leaves it out and is a different image; anything but 0 or 1 is refused | #103, #104 |
-| T50: mcp subcommand runs without the yolo flag | With a stub engine recording argv, `mcp list` gets no yolo flag from either wrapper while a prompt and `codex exec` still do; for real, a server added with `sclaude mcp add` is listed on the next run and gone after `mcp remove` | -- |
-| T51: `scodex mcp add` persists under a host config.toml | A server added inside is still there on the next run while the host `config.toml` is unchanged, and gone once the host file changes, which then wins | -- |
-| T52: Volume suffix keeps the suite off the real volumes | No test names a real volume, both wrappers mount only suffixed names under `SAGENT_VOLUME_SUFFIX`, a suffix with a space is refused, `volumes` lists the suffixed names | #101 |
-| T53: Drop dir mounted at its own path, unsafe values refused | `~/sagent-drop` is created and mounted read-write at the same path by default; `SAGENT_DROP_DIR` names another (trailing slash dropped); a relative path, a missing directory (also with `~/`), `/` and the workspace itself are refused with a reason; a real `shell` run reads a host file there and leaves one behind | -- |
-| T54: X11 clipboard served from the host, both ways | In a real run against a fake host clipboard, an X client (what Codex's arboard does) finds an owner, lists `image/png` and `UTF8_STRING` among the targets, reads the host PNG and text, then owns the selection with its own text, which reaches the host before the sandbox takes the selection back | -- |
+| T49: Agent attribution is off by default | The image's policy file sets `attribution.commit` and `attribution.pr` empty; `SAGENT_AI_ATTRIBUTION=1` leaves it out and changes the hash; other values are refused | #103, #104 |
+| T50: mcp subcommand runs without the yolo flag | With a stub engine, `mcp list` gets no yolo flag while a prompt and `codex exec` do; for real, a server added through the wrapper is listed on the next run and gone after `mcp remove` | #111 |
+| T51: `scodex mcp add` persists under a host config.toml | A server added inside survives runs while the host `config.toml` is unchanged, and is replaced once that file changes | #99 |
+| T52: Volume suffix keeps the suite off the real volumes | No test names a real volume; both wrappers mount only suffixed names; a suffix with a space is refused; `volumes` lists the suffixed names | #101 |
+| T53: Drop dir mounted at its own path, unsafe values refused | `~/sagent-drop` is created and mounted by default; `SAGENT_DROP_DIR` names another; a relative path, a missing directory, `/` and the workspace are refused; a real run reads and writes a file there | -- |
+| T54: X11 clipboard served from the host, both ways | In a real run, an X client (what arboard does) finds an owner, reads the host PNG and text, and its own copy reaches the host before the sandbox takes the selection back | -- |
+| T55: Build downloads go to a file first | No build download is piped into `tar`, `sh`, `env`, `gpg`, `unzip` or `tee`; every `-o /tmp/...` download is removed in the same step | #113 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
 ## Running the tests
 
-The suite runs on its own volumes, named with the `-e2e` suffix, so your
-sandbox state is not touched. It builds the shared image, rebuilds it once
-without cache (T10), and builds a second image with a throwaway CA bundle
-(T31), which it removes afterwards.
+The suite uses volumes with the `-e2e` suffix, so your sandbox volumes are
+left alone. It shares the engine's image store with your normal runs, and
+some tests write under your home directory and clean up after themselves.
+A full run builds the shared image, rebuilds it once without cache (T10),
+and builds a second image with a throwaway CA bundle (T31), which it
+removes afterwards.
 
-From the repo root on macOS or Linux:
+Run the suite from the repository root:
 
 ```bash
 bash test_e2e.sh
 ```
 
-Against Podman instead of Docker:
+To select Podman:
 
 ```bash
 SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 ```
 
-Test bodies run under `bash -ec`, so every command in a test is an assertion
-(#72); guard commands that are allowed to fail with `|| true` or an `if`.
+Test bodies run under `bash -ec`, so a failing command ends the test,
+within bash's `errexit` rules (#72). Check an expected failure with an
+`if`. Use `|| true` when the result does not matter.
 
 Fixtures that get bind-mounted into containers are created under
 `SAGENT_TEST_TMPDIR` (default `/tmp`). Point it under your home directory for
@@ -119,21 +124,23 @@ engines that share only `$HOME` with their VM, such as Rancher Desktop. Tests
 that replicate `run_tool`'s mounts pass `$SAGENT_TEST_USERNS`, which the
 suite sets to the wrapper's keep-id mapping on rootless podman.
 
-Each test has a portable timeout so engine hangs fail cleanly instead of
-blocking the suite. Override with `TEST_TIMEOUT_SECONDS=1200` when testing on
-a slow builder.
+Each test body has a timeout of 600 seconds, so an engine hang fails that
+test and the suite goes on. Set `TEST_TIMEOUT_SECONDS=1200` on a slow
+builder. Engine recovery and suite setup run outside that timeout.
 
 ### Testing Linux from a macOS host
 
-Any Linux VM with a container engine works. Rootless Podman inside the
-Podman machine VM (SELinux-enforcing Fedora CoreOS):
+A Linux VM needs the checkout and a supported engine. For rootless Podman
+in the Podman machine VM, an SELinux-enforcing Fedora CoreOS, replace the
+machine name and the path:
 
 ```bash
 podman machine ssh --username core podman-machine-default \
     'SAGENT_CONTAINER_ENGINE=podman bash /path/to/sclaude/test_e2e.sh'
 ```
 
-Docker inside this repo's docker-in-docker dev container (UID-1000 Ubuntu):
+To run the suite in this repository's dev container, a UID-1000 Ubuntu
+with Docker inside:
 
 ```bash
 npm install -g @devcontainers/cli
@@ -141,47 +148,58 @@ devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . bash /workspaces/sclaude/test_e2e.sh
 ```
 
-These two configurations exercise real platform differences: SELinux label
-enforcement (bug #57) and the UID-1000 sudoers collision (bug #56).
-
 ### CI
 
-For pushes to main and same-repo PRs, CI runs the suite across the full
-engine matrix (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
+CI runs the suite on pushes to `main` and on same-repository PRs, except
+the release PR. The lint jobs and the PR title check run on every other PR,
+fork PRs included.
+[`ci.yml`](../.github/workflows/ci.yml) has the job conditions.
 
-| Job | Topology |
+| Job | Environment |
 |---|---|
-| what-ran | Runs on every event, including the release PR where every other job filters itself out, so the run always has a job to conclude on (#89) |
+| what-ran | Runs on every event, so the release PR, where every other job skips itself, still has a job to conclude on (#89) |
 | test-linux | docker CLI on docker server (Ubuntu, AppArmor enforcing) |
 | test-linux-podman | rootless podman CLI on podman (exercises the keep-id user mapping, #75) |
 | test-linux-docker-cli-podman | real docker CLI on a rootful podman docker-compat socket (a rootless socket is refused by the wrapper, see #75/T34) |
 | test-linux-podman-shim | podman fronted as the `docker` command |
-| build-macos-image | Builds the trimmed image (`SAGENT_TOOLS=none`, no Go, Rust or Java) once on Linux for the macOS runners' uid/gid, and publishes it as an artifact (#98) |
-| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM (Intel runner; Apple Silicon runners lack nested virtualization). Two slices on two runners (#96). Loads the prebuilt image and checks it is the one the wrapper there computes. Skips T02, T10, T10b and T31, whose full image builds are engine-independent and covered by the Linux jobs, and T12b (colima shares only `$HOME` and `/tmp/colima`) |
-| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; same slices, image and skips as test-macos (Rancher Desktop shares only `$HOME`) |
+| build-macos-image | Builds the trimmed image for the macOS jobs on Linux and publishes it as an artifact (#98) |
+| test-macos (1/2, 2/2) | macOS host, docker CLI to dockerd in a colima Linux VM, two slices on two runners (#96) |
+| test-macos-rancher (1/2, 2/2) | macOS host, Rancher Desktop's docker CLI (`~/.rd/bin`) to dockerd in its Lima VM, started headlessly with `rdctl`; the same slices as test-macos |
 | test-devcontainers | UID-1000 docker-in-docker dev container, building the dev containers and then running the whole suite inside |
 
-T27 inside each job adds one more nesting level (nested podman in the
-sandbox), so the devcontainer and macOS jobs exercise three to four layers of
-container/VM nesting.
+The macOS jobs run on Intel runners, because the Apple Silicon runners lack
+nested virtualization. Building the image there would take most of the
+job, so build-macos-image builds it once on Linux, trimmed to
+`SAGENT_TOOLS=none` with no Go, Rust or Java, for the macOS runners' uid
+and gid. Each macOS job loads that image and checks it is the one the
+wrapper there computes. Those jobs skip T02, T10, T10b and T31, whose full
+image builds do not depend on the engine and run in the Linux jobs, and
+T12b, because colima shares only `$HOME` and `/tmp/colima` with its VM and
+Rancher Desktop only `$HOME`.
+
+T27 runs a container inside the sandbox through nested podman.
 
 ## Running part of the suite
 
-`SAGENT_TEST_SKIP="T02 T10"` skips named tests, reported as SKIP.
-`SAGENT_TEST_SHARD="1/2"` runs one slice: every second test starting from the
-first. Tests are numbered in file order, skipped or not, so every slice
-agrees on which test is which and together the slices run each test exactly
-once. CI runs the macOS jobs as two slices on parallel runners.
+`SAGENT_TEST_SKIP="T02 T10"` skips the named tests, reported as SKIP.
 
-A failing test prints the tail of its capture, and its shell runs traced, so
-the last lines name the command that failed even when that command sent its
-own output away. `FAIL_OUTPUT_LINES` sets how many lines are shown (30).
+`SAGENT_TEST_SHARD="1/2"` runs every second test starting from the first,
+and `"2/2"` the others. Tests are numbered in file order, skipped or not,
+so the slices agree on which test is which and together cover each test
+once. A test in `SAGENT_TEST_SKIP` stays skipped in its slice. CI runs
+each macOS engine as two slices on two runners.
 
-Only the test's own shell is traced; the wrappers and scripts it runs are
-not, so capturing their stderr is safe. The one thing the trace does reach
-is a group, subshell or shell function whose stderr is captured inside the
-test, `$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )`, `$(fn 2>&1)`, because the
-trace follows file descriptor 2 into the capture. Do not assert on those;
-capture an external command instead. (`BASH_XTRACEFD`, which would avoid
-this, does not exist in the bash 3.2 that macOS ships.)
+On failure the harness prints the last 30 lines of the test's output.
+`FAIL_OUTPUT_LINES` changes that. Test bodies run with `-x`, so the tail
+usually names the command that failed, even when that command sent its
+own output elsewhere.
+
+The trace covers the test's own shell only. The wrappers and scripts it
+runs are untraced, so their captured stderr is clean. Capturing the stderr
+of a group, subshell or shell function inside the test, as in
+`$( { cmd; } 2>&1 )`, `$( (cmd) 2>&1 )` or `$(fn 2>&1)`, picks up trace
+lines, because the trace follows file descriptor 2 into the capture. Do
+not assert on those captures. Capture an external command instead. The
+bash 3.2 that macOS ships lacks `BASH_XTRACEFD`, which would send the trace
+elsewhere.
 

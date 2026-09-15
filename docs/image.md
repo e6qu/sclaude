@@ -1,11 +1,14 @@
 # The image
 
-What the sandbox image contains, how it is built, and what changes it.
+Both wrappers build and use the same sandbox image, for your uid, gid and
+settings.
 
 ## Contents
 
 Ubuntu 26.04 with Claude Code, Codex, `gh`, git, git-lfs and
-build-essential.
+build-essential. `SAGENT_UBUNTU_VERSION` picks another release. podman and
+its `docker` command shim are always installed. `--no-docker` turns the
+nested tooling off at run time.
 
 | Toolchain | Default | Setting |
 |---|---|---|
@@ -17,7 +20,7 @@ build-essential.
 
 | Group | Tools |
 |---|---|
-| `js` | TypeScript, tsx, bun, yarn and pnpm (corepack), create-next-app, create-vite, shadcn |
+| `js` | TypeScript, tsx, bun, corepack shims for yarn and pnpm, create-next-app, create-vite, shadcn |
 | `java` | Maven, Gradle, Quarkus CLI, Spring Boot CLI |
 | `infra` | kubectl, Helm, Terraform, Terragrunt |
 | `cloud` | AWS CLI v2, Azure CLI, Google Cloud CLI with gsutil and bq |
@@ -25,66 +28,76 @@ build-essential.
 Utilities: tree, htop, btop, jq, ripgrep, fd, bat, vim, nano, wget, zip,
 rsync, ssh, lsof, dig, nc, tmux, sqlite3.
 
-Everything together is about 5.5 GB; the `cloud` group is 1.4 GB of that.
-`sclaude tools` lists what is in and why not. `sclaude tools disable cloud`
-drops a group (or named tools), and `sclaude config set SAGENT_GO_VERSION
-none` drops a toolchain. Any change builds a new image on the next run, and
-caches that belong to an old toolchain are cleared then.
+The default image is about 5.5 GB, of which the `cloud` group is about
+1.4 GB. The size varies with the architecture and the package versions of
+the day. `sclaude tools` lists the selection and the reason for each
+exclusion. `sclaude tools disable cloud` drops a group or named tools, and
+`sclaude config set SAGENT_GO_VERSION none` drops a toolchain. A change
+that alters the generated Dockerfile builds a new image on the next run.
+[Toolchain stamps](storage-layout.md#toolchain-stamps) covers the caches
+that are cleared then.
 
 ## Builds
 
-The image is built locally, for your uid and gid and your settings. A build
-needs about 8 GB free where the engine stores images. `sclaude doctor`
-reports what is left and `sclaude cleanup` removes old images. On a
-VM-backed engine the freed space returns to the host after the VM is
-trimmed (`podman machine ssh sudo fstrim -av`) or restarted.
+The wrapper builds the image on your machine, for your uid and gid and your
+settings. A build needs about 8 GB free where the engine stores images.
+`sclaude doctor` reports what is left, and `sclaude cleanup` removes the
+sandbox images other than the current one. On a VM-backed engine the freed
+space returns to the host once the VM's disk is trimmed, for example with
+`podman machine ssh sudo fstrim -av`.
 
 Layers are ordered by how often they change: base image, OS packages and
 toolchains first, then the user and the shims, and the two agent CLIs alone
-at the end. A new CLI release therefore rebuilds one layer, which is what
-`sclaude update` does. The build metadata is an image label rather than a
-file, so a rebuild with nothing to do is a no-op.
+at the end. A new CLI release rebuilds that last layer, which is what
+`sclaude update` does when the earlier layers are cached.
+`sclaude update --force-rebuild` pulls the base image and rebuilds every
+layer without the cache.
 
-Every download in the build lands in a file before it is unpacked, and both
-apt and curl retry with backoff, so one dropped connection does not fail
-the build.
+apt and curl retry failed downloads with backoff, and every download lands
+in a file before it is unpacked. A build still fails once the retries are
+used up.
 
 ### Mirrors
 
-Packages come from Ubuntu's archive. If you sit next to a mirror, name it:
+Ubuntu packages come from the release's default repositories. To use a
+mirror, set `SAGENT_APT_MIRROR`:
 
 ```bash
 sclaude config set SAGENT_APT_MIRROR http://azure.archive.ubuntu.com/ubuntu/
 ```
 
-The mirror has to match what you are building: amd64 images want an archive
-mirror, arm64 images a `ubuntu-ports` one. A sources layout the rewrite does
-not recognise fails the build rather than using the slow default. The image
-keeps the sources, so `sudo apt install` inside the sandbox uses the mirror
-too. The published images are built without one.
+amd64 images take an archive mirror and arm64 images an `ubuntu-ports`
+mirror. The build fails when its rewrite of the sources file does not find
+the entries it expects. The image keeps the mirror, so `sudo apt install`
+inside the sandbox uses it as well. The published images use the default
+repositories.
 
 ### Corporate proxies
 
-Before the first build the wrapper checks whether HTTPS from a container is
-intercepted. If it is, it takes the proxy's CA from the host trust store and
-bakes it into the image, and points Node, OpenSSL, requests and pip at it.
-If the host does not trust that CA either, get it as PEM and name it:
+Before each build the wrapper fetches `https://cli.github.com/` from a
+plain Ubuntu container. When verification fails, it exports the host's
+trust store, retries with that bundle, saves the bundle next to the
+settings file, and sets `SAGENT_CA_BUNDLE`. The image then trusts it, and
+Node, OpenSSL, requests and pip are pointed at it. If the host does not
+trust the proxy's CA either, get it as PEM and name it:
 
 ```bash
 sclaude config set SAGENT_CA_BUNDLE /path/to/ca.pem
 ```
 
-Whoever controls that CA can read the sandbox's HTTPS traffic. That is
-already true on the host on such a network; the wrapper extends the same
-trust to the sandbox, for the file you name.
+Add only certificates you mean the sandbox to trust.
+[Extra trust anchors](security.md#extra-trust-anchors) covers the risk.
 
 ## Published images
 
-Each release publishes `ghcr.io/e6qu/sagent-sandbox:<version>` (multi-arch),
-plus `<version>-amd64` and `<version>-arm64`. There is no `latest` tag. They
-are built for uid and gid 1000 with the default toolchains and tools, for
-use in CI or dev containers; the wrappers build locally for your own uid and
-settings.
+Once a release's image jobs finish, `ghcr.io/e6qu/sagent-sandbox:<version>`
+is available for amd64 and arm64, plus `<version>-amd64` and
+`<version>-arm64`. There is no `latest` tag. These images use uid and gid
+1000 and the default toolchains and tools. They exist for CI and dev
+containers. The wrappers build their own images.
+
+The following runs Claude Code directly in the published image, without
+the wrapper's mounts, limits, capability drops or host state sync:
 
 ```bash
 docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:3.1.2 claude
@@ -98,18 +111,5 @@ docker run --rm -it -v "$PWD:/workspace" ghcr.io/e6qu/sagent-sandbox:3.1.2 claud
 | [`examples/devcontainer-claude/`](../examples/devcontainer-claude/) | Claude Code directly in a project |
 | [`examples/devcontainer-sclaude/`](../examples/devcontainer-sclaude/) | Claude Code through sclaude in a project |
 
-## For contributors: what changes the image
-
-The image hash covers the generated Dockerfile (toolchain versions and the
-tool selection included), the uid and gid build arguments, and the CA
-bundle. Any change to the Dockerfile text in the wrappers, to a version
-default, or to the tool registry gives a new hash, and every user rebuilds
-on their next run. Changes elsewhere in the wrappers (flags, commands,
-messages) keep the hash.
-
-Version defaults are the `*_VERSION` constants near the top of the
-wrappers. Optional tools are the `SAGENT_TOOL_REGISTRY` table (name, group,
-description) plus one install fragment per tool, in `get_dockerfile_content`
-for the npm and Java tools and in `emit_extra_tools` for the infra and cloud
-ones, plus one presence check per tool in test T19. Volume stamps take their
-values from the settings.
+What decides the image hash, and how to add a tool, is in
+[Contributing](../CONTRIBUTING.md#what-changes-the-image).
