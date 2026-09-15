@@ -1,9 +1,10 @@
 # Storage layout
 
-What persists between runs lives in named volumes: one set of home and cache
-volumes shared by both wrappers, and a config volume per tool for its
-credentials. On the host, only the workspace, the drop folder, the shared
-session directory and the clipboard spool are written to.
+What persists between runs lives in named volumes. Both wrappers share one
+set of home and cache volumes, and each has a config volume for its
+credentials. On the host, the wrapper writes to the workspace, the drop
+folder, the shared session directory and the clipboard spool, and nowhere
+else.
 
 ## Volumes
 
@@ -27,9 +28,9 @@ volumes and never touches yours.
 
 ## Toolchain stamps
 
-Each cache volume carries a `.sagent-stamp` file naming the toolchain it was
-filled for: `node=26`, `python=3.14`, `ubuntu=26.04`. Before every run the
-helper container compares the stamp with the image and, when they differ,
+Each cache volume carries a `.sagent-stamp` file naming the toolchain it
+was filled for: `node=26`, `python=3.14`, `ubuntu=26.04`. Before every run
+the helper container compares the stamp with the image. When they differ it
 clears the volume and says so. pip packages belong to one Python minor
 version, npm native addons to one Node ABI, and apt and podman state to one
 Ubuntu release. A volume without a stamp is treated the same way once.
@@ -86,10 +87,11 @@ per-run clipboard spool, mounted from `~/.cache/sagent/clipboard.*`.
 
 ## Host state sync
 
-Before every run the wrapper stages what the sandbox gets from the host and
-streams it as one tar over stdin into a root helper container, which writes
-it into the volumes owned by your uid, secrets mode 600. A host bind mount
-would be denied on SELinux hosts and would break on paths with colons.
+Before every run the wrapper stages what the sandbox gets from the host
+and streams it as one tar over stdin into a root helper container. The
+helper writes it into the volumes, owned by your uid, secrets mode 600. A
+host bind mount would be denied on SELinux hosts and would break on paths
+with colons.
 
 | What | Source on the host |
 |---|---|
@@ -100,9 +102,9 @@ would be denied on SELinux hosts and would break on paths with colons.
 | ssh | with `SAGENT_GIT_PROTOCOL=ssh`, `~/.ssh`; `config` loses `UseKeychain` and `$HOME` becomes `~` |
 
 Sign-in files are copied only when the host copy is newer than the one in
-the volume: Claude by `expiresAt`, Codex by `last_refresh`. Refresh tokens
-rotate and the sandbox refreshes on its own, so an older host copy over a
-newer sandbox one would be a logout.
+the volume, by `expiresAt` for Claude and `last_refresh` for Codex.
+Refresh tokens rotate and the sandbox refreshes on its own. An older host
+copy over a newer sandbox one would be a logout.
 
 `sclaude-config`, `scodex-config` and `sagent-rootfs` hold secrets:
 credentials, the gh token, and with ssh your private keys.
@@ -111,9 +113,9 @@ credentials, the gh token, and with ssh your private keys.
 
 The sandbox is Linux and the host may be macOS. Mounting `~/.claude` or
 `~/.npm` from the host would mix two filesystems' ownership rules and two
-platforms' binaries. Volumes hold Linux-shaped state; what the sandbox
-needs from the host is copied in, and only what both sides must see the
-same way is bind-mounted: the workspace, the drop folder and the session
+platforms' binaries. Volumes hold Linux-shaped state. What the sandbox
+needs from the host is copied in. Only what both sides must see the same
+way is bind-mounted: the workspace, the drop folder and the session
 transcripts.
 
 ## Managing volumes

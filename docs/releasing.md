@@ -1,7 +1,7 @@
 # Releasing
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please)
-from conventional commits, and published by
+from conventional commits and published by
 [`.github/workflows/release-please.yml`](../.github/workflows/release-please.yml).
 
 ## How a release happens
@@ -15,30 +15,30 @@ from conventional commits, and published by
    at a release without its wrappers.
 3. The same run builds the amd64 and arm64 images, pushes them to
    `ghcr.io`, and publishes the multi-arch manifest.
-4. Only then is the next release PR built, from the published tag.
+4. The next release PR is built after that, from the published tag.
 
-Merges of `docs:`, `test:`, `ci:` and `chore:` commits do not produce a
-release PR.
+Merges of `docs:`, `test:`, `ci:` and `chore:` commits produce no release
+PR.
 
 ## The release PR's checks
 
-The release PR comes from `github-actions[bot]`, and GitHub holds workflow
-runs from bot-authored pull requests until someone approves them. Press
-"Approve and run" on the PR's checks once; the one job that runs there,
-`what-ran`, says that the test jobs are skipped on purpose. Left
-unapproved, the run goes red and the PR looks broken when it is not.
+The release PR comes from `github-actions[bot]`. GitHub holds workflow runs
+from bot-authored pull requests until someone approves them. Press "Approve
+and run" on the PR's checks once. The one job that runs there, `what-ran`,
+says that the test jobs are skipped on purpose. Left unapproved, the run
+goes red and the PR looks broken when it is not.
 
-Giving release-please a personal access token instead of `GITHUB_TOKEN`
-would make the PR come from a human account and its checks start on their
+A personal access token for release-please in place of `GITHUB_TOKEN` would
+make the PR come from a human account, and its checks would start on their
 own.
 
 ## Merge order
 
 Merge the release PR and let its run finish before merging anything else.
-If another PR lands on `main` first and it touches a workflow file, the
-release commit ends up behind `main` with a workflow diff, and GitHub then
-refuses the Actions token both the tag and the release for that commit. The
-job says so when it happens; the fix is by hand, below.
+If another PR lands on `main` first and touches a workflow file, the
+release commit sits behind `main` with a workflow diff. GitHub then refuses
+the Actions token both the tag and the release for that commit. The job
+says so when it happens. The fix is by hand, below.
 
 ## When a release does not finish
 
@@ -64,10 +64,11 @@ gh workflow run release-please.yml -f tag=v3.1.2
 ```
 
 The label swap matters. With `autorelease: pending` still on the PR, every
-later run retries that version instead of moving on.
+later run retries that version.
 
-If the runner queue is slow and you want the release PR now, release-please
-can be run from your machine; it creates the same PR the workflow would:
+If the runner queue is slow and you want the release PR now, run
+release-please from your machine. It creates the same PR the workflow
+would:
 
 ```bash
 npx release-please release-pr --repo-url=e6qu/sclaude --token="$(gh auth token)" \

@@ -1,26 +1,27 @@
 # sclaude / scodex
 
 Run [Claude Code](https://claude.ai/code) or [OpenAI Codex CLI](https://github.com/openai/codex)
-in a Docker or Podman sandbox. The CLI behaves as it does on the host, but it
-can only reach the current directory, one folder for files you hand it, and
-the host state listed below.
+in a Docker or Podman sandbox. The CLI works as it does on the host. It can
+reach the current directory, one folder for files you hand it, and the host
+state listed below. Nothing else.
 
 ## Requirements
 
-macOS or Linux with bash, and one of: Docker Engine, Docker Desktop, Rancher
-Desktop (dockerd engine), colima, or a podman machine. Rootless podman works
-through the podman CLI. Rootless Docker is not supported.
+macOS or Linux with bash, and a container engine: Docker Engine, Docker
+Desktop, Rancher Desktop with the dockerd engine, colima, or a podman
+machine. Rootless podman works through the podman CLI. Rootless Docker is
+not supported.
 
-Rancher Desktop and colima share only your home directory with their VM, so
-run from a directory under it.
+Rancher Desktop and colima share only your home directory with their VM.
+Run from a directory under it.
 
 `sclaude doctor` checks all of this and names the fix for anything wrong.
 
 ## Install
 
-sclaude ships as two self-contained shell scripts and nothing else. `install`
-puts both in `~/.local/bin`, without sudo, and adds that directory to your
-shell startup file if it is not on PATH:
+sclaude ships as two self-contained shell scripts. `install` puts both in
+`~/.local/bin` without sudo, and adds that directory to your shell startup
+file if it is missing from PATH.
 
 ```bash
 curl -fsSL https://github.com/e6qu/sclaude/releases/latest/download/sclaude -o sclaude
@@ -32,12 +33,12 @@ chmod +x sclaude scodex
 From a clone, `./sclaude install` links the scripts, so `git pull` updates
 them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory.
 
-The sandbox image is not shipped. The first run builds it locally, for your
-user and your settings, which takes a few minutes and about 5.5 GB (8 GB
-free needed). Behind a TLS-inspecting proxy the build takes the proxy's CA
-from your trust store; if the host does not trust it either, see
-[corporate proxies](docs/image.md#corporate-proxies). Prebuilt images for
-CI and dev containers are listed under
+The sandbox image is not shipped. The first run builds it on your machine,
+for your user and your settings. That takes a few minutes and about 5.5 GB
+of disk, with 8 GB free needed during the build. Behind a TLS-inspecting
+proxy the build takes the proxy's CA from your trust store. If the host does
+not trust it either, see [corporate proxies](docs/image.md#corporate-proxies).
+Prebuilt images for CI and dev containers are listed under
 [published images](docs/image.md#published-images).
 
 ## Update
@@ -46,20 +47,18 @@ CI and dev containers are listed under
 sclaude update
 ```
 
-This updates both wrappers, and it updates Claude Code and Codex in the
-image whenever either has a new release, even when sclaude itself has no
-new version. The two CLIs are the last image layer, so that takes about a
-minute.
+This updates both wrappers. It also updates Claude Code and Codex in the
+image whenever either has a new release, even when sclaude itself has none.
+The two CLIs are the last image layer, so that takes about a minute.
 
-`sclaude update --force-rebuild` rebuilds the whole image from scratch and
-updates everything else in it, each to its newest release at build time:
-the Ubuntu base image and packages, `gh`, git, Node.js, Python, Go, Rust
-and Java within the configured versions, the tool groups (TypeScript, bun,
-yarn, pnpm; Maven, Gradle, Quarkus, Spring Boot; kubectl, Helm, Terraform,
+`sclaude update --force-rebuild` rebuilds the whole image and updates
+everything else in it, each to its newest release at build time: the Ubuntu
+base image and packages, `gh`, git, Node.js, Python, Go, Rust and Java
+within the configured versions, the tool groups (TypeScript, bun, yarn,
+pnpm; Maven, Gradle, Quarkus, Spring Boot; kubectl, Helm, Terraform,
 Terragrunt; AWS, Azure and Google Cloud CLIs), and the two agent CLIs. That
-takes several minutes. A new sclaude version that changes the image (a
-version default, a tool, a layer) rebuilds it on the next run without being
-asked.
+takes several minutes. A new sclaude version that changes the image rebuilds
+it on the next run.
 
 From a clone: `git pull && sclaude --build`.
 
@@ -80,10 +79,10 @@ From a clone: `git pull && sclaude --build`.
 
 Every native CLI flag passes through. Yolo means
 `--dangerously-skip-permissions` for Claude and
-`--dangerously-bypass-approvals-and-sandbox` for Codex; the sandbox is what
+`--dangerously-bypass-approvals-and-sandbox` for Codex. The sandbox is what
 makes that safe to leave on.
 
-Commit before you start. Afterwards, review with `git diff` and commit or
+Commit before you start. Afterwards, review with `git diff`, then commit or
 `git reset --hard`.
 
 ## What the sandbox shares with the host
@@ -94,7 +93,7 @@ Commit before you start. Afterwards, review with `git diff` and commit or
   folder.
 - The clipboard, both ways, text and images. Ctrl+V of a screenshot works in
   both agents.
-- Session transcripts, so a conversation can be resumed on either side.
+- Session transcripts. A conversation can be resumed on either side.
 - Your git identity and config, your `gh` login, and with SSH remotes your
   `~/.ssh`.
 - Your Claude and Codex sign-in. Signing in inside the sandbox works too.
@@ -105,12 +104,12 @@ Each of these has a setting that turns it off or narrows it.
 
 ## What is in the image
 
-Ubuntu 26.04 with Claude Code, Codex, `gh`, git and build tools; Node.js 26,
-Python 3.14, Go 1.27, Rust stable and Java 26; and four tool groups you can
+Ubuntu 26.04 with Claude Code, Codex, `gh`, git and build tools. Node.js 26,
+Python 3.14, Go 1.27, Rust stable and Java 26. Four tool groups you can
 drop: `js`, `java`, `infra` (kubectl, Helm, Terraform, Terragrunt) and
 `cloud` (AWS, Azure and Google Cloud CLIs). Every version and group is a
-setting, and `sclaude tools` shows what is in. [The image](docs/image.md)
-lists everything and covers builds, mirrors and disk use.
+setting. `sclaude tools` shows what is in. [The image](docs/image.md) lists
+everything and covers builds, mirrors and disk use.
 
 ## Commands
 
@@ -121,8 +120,8 @@ lists everything and covers builds, mirrors and disk use.
 | `sclaude shell [args]` | Bash in the sandbox. Attaches to the one running for this directory, or starts one |
 | `sclaude status` | What a run would use |
 | `sclaude doctor` | Diagnostics, with a fix per finding |
-| `sclaude tools` | List tools; `enable` and `disable` change the selection |
-| `sclaude config` | Show the settings file; `set`, `unset`, `get`, `path` |
+| `sclaude tools` | List tools. `enable` and `disable` change the selection |
+| `sclaude config` | Show the settings file. `set`, `unset`, `get`, `path` |
 | `sclaude volumes` | Disk use per image and volume |
 | `sclaude cleanup` | Remove old images |
 | `sclaude reset-caches` | Clear the cache volumes, keep credentials and home |
@@ -149,9 +148,9 @@ win over the file.
 | `SAGENT_CONTAINER_ENGINE` | `docker` or `podman` | docker, then podman |
 | `SAGENT_CA_BUNDLE` | PEM file with extra CA certificates for the image | unset |
 | `SAGENT_GIT_PROTOCOL` | `ssh` or `https` for GitHub | your gh setting |
-| `SAGENT_CLIPBOARD` | `1` to share the host clipboard, `0` not to | `1` |
+| `SAGENT_CLIPBOARD` | `1` to share the host clipboard, `0` to keep it out | `1` |
 | `SAGENT_DROP_DIR` | Host folder mounted read-write at the same path inside | `~/sagent-drop` |
-| `SAGENT_SESSIONS` | `1` to share transcripts, `0` not to, `all` to share `/rewind` snapshots too | `1` |
+| `SAGENT_SESSIONS` | `1` to share transcripts, `0` to keep them out, `all` to share `/rewind` snapshots too | `1` |
 | `SAGENT_UBUNTU_VERSION` | Ubuntu release for the image | `26.04` |
 | `SAGENT_NODE_VERSION` | Node.js major version | `26` |
 | `SAGENT_PYTHON_VERSION` | Python minor version | `3.14` |
@@ -160,11 +159,11 @@ win over the file.
 | `SAGENT_JAVA_VERSION` | Java major version, or `none` | `26` |
 | `SAGENT_TOOLS` | `all`, `none`, group names, or tool names | `all` |
 | `SAGENT_APT_MIRROR` | Ubuntu mirror URL for image builds | Ubuntu's archive |
-| `SAGENT_AI_ATTRIBUTION` | `1` to let Claude Code sign commits and PRs, `0` not to | `0` |
+| `SAGENT_AI_ATTRIBUTION` | `1` to let Claude Code sign commits and PRs, `0` to stop it | `0` |
 | `SAGENT_VOLUME_SUFFIX` | Suffix on every volume name, for a separate set of sandbox state | none |
 
-`SAGENT_CONFIG_FILE` points at a different file. Because the file is
-sourced, a setting can differ per wrapper:
+`SAGENT_CONFIG_FILE` points at a different file. The file is sourced, so a
+setting can differ per wrapper:
 
 ```bash
 [ "$SCRIPT_NAME" = scodex ] && SAGENT_SESSIONS=0
@@ -178,9 +177,9 @@ docker images sagent-sandbox -q | xargs -r docker rmi
 rm ~/.local/bin/sclaude ~/.local/bin/scodex
 ```
 
-`install DIR` may have put the wrappers elsewhere, and an install from
-before 2.16 lives in `/usr/local/bin`. The PATH block `install` added to
-your shell startup file is marked `added by sclaude/scodex`.
+`install DIR` may have put the wrappers elsewhere. An install from before
+2.16 lives in `/usr/local/bin`. The PATH block `install` added to your shell
+startup file is marked `added by sclaude/scodex`.
 
 ## More
 

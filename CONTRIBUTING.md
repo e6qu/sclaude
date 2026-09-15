@@ -11,7 +11,8 @@ pre-commit install --install-hooks
 
 `install` links both wrappers into `~/.local/bin`. `pre-commit` comes from
 `brew install pre-commit` or `pipx install pre-commit`. If you once set
-`core.hooksPath=.githooks`, unset it first: `git config --unset core.hooksPath`.
+`core.hooksPath=.githooks`, unset it first with
+`git config --unset core.hooksPath`.
 
 You need Docker or Podman, bash, and shellcheck.
 
@@ -22,18 +23,18 @@ You need Docker or Podman, bash, and shellcheck.
   runs the same hooks on Linux and macOS.
 - `bash test_e2e.sh` passes. The suite runs on its own `-e2e` volumes and
   leaves your sandbox state alone. [Testing](docs/e2e-testing.md) covers
-  the matrix, engines, and running part of the suite.
+  the matrix, the engines, and running part of the suite.
 - `sclaude` and `scodex` stay identical apart from the tool constants at
   the top. Test T24 fails when a shared function diverges.
 - Docs change in the same PR as the code. Delete what is no longer true.
-- Docs are plain ASCII apart from accented letters in names: no em
-  dashes, no emoji, no arrows, no box-drawing. A hook checks. Headings are
-  sentence case; say what happens and stop.
+- Docs are plain ASCII, apart from accented letters in names. No em
+  dashes, emoji, arrows or box-drawing. A hook checks. Headings are
+  sentence case. Say what happens and stop.
 
-Shell rules: `#!/usr/bin/env bash`, `printf` rather than `echo -e`, `[ ]`
-rather than `[[ ]]` unless you need pattern matching, `$(command)` rather
-than backticks, every variable quoted, `portable_sha256` rather than
-`shasum` or `sha256sum`. Both wrappers must run on macOS and Linux.
+Shell rules: `#!/usr/bin/env bash`; `printf`, never `echo -e`; `[ ]`
+unless you need pattern matching; `$(command)`, never backticks; every
+variable quoted; `portable_sha256` for hashes. Both wrappers must run on
+macOS and Linux.
 
 ## Fixing a bug
 
@@ -45,11 +46,11 @@ than backticks, every variable quoted, `portable_sha256` rather than
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), checked by a
-hook. The type decides the next version: `fix:` bumps the patch, `feat:` the
-minor, a `!` after the type or a `BREAKING CHANGE:` footer the major.
-`docs:`, `test:`, `ci:` and `chore:` do not release.
+hook. The type decides the next version. `fix:` bumps the patch, `feat:`
+the minor, and a `!` after the type or a `BREAKING CHANGE:` footer the
+major. `docs:`, `test:`, `ci:` and `chore:` do not release.
 
-```
+```text
 feat: add --network-none flag for offline mode
 fix: credential sync fails when python3 is missing on the host
 ```

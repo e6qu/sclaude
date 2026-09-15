@@ -111,8 +111,9 @@ Against Podman instead of Docker:
 SAGENT_CONTAINER_ENGINE=podman bash test_e2e.sh
 ```
 
-Test bodies run under `bash -ec`, so every command in a test is an assertion
-(#72); guard commands that are allowed to fail with `|| true` or an `if`.
+Test bodies run under `bash -ec`, so every command in a test is an
+assertion (#72). Guard a command that is allowed to fail with `|| true` or
+an `if`.
 
 Fixtures that get bind-mounted into containers are created under
 `SAGENT_TEST_TMPDIR` (default `/tmp`). Point it under your home directory for
