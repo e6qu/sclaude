@@ -146,8 +146,8 @@ the file only.
 
 | Setting | Meaning | Default |
 |---|---|---|
-| `MEMORY_LIMIT` | Memory limit, a size like `8g` | `4g` |
-| `CPU_LIMIT` | CPU limit, a number | `2` |
+| `MEMORY_LIMIT` | Memory limit, a size like `16g` | `8g` |
+| `CPU_LIMIT` | CPU limit, a number | `4` |
 | `PIDS_LIMIT` | Process limit without nested containers | `100` |
 | `PIDS_LIMIT_NESTED` | Process limit with nested containers | `512` |
 | `SAGENT_DOCKER` | `1` for docker and podman inside the sandbox, `0` for none | `1` |

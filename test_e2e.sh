@@ -1680,17 +1680,17 @@ run_test "T38: tools/config commands" bash -ec '
     if "$1" tools enable no-such-tool >/dev/null 2>&1; then echo "unknown tool accepted" >&2; exit 1; fi
     # config: set, get, list, unset, validation, unknown keys
     "$1" config set SAGENT_NODE_VERSION 24 2>/dev/null
-    "$1" config set MEMORY_LIMIT 8g 2>/dev/null
+    "$1" config set MEMORY_LIMIT 12g 2>/dev/null
     [ "$("$1" config get SAGENT_NODE_VERSION)" = 24 ]
     "$1" config list | grep -qE "^  SAGENT_NODE_VERSION +24 +config$"
-    "$1" config list | grep -qE "^  MEMORY_LIMIT +8g +config$"
+    "$1" config list | grep -qE "^  MEMORY_LIMIT +12g +config$"
     "$1" version | grep -q "^Toolchain: .*node=24 "
-    "$1" version | grep -q "^Limits: memory=8g "
+    "$1" version | grep -q "^Limits: memory=12g "
     if "$1" config set SAGENT_NODE_VERSION v24 >/dev/null 2>&1; then echo "invalid value accepted" >&2; exit 1; fi
     if "$1" config set NOT_A_SETTING 1 >/dev/null 2>&1; then echo "unknown key accepted" >&2; exit 1; fi
     "$1" config unset MEMORY_LIMIT 2>/dev/null
     if grep -q MEMORY_LIMIT "$cfg/config"; then echo "unset left the key" >&2; exit 1; fi
-    "$1" version | grep -q "^Limits: memory=4g "
+    "$1" version | grep -q "^Limits: memory=8g "
     [ "$("$1" config path)" = "$cfg/config" ]
     # Environment wins over the file and the command says so.
     SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"

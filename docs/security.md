@@ -73,7 +73,7 @@ a no-op elsewhere.
 
 ### Resource limits
 
-The defaults are 4 GB of memory, 2 CPUs and 8192 file descriptors. The
+The defaults are 8 GB of memory, 4 CPUs and 8192 file descriptors. The
 process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
