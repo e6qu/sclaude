@@ -30,7 +30,8 @@ what it lets through on purpose, and the settings that narrow it.
 ### Filesystem
 
 The wrapper mounts the workspace and the drop folder read-write at their
-own paths. With sharing on, it also mounts the session directories and the
+own paths, and the folders in `SAGENT_EXTRA_MOUNTS` read-only unless an
+entry is marked `:rw`. With sharing on, it also mounts the session directories and the
 per-run clipboard spool, and with `SAGENT_SESSIONS=all` Claude's
 `file-history`. Everything else the sandbox sees is a named volume or a
 copy. The workspace source is the physical path, with symlinks resolved,
@@ -73,10 +74,16 @@ a no-op elsewhere.
 
 ### Resource limits
 
-The defaults are 4 GB of memory, 2 CPUs and 8192 file descriptors. The
+The defaults are 8 GB of memory, 4 CPUs and 8192 file descriptors. The
 process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
+
+On macOS the engine's VM is the ceiling. A Docker daemon refuses a CPU
+limit above its CPU count, so the wrapper stops when `CPU_LIMIT` is higher
+than the VM's CPUs. Colima and Rancher Desktop start with 2. Give the VM
+more CPUs, or set `CPU_LIMIT` to the VM's count. A memory limit above the
+VM's memory is accepted but never reached.
 
 ### Network
 
@@ -169,6 +176,12 @@ terminal allows it. See [clipboard](host-state.md#clipboard).
 
 `~/sagent-drop` is read-write for the agent. Keep it for files you mean to
 hand over. `SAGENT_DROP_DIR` points it elsewhere.
+
+### Extra mounts
+
+The agent can read everything in a folder listed in `SAGENT_EXTRA_MOUNTS`,
+and with `:rw` change or delete it. Do not list your home directory or a
+folder that holds keys or tokens.
 
 ### Extra trust anchors
 

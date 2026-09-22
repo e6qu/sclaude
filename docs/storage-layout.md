@@ -24,6 +24,7 @@ startup file.
 |---|---|---|
 | The workspace | Its own path | The current directory; the physical path mounted at the logical one |
 | `~/sagent-drop` | Its own path | Files for the agent; `SAGENT_DROP_DIR` names another folder |
+| `SAGENT_EXTRA_MOUNTS` entries | Their own paths | Folders you list; read-only unless marked `:rw` |
 | Claude sessions | This workspace's directory under `/sclaude-config/projects/` | Transcripts |
 | Codex sessions | `/scodex-config/sessions/` | The whole session tree |
 | Clipboard spool | `/run/sagent/clipboard/` | One directory per run under `~/.cache/sagent/` |

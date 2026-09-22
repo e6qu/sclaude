@@ -330,7 +330,7 @@ run_test "T15: no leaked temp files" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run) cat >/dev/null; echo TLS-OK; exit 0 ;;
     build) echo "stub: build failed" >&2; exit 1 ;;
@@ -1205,7 +1205,7 @@ run_test "T32: Dockerfile generation and build guidance" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run) cat >/dev/null; echo TLS-OK; exit 0 ;;
     build)
@@ -1332,7 +1332,7 @@ run_test "T32c: refreshed CA bundle is re-staged" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         cat >/dev/null
@@ -1381,7 +1381,7 @@ run_test "T32d: build guidance is not swallowed" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         # The TLS probe works; every later container (the disk probe) does not.
@@ -1414,7 +1414,7 @@ run_test "T33: unshared workspace refused (Rancher Desktop, colima)" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) cat "$tmp/context"; exit 0 ;;
     image) exit 0 ;;
@@ -1680,17 +1680,17 @@ run_test "T38: tools/config commands" bash -ec '
     if "$1" tools enable no-such-tool >/dev/null 2>&1; then echo "unknown tool accepted" >&2; exit 1; fi
     # config: set, get, list, unset, validation, unknown keys
     "$1" config set SAGENT_NODE_VERSION 24 2>/dev/null
-    "$1" config set MEMORY_LIMIT 8g 2>/dev/null
+    "$1" config set MEMORY_LIMIT 12g 2>/dev/null
     [ "$("$1" config get SAGENT_NODE_VERSION)" = 24 ]
     "$1" config list | grep -qE "^  SAGENT_NODE_VERSION +24 +config$"
-    "$1" config list | grep -qE "^  MEMORY_LIMIT +8g +config$"
+    "$1" config list | grep -qE "^  MEMORY_LIMIT +12g +config$"
     "$1" version | grep -q "^Toolchain: .*node=24 "
-    "$1" version | grep -q "^Limits: memory=8g "
+    "$1" version | grep -q "^Limits: memory=12g "
     if "$1" config set SAGENT_NODE_VERSION v24 >/dev/null 2>&1; then echo "invalid value accepted" >&2; exit 1; fi
     if "$1" config set NOT_A_SETTING 1 >/dev/null 2>&1; then echo "unknown key accepted" >&2; exit 1; fi
     "$1" config unset MEMORY_LIMIT 2>/dev/null
     if grep -q MEMORY_LIMIT "$cfg/config"; then echo "unset left the key" >&2; exit 1; fi
-    "$1" version | grep -q "^Limits: memory=4g "
+    "$1" version | grep -q "^Limits: memory=8g "
     [ "$("$1" config path)" = "$cfg/config" ]
     # Environment wins over the file and the command says so.
     SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
@@ -1704,7 +1704,7 @@ run_test "T38: tools/config commands" bash -ec '
 run_test "T39: status snapshot" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" status)
-    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" Volumes Workspace; do
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" "Extra mounts" Volumes Workspace; do
         echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
     done
     echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
@@ -1727,6 +1727,7 @@ run_test "T40: doctor diagnostics" bash -ec '
     out=$("$1" doctor) || { echo "$out" >&2; echo "doctor failed on a healthy setup" >&2; exit 1; }
     echo "$out" | grep -qE "^  PASS  engine "
     echo "$out" | grep -qE "^  PASS  workspace "
+    echo "$out" | grep -qE "^  PASS  limits "
     echo "$out" | grep -qE "^  PASS  build-tls "
     echo "$out" | grep -qE "^  PASS  image +$SUITE_IMG"
     echo "$out" | grep -qE "^  PASS  cli:claude "
@@ -1774,7 +1775,7 @@ run_test "T41: TLS interception auto-fixed from host trust store" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         if [ ! -f "$tmp/never-ok" ] && grep -q "BEGIN CERTIFICATE" 2>/dev/null; then echo TLS-OK; else printf "TLS-FAIL\n* issuer: CN=Corp Proxy Root CA\n"; fi
@@ -1828,7 +1829,7 @@ run_test "T42: scodex login uses device-code sign-in" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image | volume) exit 0 ;;
@@ -2221,7 +2222,7 @@ run_test "T50: mcp subcommand runs without the yolo flag" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2310,7 +2311,7 @@ run_test "T52: volume suffix keeps the suite off the real volumes" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2351,7 +2352,7 @@ run_test "T53: drop dir is mounted at its own path, unsafe values refused" bash 
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2509,6 +2510,102 @@ run_test "T55: build downloads go to a file first" bash -ec '
     for f in $files; do
         echo "$joined" | grep -qE "rm( -[a-zA-Z]+)*( \"?/tmp/[^ ;\"]+\"?)* /tmp/$f( |;|\"|$)" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
     done
+' _ "$SCLAUDE"
+
+# ── T56: a CPU limit above the docker daemon's CPUs is refused ───────
+# The daemon refuses it at create; the wrapper says so first and names the
+# setting. Stub engines report 2 CPUs, as Colima and Rancher Desktop start.
+run_test "T56: CPU limit above the docker daemon CPUs refused" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t56.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) echo "2 name=seccomp,profile=default"; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    *) echo "STUB-CALLED \$*"; exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/config"
+    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
+    if "$1" --help >"$tmp/out" 2>"$tmp/err"; then
+        echo "a CPU limit above the engine CPUs should have been refused" >&2
+        exit 1
+    fi
+    grep -q "CPU_LIMIT is 4 but the engine has 2 CPUs" "$tmp/err"
+    grep -q "config set CPU_LIMIT 2" "$tmp/err"
+    if grep -q "STUB-CALLED" "$tmp/out"; then
+        echo "engine was invoked (image build, volumes or run) despite the refusal" >&2
+        exit 1
+    fi
+    if out=$("$1" doctor); then echo "doctor should exit 1 on a CPU limit the engine refuses" >&2; exit 1; fi
+    echo "$out" | grep -qE "^  FAIL  limits +CPU_LIMIT is 4 "
+    # At the engine CPU count the limit passes.
+    printf "CPU_LIMIT=\"2\"\n" > "$tmp/config"
+    out=$("$1" doctor) || true
+    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=2 "
+    # podman accepts a limit above its CPUs, so a podman server is not refused.
+    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
+    sed -i.bak "s/Server: Docker Engine/Server:\\\\n Podman Engine:/" "$tmp/fake-engine"
+    out=$("$1" doctor) || true
+    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=4 "
+' _ "$SCLAUDE"
+
+# ── T57: extra mounts, more host folders for the agent ───────────────
+# SAGENT_EXTRA_MOUNTS: comma-separated, each at its own path, read-only
+# unless it ends in :rw. The drop folder's checks apply to every entry, and
+# a target mounted already is refused before the engine would.
+run_test "T57: extra mounts at their own paths, read-only by default" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t57.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/ro" "$tmp/rw" "$tmp/ws" "$tmp/drop" "$tmp/c:d"
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) echo 8; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    W="$1"
+    stub() { (cd "$tmp/ws" && env SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$@" "$W" mcp list 2>&1); }
+    # Read-only by default, :rw on request; spaces around a comma and a
+    # trailing slash are dropped.
+    out=$(stub SAGENT_EXTRA_MOUNTS="$tmp/ro/ , $tmp/rw:rw")
+    echo "$out" | grep -q -- "-v $tmp/ro:$tmp/ro:ro"
+    echo "$out" | grep -q -- "-v $tmp/rw:$tmp/rw:rw"
+    stub SAGENT_EXTRA_MOUNTS="$tmp/ro:ro" | grep -q -- "-v $tmp/ro:$tmp/ro:ro"
+    # Unset: nothing extra.
+    if stub | grep -q -- "$tmp/ro"; then echo "an extra mount appeared without the setting" >&2; exit 1; fi
+    # status lists them.
+    (cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/rw:rw" "$W" status) \
+        | grep -q "^Extra mounts: $tmp/ro (ro), $tmp/rw (rw)$"
+    refuse() {
+        want="$1"; shift
+        if out=$(stub "$@"); then echo "accepted: $*" >&2; exit 1; fi
+        echo "$out" | grep -q "$want" || { echo "wrong reason for $*: $out" >&2; exit 1; }
+    }
+    refuse "absolute path" SAGENT_EXTRA_MOUNTS="$tmp/ro,relative/dir"
+    refuse "not a directory: $tmp/missing" SAGENT_EXTRA_MOUNTS="$tmp/missing"
+    refuse "entire host filesystem" SAGENT_EXTRA_MOUNTS="/:ro"
+    refuse "colon" SAGENT_EXTRA_MOUNTS="$tmp/c:d"
+    refuse "which is the workspace" SAGENT_EXTRA_MOUNTS="$tmp/ws"
+    refuse "which is the drop folder" SAGENT_DROP_DIR="$tmp/drop" SAGENT_EXTRA_MOUNTS="$tmp/drop"
+    refuse "another SAGENT_EXTRA_MOUNTS entry" SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/ro/:rw"
+    # A real run: the read-only folder is readable and refuses writes, the
+    # read-write one takes them.
+    printf in > "$tmp/ro/in.txt"
+    out=$(cd "$tmp/ws" && SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/rw:rw" "$W" shell -c "cat $tmp/ro/in.txt; if touch $tmp/ro/new 2>/dev/null; then echo WROTE-RO; fi; echo out > $tmp/rw/out.txt" 2>/dev/null)
+    [ "$out" = in ]
+    [ ! -e "$tmp/ro/new" ]
+    [ "$(cat "$tmp/rw/out.txt")" = out ]
 ' _ "$SCLAUDE"
 
 print_results

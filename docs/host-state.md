@@ -30,6 +30,21 @@ mkdir -p ~/sagent-drop
 defaults write com.apple.screencapture location ~/sagent-drop
 ```
 
+## Extra mounts
+
+`SAGENT_EXTRA_MOUNTS` lists more host folders to mount, separated by
+commas. Each one is mounted at the same path inside and is read-only unless
+it ends in `:rw`. Nothing is mounted by default.
+
+```bash
+sclaude config set SAGENT_EXTRA_MOUNTS "~/Screenshots, ~/data/models:rw"
+```
+
+Each folder must already exist. The drop folder's checks apply to each
+one, and a folder that is already mounted, as the workspace, the drop
+folder or an earlier entry, is refused. A path with a comma in it cannot be
+listed. `sclaude status` shows what is mounted.
+
 ## Clipboard
 
 The host clipboard is shared both ways, text and images. In the sandbox,

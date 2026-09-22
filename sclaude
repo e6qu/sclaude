@@ -31,8 +31,8 @@ ENGINE_CMD=""
 ENGINE_TIMEOUT_SECONDS="${SAGENT_ENGINE_TIMEOUT_SECONDS:-10}"
 
 IMAGE_REPO="sagent-sandbox"
-MEMORY_LIMIT="4g"
-CPU_LIMIT="2"
+MEMORY_LIMIT="8g"
+CPU_LIMIT="4"
 PIDS_LIMIT="100"
 PIDS_LIMIT_NESTED="512"
 
@@ -61,7 +61,7 @@ HOST_GID=$(id -g)
 
 # The config file is sourced; the environment wins over it. Arrays, not
 # strings: zsh does not word-split unquoted variables (T14).
-SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_DROP_DIR SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
+SAGENT_SETTINGS=(SAGENT_DOCKER SAGENT_CONTAINER_ENGINE SAGENT_CA_BUNDLE SAGENT_CLIPBOARD SAGENT_DROP_DIR SAGENT_EXTRA_MOUNTS SAGENT_SESSIONS SAGENT_GIT_PROTOCOL SAGENT_APT_MIRROR SAGENT_AI_ATTRIBUTION SAGENT_VOLUME_SUFFIX SAGENT_UBUNTU_VERSION SAGENT_NODE_VERSION SAGENT_PYTHON_VERSION SAGENT_GO_VERSION SAGENT_RUST_VERSION SAGENT_JAVA_VERSION SAGENT_TOOLS)
 # Tunables the config file may also set (not SAGENT_-prefixed, no env override).
 SAGENT_TUNABLES=(MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT PIDS_LIMIT_NESTED)
 SAGENT_CONFIG_FILE="${SAGENT_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sagent/config}"
@@ -153,6 +153,41 @@ fi
 if [ -n "${SAGENT_CLIPBOARD:-}" ]; then
     validate_version_setting SAGENT_CLIPBOARD "$SAGENT_CLIPBOARD" '^[01]$' '0 or 1'
 fi
+# A host directory named by setting $1 as $2: an absolute or ~/ path to an
+# existing directory, not /, without a colon (Docker volume syntax). Sets
+# MOUNT_DIR, the path as given (the mount target, so a pasted path resolves
+# inside), and MOUNT_HOST_DIR, with symlinks resolved (the mount source).
+resolve_mount_dir() {
+    local setting="$1" value="$2"
+    # shellcheck disable=SC2088  # a literal ~/ prefix is what is matched here
+    case "$value" in
+        "~") MOUNT_DIR="$HOME" ;;
+        "~/"*) MOUNT_DIR="$HOME/${value#"~/"}" ;;
+        *) MOUNT_DIR="$value" ;;
+    esac
+    case "$MOUNT_DIR" in
+        /*) ;;
+        *) echo "[$SCRIPT_NAME] ERROR: $setting must be an absolute path or start with ~/: $value" >&2; exit 1 ;;
+    esac
+    MOUNT_DIR="${MOUNT_DIR%/}"
+    if [ -z "$MOUNT_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing $setting=/: it would expose the entire host filesystem to the sandbox." >&2
+        exit 1
+    fi
+    if [ ! -d "$MOUNT_DIR" ]; then
+        echo "[$SCRIPT_NAME] ERROR: $setting is not a directory: $MOUNT_DIR" >&2
+        exit 1
+    fi
+    MOUNT_HOST_DIR="$(cd "$MOUNT_DIR" && pwd -P)"
+    if [ "$MOUNT_HOST_DIR" = / ]; then
+        echo "[$SCRIPT_NAME] ERROR: refusing $setting=$MOUNT_DIR: it resolves to /, the entire host filesystem." >&2
+        exit 1
+    fi
+    case "$MOUNT_DIR$MOUNT_HOST_DIR" in
+        *:*) echo "[$SCRIPT_NAME] ERROR: $setting contains a colon, which conflicts with Docker volume syntax: $MOUNT_DIR" >&2; exit 1 ;;
+    esac
+}
+
 # A host directory for files handed to the agent (screenshots, images),
 # mounted read-write inside at the same path so a pasted or dropped path
 # resolves there too. ~/sagent-drop unless SAGENT_DROP_DIR names another;
@@ -167,33 +202,35 @@ if [ -z "${SAGENT_DROP_DIR:-}" ]; then
     fi
     DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
 else
-    # shellcheck disable=SC2088  # a literal ~/ prefix is what is matched here
-    case "$SAGENT_DROP_DIR" in
-        "~") DROP_DIR="$HOME" ;;
-        "~/"*) DROP_DIR="$HOME/${SAGENT_DROP_DIR#"~/"}" ;;
-        *) DROP_DIR="$SAGENT_DROP_DIR" ;;
-    esac
-    case "$DROP_DIR" in
-        /*) ;;
-        *) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR must be an absolute path or start with ~/: $SAGENT_DROP_DIR" >&2; exit 1 ;;
-    esac
-    DROP_DIR="${DROP_DIR%/}"
-    if [ -z "$DROP_DIR" ]; then
-        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=/: it would expose the entire host filesystem to the sandbox." >&2
-        exit 1
-    fi
-    if [ ! -d "$DROP_DIR" ]; then
-        echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is not a directory: $DROP_DIR" >&2
-        exit 1
-    fi
-    DROP_HOST_DIR="$(cd "$DROP_DIR" && pwd -P)"
-    if [ "$DROP_HOST_DIR" = / ]; then
-        echo "[$SCRIPT_NAME] ERROR: refusing SAGENT_DROP_DIR=$DROP_DIR: it resolves to /, the entire host filesystem." >&2
-        exit 1
-    fi
-    case "$DROP_DIR$DROP_HOST_DIR" in
-        *:*) echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR contains a colon, which conflicts with Docker volume syntax: $DROP_DIR" >&2; exit 1 ;;
-    esac
+    resolve_mount_dir SAGENT_DROP_DIR "$SAGENT_DROP_DIR"
+    DROP_DIR="$MOUNT_DIR"
+    DROP_HOST_DIR="$MOUNT_HOST_DIR"
+fi
+# More host directories, each mounted at its own path: a comma-separated
+# list, read-only unless an entry ends in :rw. None by default.
+EXTRA_MOUNT_DIRS=()
+EXTRA_MOUNT_HOST_DIRS=()
+EXTRA_MOUNT_MODES=()
+if [ -n "${SAGENT_EXTRA_MOUNTS:-}" ]; then
+    extra_rest="$SAGENT_EXTRA_MOUNTS,"
+    while [ -n "$extra_rest" ]; do
+        extra_entry="${extra_rest%%,*}"
+        extra_rest="${extra_rest#*,}"
+        # Spaces around a comma are separators, not part of the path.
+        extra_entry="${extra_entry#"${extra_entry%%[! ]*}"}"
+        extra_entry="${extra_entry%"${extra_entry##*[! ]}"}"
+        [ -n "$extra_entry" ] || continue
+        extra_mode=ro
+        case "$extra_entry" in
+            *:rw) extra_mode=rw; extra_entry="${extra_entry%:rw}" ;;
+            *:ro) extra_entry="${extra_entry%:ro}" ;;
+        esac
+        resolve_mount_dir SAGENT_EXTRA_MOUNTS "$extra_entry"
+        EXTRA_MOUNT_DIRS+=("$MOUNT_DIR")
+        EXTRA_MOUNT_HOST_DIRS+=("$MOUNT_HOST_DIR")
+        EXTRA_MOUNT_MODES+=("$extra_mode")
+    done
+    unset extra_rest extra_entry extra_mode
 fi
 # 0: no transcripts shared. all: also SESSIONS_EXTRA_DIRS, which hold state
 # from every workspace.
@@ -411,7 +448,9 @@ detect_engine_flavor() {
 
     # A rootless daemon maps the sandbox user to a subordinate UID, which
     # cannot use the workspace (#75); podman's keep-id fixes that, docker cannot.
+    # The CPU count comes from the same call, for validate_limits.
     ENGINE_ROOTLESS=false
+    ENGINE_CPUS=""
     USERNS_ARGS=()
     if [ "$ENGINE_CLI_FLAVOR" = "podman" ]; then
         if [ "$("$ENGINE_CMD" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
@@ -419,7 +458,10 @@ detect_engine_flavor() {
             USERNS_ARGS=("--userns=keep-id:uid=$HOST_UID,gid=$HOST_GID")
         fi
     else
-        case "$("$ENGINE_CMD" info --format '{{join .SecurityOptions ","}}' 2>/dev/null)" in
+        local info
+        info=$("$ENGINE_CMD" info --format '{{.NCPU}} {{join .SecurityOptions ","}}' 2>/dev/null || true)
+        ENGINE_CPUS="${info%% *}"
+        case "$info" in
             *name=rootless*) ENGINE_ROOTLESS=true ;;
         esac
     fi
@@ -1621,13 +1663,13 @@ config_validate() {
         SAGENT_CONTAINER_ENGINE) validate_version_setting "$key" "$value" '^(docker|podman)$' 'docker or podman' ;;
         SAGENT_GIT_PROTOCOL) validate_version_setting "$key" "$value" '^(ssh|https)$' 'ssh or https' ;;
         SAGENT_CLIPBOARD) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
-        SAGENT_DROP_DIR) ;;
+        SAGENT_DROP_DIR | SAGENT_EXTRA_MOUNTS) ;;
         SAGENT_SESSIONS) validate_version_setting "$key" "$value" '^(0|1|all)$' '0, 1, or all' ;;
         SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
         SAGENT_AI_ATTRIBUTION) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CA_BUNDLE) ;;
-        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
-        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
+        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 16g' ;;
+        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 8' ;;
         PIDS_LIMIT | PIDS_LIMIT_NESTED) validate_version_setting "$key" "$value" '^[0-9]+$' 'a number like 200' ;;
     esac
 }
@@ -2141,6 +2183,12 @@ EOF
     if [ -n "$DROP_DIR" ]; then
         printf '%-13s %s\n' "Drop dir:" "$DROP_DIR (read-write in the sandbox$([ -n "${SAGENT_DROP_DIR:-}" ] && echo ", SAGENT_DROP_DIR" || echo "; SAGENT_DROP_DIR names another"))"
     fi
+    local m=0 mounts=""
+    while [ "$m" -lt "${#EXTRA_MOUNT_DIRS[@]}" ]; do
+        mounts="$mounts${mounts:+, }${EXTRA_MOUNT_DIRS[$m]} (${EXTRA_MOUNT_MODES[$m]})"
+        m=$((m + 1))
+    done
+    printf '%-13s %s\n' "Extra mounts:" "${mounts:-none (SAGENT_EXTRA_MOUNTS adds host folders)}"
 }
 
 DOCTOR_PASS=0; DOCTOR_WARN=0; DOCTOR_FAIL=0
@@ -2362,12 +2410,18 @@ EOF
         doctor_report FAIL engine "$(sed "s/^\[$SCRIPT_NAME\] //" "$msg" | tr '\n' ' ')"
     fi
 
-    # workspace (engine-dependent checks inside validate_workspace)
+    # workspace and limits (engine-dependent checks inside validate_workspace
+    # and validate_limits)
     if [ -n "$ENGINE_CMD" ]; then
         if msg=$( (validate_workspace) 2>&1 ); then
             doctor_report PASS workspace "$PWD can be mounted$([ "$(pwd -P)" != "$PWD" ] && echo " (from $(pwd -P))")"
         else
             doctor_report FAIL workspace "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
+        fi
+        if msg=$( (validate_limits) 2>&1 ); then
+            doctor_report PASS limits "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
+        else
+            doctor_report FAIL limits "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
         fi
     fi
     if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -3431,6 +3485,24 @@ NEWEST
         ' || echo "[$SCRIPT_NAME] Warning: host state sync failed (non-fatal)" >&2
 }
 
+# The docker daemon refuses --cpus above its CPU count ("range of CPUs is
+# from 0.01 to N.00"); podman accepts it. Colima and Rancher Desktop start
+# their VMs with 2 CPUs, fewer than the default CPU_LIMIT.
+validate_limits() {
+    [ "$ENGINE_SERVER_FLAVOR" = "docker" ] || return 0
+    case "$ENGINE_CPUS" in
+        '' | *[!0-9]*)
+            echo "[$SCRIPT_NAME] ERROR: \`$ENGINE_CMD info\` did not report a CPU count (got '$ENGINE_CPUS')." >&2
+            exit 1
+            ;;
+    esac
+    if awk -v want="$CPU_LIMIT" -v have="$ENGINE_CPUS" 'BEGIN { exit !(want > have) }'; then
+        echo "[$SCRIPT_NAME] ERROR: CPU_LIMIT is $CPU_LIMIT but the engine has $ENGINE_CPUS CPUs, and the docker daemon refuses a limit above that." >&2
+        echo "[$SCRIPT_NAME] Give the engine's VM more CPUs, or lower the limit: $SCRIPT_NAME config set CPU_LIMIT $ENGINE_CPUS" >&2
+        exit 1
+    fi
+}
+
 validate_workspace() {
     if [ "$ENGINE_ROOTLESS" = true ] && [ "$ENGINE_CLI_FLAVOR" = "docker" ]; then
         echo "[$SCRIPT_NAME] ERROR: $ENGINE_CMD talks to a rootless $ENGINE_SERVER_FLAVOR daemon, which maps the sandbox user to a subordinate UID: the workspace bind mount would be unreadable or read-only inside the sandbox." >&2
@@ -3490,11 +3562,42 @@ validate_workspace() {
                     ;;
             esac
         fi
+        for dir in "${EXTRA_MOUNT_HOST_DIRS[@]+"${EXTRA_MOUNT_HOST_DIRS[@]}"}"; do
+            case "$dir" in
+                "$home_host" | "$home_host"/* | "$extra_share" | "$extra_share"/*) ;;
+                *)
+                    echo "[$SCRIPT_NAME] ERROR: $tool shares only $home_host and $extra_share with its VM; this SAGENT_EXTRA_MOUNTS entry would mount empty:" >&2
+                    echo "  $dir" >&2
+                    exit 1
+                    ;;
+            esac
+        done
     fi
     if [ -n "$DROP_DIR" ] && { [ "$DROP_DIR" = "$WORKSPACE_PATH" ] || [ "$DROP_HOST_DIR" = "$WORKSPACE_HOST_PATH" ]; }; then
         echo "[$SCRIPT_NAME] ERROR: SAGENT_DROP_DIR is the workspace itself ($DROP_DIR), which is mounted already." >&2
         exit 1
     fi
+    # Two mounts at one target would make the engine refuse the run.
+    local i=0 j dir taken
+    while [ "$i" -lt "${#EXTRA_MOUNT_DIRS[@]}" ]; do
+        dir="${EXTRA_MOUNT_DIRS[$i]}"
+        taken=""
+        if [ "$dir" = "$WORKSPACE_PATH" ]; then
+            taken="the workspace"
+        elif [ -n "$DROP_DIR" ] && [ "$dir" = "$DROP_DIR" ]; then
+            taken="the drop folder"
+        fi
+        j=0
+        while [ "$j" -lt "$i" ]; do
+            [ "$dir" = "${EXTRA_MOUNT_DIRS[$j]}" ] && taken="another SAGENT_EXTRA_MOUNTS entry"
+            j=$((j + 1))
+        done
+        if [ -n "$taken" ]; then
+            echo "[$SCRIPT_NAME] ERROR: SAGENT_EXTRA_MOUNTS names $dir, which is $taken and mounted already." >&2
+            exit 1
+        fi
+        i=$((i + 1))
+    done
 }
 
 build_docker_tty_flags() {
@@ -3721,6 +3824,11 @@ run_tool() {
     if [ -n "$DROP_DIR" ]; then
         DROP_MOUNT_ARGS=(-v "$DROP_HOST_DIR:$DROP_DIR:rw")
     fi
+    local EXTRA_MOUNT_ARGS=() m=0
+    while [ "$m" -lt "${#EXTRA_MOUNT_DIRS[@]}" ]; do
+        EXTRA_MOUNT_ARGS+=(-v "${EXTRA_MOUNT_HOST_DIRS[$m]}:${EXTRA_MOUNT_DIRS[$m]}:${EXTRA_MOUNT_MODES[$m]}")
+        m=$((m + 1))
+    done
 
     # label=disable: SELinux hosts cannot read the workspace otherwise (#57).
     # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
@@ -3731,6 +3839,7 @@ run_tool() {
         "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
         "${DROP_MOUNT_ARGS[@]+"${DROP_MOUNT_ARGS[@]}"}" \
+        "${EXTRA_MOUNT_ARGS[@]+"${EXTRA_MOUNT_ARGS[@]}"}" \
         -v "$CONFIG_VOLUME:$CONFIG_MOUNT:rw" \
         -v "$ROOTFS_VOLUME:/home/agent:rw" \
         -v "$NPM_VOLUME:/home/agent/.npm-global:rw" \
@@ -3871,6 +3980,7 @@ case "$WRAPPER_COMMAND" in
 esac
 
 validate_workspace
+validate_limits
 ensure_image
 check_release false
 create_volumes
