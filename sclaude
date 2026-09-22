@@ -411,7 +411,9 @@ detect_engine_flavor() {
 
     # A rootless daemon maps the sandbox user to a subordinate UID, which
     # cannot use the workspace (#75); podman's keep-id fixes that, docker cannot.
+    # The CPU count comes from the same call, for validate_limits.
     ENGINE_ROOTLESS=false
+    ENGINE_CPUS=""
     USERNS_ARGS=()
     if [ "$ENGINE_CLI_FLAVOR" = "podman" ]; then
         if [ "$("$ENGINE_CMD" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
@@ -419,7 +421,10 @@ detect_engine_flavor() {
             USERNS_ARGS=("--userns=keep-id:uid=$HOST_UID,gid=$HOST_GID")
         fi
     else
-        case "$("$ENGINE_CMD" info --format '{{join .SecurityOptions ","}}' 2>/dev/null)" in
+        local info
+        info=$("$ENGINE_CMD" info --format '{{.NCPU}} {{join .SecurityOptions ","}}' 2>/dev/null || true)
+        ENGINE_CPUS="${info%% *}"
+        case "$info" in
             *name=rootless*) ENGINE_ROOTLESS=true ;;
         esac
     fi
@@ -2362,12 +2367,18 @@ EOF
         doctor_report FAIL engine "$(sed "s/^\[$SCRIPT_NAME\] //" "$msg" | tr '\n' ' ')"
     fi
 
-    # workspace (engine-dependent checks inside validate_workspace)
+    # workspace and limits (engine-dependent checks inside validate_workspace
+    # and validate_limits)
     if [ -n "$ENGINE_CMD" ]; then
         if msg=$( (validate_workspace) 2>&1 ); then
             doctor_report PASS workspace "$PWD can be mounted$([ "$(pwd -P)" != "$PWD" ] && echo " (from $(pwd -P))")"
         else
             doctor_report FAIL workspace "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
+        fi
+        if msg=$( (validate_limits) 2>&1 ); then
+            doctor_report PASS limits "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
+        else
+            doctor_report FAIL limits "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
         fi
     fi
     if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -3431,6 +3442,24 @@ NEWEST
         ' || echo "[$SCRIPT_NAME] Warning: host state sync failed (non-fatal)" >&2
 }
 
+# The docker daemon refuses --cpus above its CPU count ("range of CPUs is
+# from 0.01 to N.00"); podman accepts it. Colima and Rancher Desktop start
+# their VMs with 2 CPUs, fewer than the default CPU_LIMIT.
+validate_limits() {
+    [ "$ENGINE_SERVER_FLAVOR" = "docker" ] || return 0
+    case "$ENGINE_CPUS" in
+        '' | *[!0-9]*)
+            echo "[$SCRIPT_NAME] ERROR: \`$ENGINE_CMD info\` did not report a CPU count (got '$ENGINE_CPUS')." >&2
+            exit 1
+            ;;
+    esac
+    if awk -v want="$CPU_LIMIT" -v have="$ENGINE_CPUS" 'BEGIN { exit !(want > have) }'; then
+        echo "[$SCRIPT_NAME] ERROR: CPU_LIMIT is $CPU_LIMIT but the engine has $ENGINE_CPUS CPUs, and the docker daemon refuses a limit above that." >&2
+        echo "[$SCRIPT_NAME] Give the engine's VM more CPUs, or lower the limit: $SCRIPT_NAME config set CPU_LIMIT $ENGINE_CPUS" >&2
+        exit 1
+    fi
+}
+
 validate_workspace() {
     if [ "$ENGINE_ROOTLESS" = true ] && [ "$ENGINE_CLI_FLAVOR" = "docker" ]; then
         echo "[$SCRIPT_NAME] ERROR: $ENGINE_CMD talks to a rootless $ENGINE_SERVER_FLAVOR daemon, which maps the sandbox user to a subordinate UID: the workspace bind mount would be unreadable or read-only inside the sandbox." >&2
@@ -3871,6 +3900,7 @@ case "$WRAPPER_COMMAND" in
 esac
 
 validate_workspace
+validate_limits
 ensure_image
 check_release false
 create_volumes

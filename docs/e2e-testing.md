@@ -74,7 +74,7 @@
 | T38b: Config quoting and tools groups | A value holding `$` and a backtick is stored literally (a real file with that name proves it is not expanded), and `tools enable all` drops the Java tools instead of failing when there is no JDK; the cloud and infra groups select and deselect as one, an unknown group is an error, and listing the tools into a pipe that closes early is not an error | -- |
 | T38: `tools` / `config` commands | Enable/disable rewrite `SAGENT_TOOLS` and change the hash; `config set/get/list/unset/path` with validation and unknown-key rejection; environment precedence reported; Java tools without a JDK | -- |
 | T39: `status` | Every snapshot line present with the real engine and image; still prints, naming the problem, without an engine | -- |
-| T40: `doctor` | Healthy setup: engine, workspace, build-time TLS, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
+| T40: `doctor` | Healthy setup: engine, workspace, limits, build-time TLS, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
 | T41: TLS interception auto-fix | Stub engine answers the pre-build probe TLS-FAIL until a bundle arrives: the wrapper exports the host trust store, verifies it, persists bundle and setting, builds with the CA block; a configured bundle lacking the CA stops before the build naming the issuer | #77 |
 | T42: `scodex login` | Stub engine: `login` gets `--device-auth`; explicit modes, `status` and `--help` are left alone; the tool container carries the workspace label | #78 |
 | T43: `shell` | Fresh sandbox shell sees the workspace and runs as `agent`; with a sandbox running for the workspace, `shell` attaches to that container | -- |
@@ -90,6 +90,7 @@
 | T53: Drop dir mounted at its own path, unsafe values refused | `~/sagent-drop` is created and mounted by default; `SAGENT_DROP_DIR` names another; a relative path, a missing directory, `/` and the workspace are refused; a real run reads and writes a file there | -- |
 | T54: X11 clipboard served from the host, both ways | In a real run, an X client (what arboard does) finds an owner, reads the host PNG and text, and its own copy reaches the host before the sandbox takes the selection back | -- |
 | T55: Build downloads go to a file first | No build download is piped into `tar`, `sh`, `env`, `gpg`, `unzip` or `tee`; every `-o /tmp/...` download is removed in the same step | #113 |
+| T56: CPU limit above the docker daemon's CPUs refused | A stub docker server with 2 CPUs: `CPU_LIMIT=4` is refused before the engine is called, naming `config set CPU_LIMIT 2`, and `doctor` reports FAIL `limits`; `CPU_LIMIT=2` passes, and a podman server is not refused | #114 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

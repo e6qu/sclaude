@@ -330,7 +330,7 @@ run_test "T15: no leaked temp files" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run) cat >/dev/null; echo TLS-OK; exit 0 ;;
     build) echo "stub: build failed" >&2; exit 1 ;;
@@ -1205,7 +1205,7 @@ run_test "T32: Dockerfile generation and build guidance" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run) cat >/dev/null; echo TLS-OK; exit 0 ;;
     build)
@@ -1332,7 +1332,7 @@ run_test "T32c: refreshed CA bundle is re-staged" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         cat >/dev/null
@@ -1381,7 +1381,7 @@ run_test "T32d: build guidance is not swallowed" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         # The TLS probe works; every later container (the disk probe) does not.
@@ -1414,7 +1414,7 @@ run_test "T33: unshared workspace refused (Rancher Desktop, colima)" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) cat "$tmp/context"; exit 0 ;;
     image) exit 0 ;;
@@ -1727,6 +1727,7 @@ run_test "T40: doctor diagnostics" bash -ec '
     out=$("$1" doctor) || { echo "$out" >&2; echo "doctor failed on a healthy setup" >&2; exit 1; }
     echo "$out" | grep -qE "^  PASS  engine "
     echo "$out" | grep -qE "^  PASS  workspace "
+    echo "$out" | grep -qE "^  PASS  limits "
     echo "$out" | grep -qE "^  PASS  build-tls "
     echo "$out" | grep -qE "^  PASS  image +$SUITE_IMG"
     echo "$out" | grep -qE "^  PASS  cli:claude "
@@ -1774,7 +1775,7 @@ run_test "T41: TLS interception auto-fixed from host trust store" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     run)
         if [ ! -f "$tmp/never-ok" ] && grep -q "BEGIN CERTIFICATE" 2>/dev/null; then echo TLS-OK; else printf "TLS-FAIL\n* issuer: CN=Corp Proxy Root CA\n"; fi
@@ -1828,7 +1829,7 @@ run_test "T42: scodex login uses device-code sign-in" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image | volume) exit 0 ;;
@@ -2221,7 +2222,7 @@ run_test "T50: mcp subcommand runs without the yolo flag" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2310,7 +2311,7 @@ run_test "T52: volume suffix keeps the suite off the real volumes" bash -ec '
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2351,7 +2352,7 @@ run_test "T53: drop dir is mounted at its own path, unsafe values refused" bash 
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) exit 0 ;;
+    info) echo 8; exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2509,6 +2510,46 @@ run_test "T55: build downloads go to a file first" bash -ec '
     for f in $files; do
         echo "$joined" | grep -qE "rm( -[a-zA-Z]+)*( \"?/tmp/[^ ;\"]+\"?)* /tmp/$f( |;|\"|$)" || { echo "/tmp/$f is not removed after use" >&2; exit 1; }
     done
+' _ "$SCLAUDE"
+
+# ── T56: a CPU limit above the docker daemon's CPUs is refused ───────
+# The daemon refuses it at create; the wrapper says so first and names the
+# setting. Stub engines report 2 CPUs, as Colima and Rancher Desktop start.
+run_test "T56: CPU limit above the docker daemon CPUs refused" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t56.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) echo "2 name=seccomp,profile=default"; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    *) echo "STUB-CALLED \$*"; exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/config"
+    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
+    if "$1" --help >"$tmp/out" 2>"$tmp/err"; then
+        echo "a CPU limit above the engine CPUs should have been refused" >&2
+        exit 1
+    fi
+    grep -q "CPU_LIMIT is 4 but the engine has 2 CPUs" "$tmp/err"
+    grep -q "config set CPU_LIMIT 2" "$tmp/err"
+    if grep -q "STUB-CALLED" "$tmp/out"; then
+        echo "engine was invoked (image build, volumes or run) despite the refusal" >&2
+        exit 1
+    fi
+    if out=$("$1" doctor); then echo "doctor should exit 1 on a CPU limit the engine refuses" >&2; exit 1; fi
+    echo "$out" | grep -qE "^  FAIL  limits +CPU_LIMIT is 4 "
+    # At the engine CPU count the limit passes.
+    printf "CPU_LIMIT=\"2\"\n" > "$tmp/config"
+    out=$("$1" doctor) || true
+    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=2 "
+    # podman accepts a limit above its CPUs, so a podman server is not refused.
+    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
+    sed -i.bak "s/Server: Docker Engine/Server:\\\\n Podman Engine:/" "$tmp/fake-engine"
+    out=$("$1" doctor) || true
+    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=4 "
 ' _ "$SCLAUDE"
 
 print_results

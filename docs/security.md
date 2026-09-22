@@ -78,6 +78,12 @@ process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
 
+On macOS the engine's VM is the ceiling. A Docker daemon refuses a CPU
+limit above its CPU count, so the wrapper stops when `CPU_LIMIT` is higher
+than the VM's CPUs. Colima and Rancher Desktop start with 2. Give the VM
+more CPUs, or set `CPU_LIMIT` to the VM's count. A memory limit above the
+VM's memory is accepted but never reached.
+
 ### Network
 
 `--network bridge` gives an isolated network namespace with outbound
