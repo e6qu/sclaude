@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/e6qu/sclaude/compare/v3.1.2...v3.2.0) (2026-09-22)
+
+
+### Features
+
+* default limits raised to 8g and 4 CPUs, and extra host folder mounts ([#103](https://github.com/e6qu/sclaude/issues/103)) ([1022f42](https://github.com/e6qu/sclaude/commit/1022f42fe5e143896f20e3636c9b779f17dc124b))
+
 ## [3.1.2](https://github.com/e6qu/sclaude/compare/v3.1.1...v3.1.2) (2026-09-14)
 
 
