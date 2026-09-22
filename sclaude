@@ -1626,8 +1626,8 @@ config_validate() {
         SAGENT_APT_MIRROR) validate_version_setting "$key" "$value" '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$' 'an http(s) URL like http://azure.archive.ubuntu.com/ubuntu/' ;;
         SAGENT_AI_ATTRIBUTION) validate_version_setting "$key" "$value" '^[01]$' '0 or 1' ;;
         SAGENT_CA_BUNDLE) ;;
-        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 8g' ;;
-        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 4' ;;
+        MEMORY_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+[kmgKMG]?$' 'a size like 16g' ;;
+        CPU_LIMIT) validate_version_setting "$key" "$value" '^[0-9]+(\.[0-9]+)?$' 'a number like 8' ;;
         PIDS_LIMIT | PIDS_LIMIT_NESTED) validate_version_setting "$key" "$value" '^[0-9]+$' 'a number like 200' ;;
     esac
 }
