@@ -1704,7 +1704,7 @@ run_test "T38: tools/config commands" bash -ec '
 run_test "T39: status snapshot" bash -ec '
     export SAGENT_SKIP_RELEASE_CHECK=1
     out=$("$1" status)
-    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" Volumes Workspace; do
+    for key in Wrapper Latest Config Engine Image Toolchain Tools "CA bundle" Nested Limits Credentials "Host state" Clipboard "Drop dir" "Extra mounts" Volumes Workspace; do
         echo "$out" | grep -q "^$key:" || { echo "status lacks a $key line" >&2; exit 1; }
     done
     echo "$out" | grep -q "^Engine: .*CLI: $(echo "$out" | sed -n "s/^Engine: .*CLI: \([a-z]*\),.*/\1/p")"
@@ -2550,6 +2550,62 @@ STUB
     sed -i.bak "s/Server: Docker Engine/Server:\\\\n Podman Engine:/" "$tmp/fake-engine"
     out=$("$1" doctor) || true
     echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=4 "
+' _ "$SCLAUDE"
+
+# ── T57: extra mounts, more host folders for the agent ───────────────
+# SAGENT_EXTRA_MOUNTS: comma-separated, each at its own path, read-only
+# unless it ends in :rw. The drop folder's checks apply to every entry, and
+# a target mounted already is refused before the engine would.
+run_test "T57: extra mounts at their own paths, read-only by default" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t57.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/ro" "$tmp/rw" "$tmp/ws" "$tmp/drop" "$tmp/c:d"
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) echo 8; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run) cat >/dev/null 2>&1; echo "STUB-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    W="$1"
+    stub() { (cd "$tmp/ws" && env SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$@" "$W" mcp list 2>&1); }
+    # Read-only by default, :rw on request; spaces around a comma and a
+    # trailing slash are dropped.
+    out=$(stub SAGENT_EXTRA_MOUNTS="$tmp/ro/ , $tmp/rw:rw")
+    echo "$out" | grep -q -- "-v $tmp/ro:$tmp/ro:ro"
+    echo "$out" | grep -q -- "-v $tmp/rw:$tmp/rw:rw"
+    stub SAGENT_EXTRA_MOUNTS="$tmp/ro:ro" | grep -q -- "-v $tmp/ro:$tmp/ro:ro"
+    # Unset: nothing extra.
+    if stub | grep -q -- "$tmp/ro"; then echo "an extra mount appeared without the setting" >&2; exit 1; fi
+    # status lists them.
+    (cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/rw:rw" "$W" status) \
+        | grep -q "^Extra mounts: $tmp/ro (ro), $tmp/rw (rw)$"
+    refuse() {
+        want="$1"; shift
+        if out=$(stub "$@"); then echo "accepted: $*" >&2; exit 1; fi
+        echo "$out" | grep -q "$want" || { echo "wrong reason for $*: $out" >&2; exit 1; }
+    }
+    refuse "absolute path" SAGENT_EXTRA_MOUNTS="$tmp/ro,relative/dir"
+    refuse "not a directory: $tmp/missing" SAGENT_EXTRA_MOUNTS="$tmp/missing"
+    refuse "entire host filesystem" SAGENT_EXTRA_MOUNTS="/:ro"
+    refuse "colon" SAGENT_EXTRA_MOUNTS="$tmp/c:d"
+    refuse "which is the workspace" SAGENT_EXTRA_MOUNTS="$tmp/ws"
+    refuse "which is the drop folder" SAGENT_DROP_DIR="$tmp/drop" SAGENT_EXTRA_MOUNTS="$tmp/drop"
+    refuse "another SAGENT_EXTRA_MOUNTS entry" SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/ro/:rw"
+    # A real run: the read-only folder is readable and refuses writes, the
+    # read-write one takes them.
+    printf in > "$tmp/ro/in.txt"
+    out=$(cd "$tmp/ws" && SAGENT_EXTRA_MOUNTS="$tmp/ro,$tmp/rw:rw" "$W" shell -c "cat $tmp/ro/in.txt; if touch $tmp/ro/new 2>/dev/null; then echo WROTE-RO; fi; echo out > $tmp/rw/out.txt" 2>/dev/null)
+    [ "$out" = in ]
+    [ ! -e "$tmp/ro/new" ]
+    [ "$(cat "$tmp/rw/out.txt")" = out ]
 ' _ "$SCLAUDE"
 
 print_results

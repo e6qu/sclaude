@@ -94,6 +94,8 @@ Commit before you start. Afterwards, review with `git diff`, then commit or
 - `~/sagent-drop`, read-write. Drop a screenshot on the terminal, or paste
   its path, and either agent can open it. `SAGENT_DROP_DIR` names another
   folder.
+- Any other folders you list in `SAGENT_EXTRA_MOUNTS`, read-only unless
+  marked `:rw`. None by default.
 - The clipboard, both ways, text and images. Ctrl+V of a screenshot works in
   both agents.
 - Session transcripts. A conversation can be resumed on either side.
@@ -156,6 +158,7 @@ the file only.
 | `SAGENT_GIT_PROTOCOL` | `ssh` or `https` for GitHub | your gh setting, else `https` |
 | `SAGENT_CLIPBOARD` | `1` to share the host clipboard, `0` to keep it out | `1` |
 | `SAGENT_DROP_DIR` | Host folder mounted read-write at the same path inside | `~/sagent-drop` |
+| `SAGENT_EXTRA_MOUNTS` | More host folders, comma-separated, each at the same path inside, read-only unless it ends in `:rw` | none |
 | `SAGENT_SESSIONS` | `1` to share transcripts, `0` to keep them out, `all` to share `/rewind` snapshots too | `1` |
 | `SAGENT_UBUNTU_VERSION` | Ubuntu release for the image | `26.04` |
 | `SAGENT_NODE_VERSION` | Node.js major version | `26` |

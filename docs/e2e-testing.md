@@ -91,6 +91,7 @@
 | T54: X11 clipboard served from the host, both ways | In a real run, an X client (what arboard does) finds an owner, reads the host PNG and text, and its own copy reaches the host before the sandbox takes the selection back | -- |
 | T55: Build downloads go to a file first | No build download is piped into `tar`, `sh`, `env`, `gpg`, `unzip` or `tee`; every `-o /tmp/...` download is removed in the same step | #113 |
 | T56: CPU limit above the docker daemon's CPUs refused | A stub docker server with 2 CPUs: `CPU_LIMIT=4` is refused before the engine is called, naming `config set CPU_LIMIT 2`, and `doctor` reports FAIL `limits`; `CPU_LIMIT=2` passes, and a podman server is not refused | #114 |
+| T57: Extra mounts at their own paths, read-only by default | `SAGENT_EXTRA_MOUNTS` entries mount read-only, or read-write with `:rw`; spaces and a trailing slash are dropped; `status` lists them; a relative path, a missing directory, `/`, a colon, the workspace, the drop folder and a repeated entry are refused; in a real run the read-only folder refuses writes and the read-write one takes them | -- |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

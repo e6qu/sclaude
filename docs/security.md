@@ -30,7 +30,8 @@ what it lets through on purpose, and the settings that narrow it.
 ### Filesystem
 
 The wrapper mounts the workspace and the drop folder read-write at their
-own paths. With sharing on, it also mounts the session directories and the
+own paths, and the folders in `SAGENT_EXTRA_MOUNTS` read-only unless an
+entry is marked `:rw`. With sharing on, it also mounts the session directories and the
 per-run clipboard spool, and with `SAGENT_SESSIONS=all` Claude's
 `file-history`. Everything else the sandbox sees is a named volume or a
 copy. The workspace source is the physical path, with symlinks resolved,
@@ -175,6 +176,12 @@ terminal allows it. See [clipboard](host-state.md#clipboard).
 
 `~/sagent-drop` is read-write for the agent. Keep it for files you mean to
 hand over. `SAGENT_DROP_DIR` points it elsewhere.
+
+### Extra mounts
+
+The agent can read everything in a folder listed in `SAGENT_EXTRA_MOUNTS`,
+and with `:rw` change or delete it. Do not list your home directory or a
+folder that holds keys or tokens.
 
 ### Extra trust anchors
 
