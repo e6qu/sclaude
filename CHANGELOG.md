@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/e6qu/sclaude/compare/v3.2.0...v3.2.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* docker compose and the Docker API work in the sandbox, and a stopped or restarted engine is handled ([#105](https://github.com/e6qu/sclaude/issues/105)) ([0b37315](https://github.com/e6qu/sclaude/commit/0b373158948f623142e8d305bc5248387cae4905))
+
 ## [3.2.0](https://github.com/e6qu/sclaude/compare/v3.1.2...v3.2.0) (2026-09-22)
 
 
