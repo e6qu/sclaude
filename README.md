@@ -104,6 +104,17 @@ Commit before you start. Afterwards, review with `git diff`, then commit or
 - Your sign-in for the agent you run. Signing in inside the sandbox works
   too.
 
+Containers the agent starts run in the sandbox, on a podman of its own, not
+on your engine. `docker`, `docker compose` and anything that talks to
+`/var/run/docker.sock` work there. Their images are kept in a volume.
+`--no-docker` turns this off.
+
+The sandbox runs inside your engine's VM, so a restart of Docker Desktop,
+Rancher Desktop, colima or the podman machine stops it. The wrapper says
+so. In a terminal it waits for the engine to come back and resumes the
+session with `--continue`. When no engine answers at the start, the error
+names what is stopped and the command that starts it.
+
 Most of these have a setting that turns them off or narrows them.
 [Host state in the sandbox](docs/host-state.md) has the details and
 [security](docs/security.md) has the trade-offs.

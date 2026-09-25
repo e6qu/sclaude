@@ -1052,7 +1052,22 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
             printf \"FROM public.ecr.aws/docker/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
             docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
             docker run --rm nested-t27 | grep -q built
+            # The Docker API answers where docker.sock and DOCKER_HOST point,
+            # for compose, SDKs and testcontainers.
+            curl -fsS --unix-socket /var/run/docker.sock http://d/_ping | grep -q OK
+            # A compose project gets its own bridge network: service names
+            # resolve, and a published port reaches the sandbox.
+            mkdir -p /tmp/t27 && cd /tmp/t27
+            printf \"services:\n  web:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: nc -lk -p 8080 -e echo served-by-web\n    ports: [\\\"18080:8080\\\"]\n  client:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: sh -c \\\"sleep 2; nc -w5 web 8080 </dev/null\\\"\n    depends_on: [web]\n\" > compose.yml
+            docker compose up -d >/dev/null 2>&1
+            for _ in \$(seq 1 20); do docker compose logs client 2>/dev/null | grep -q served-by-web && break; sleep 1; done
+            docker compose logs client | grep -q served-by-web
+            timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web
+            docker compose down >/dev/null 2>&1
         "
+    # Without the nested devices (--no-docker) the shim says why.
+    out=$("$ENGINE" run --rm "$IMG" docker ps 2>&1 || true)
+    echo "$out" | grep -q "Containers are off in this sandbox"
 ' _ "$SCLAUDE"
 
 # ── T28: config file ─────────────────────────────────────────────────
@@ -2607,5 +2622,76 @@ STUB
     [ ! -e "$tmp/ro/new" ]
     [ "$(cat "$tmp/rw/out.txt")" = out ]
 ' _ "$SCLAUDE"
+
+# ── T58: a stopped engine is named, and a session it took down resumes ─
+run_test "T58: stopped engine named, lost session resumed" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t58.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/bin" "$tmp/ws"
+    # No engine answers: the docker context points at a missing socket and
+    # the podman machine is stopped. Each is named with its fix.
+    cat > "$tmp/bin/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "context show") echo rancher-desktop ;;
+    "context inspect") echo "unix://$tmp/no-such.sock" ;;
+    *) exit 1 ;;
+esac
+STUB
+    cat > "$tmp/bin/podman" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "machine inspect") echo "podman-machine-default stopped" ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/bin/docker" "$tmp/bin/podman"
+    for w in "$1" "$2"; do
+        if out=$(cd "$tmp/ws" && env -u SAGENT_CONTAINER_ENGINE PATH="$tmp/bin:$PATH" "$w" -p hi 2>&1); then
+            echo "ran without an engine" >&2; exit 1
+        fi
+        echo "$out" | grep -q "docker context .rancher-desktop. points at $tmp/no-such.sock"
+        echo "$out" | grep -q "podman machine podman-machine-default is stopped: podman machine start podman-machine-default"
+    done
+    # The engine goes away under a running session: the run says so and how
+    # to resume, and keeps the exit code.
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) [ -e "$tmp/down" ] && exit 1; echo 8; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run)
+        [ -t 0 ] || cat >/dev/null 2>&1
+        case " \$* " in *" sagent-run "*) ;; *) exit 0 ;; esac
+        if [ ! -e "$tmp/ran" ]; then
+            touch "$tmp/ran" "$tmp/down"
+            ( sleep 3; rm -f "$tmp/down" ) >/dev/null 2>&1 &
+            exit 137
+        fi
+        echo "RESUMED-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    rc=0
+    out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$1" -p hi </dev/null 2>&1) || rc=$?
+    [ "$rc" = 137 ]
+    echo "$out" | grep -q "The container engine stopped during the session"
+    echo "$out" | grep -q "then run: sclaude --continue"
+    rm -f "$tmp/ran" "$tmp/down"
+    out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$2" exec hi </dev/null 2>&1) || true
+    echo "$out" | grep -q "then run: scodex resume --last"
+    # In a terminal the wrapper waits for the engine and resumes by itself.
+    if script -qec true /dev/null >/dev/null 2>&1; then
+        rm -f "$tmp/ran" "$tmp/down"
+        out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" timeout 60 script -qec "\"$1\" \"fix the bug\"" /dev/null 2>&1 | tr -d "\r")
+        echo "$out" | grep -q "The engine is back. Resuming with: sclaude --continue"
+        echo "$out" | grep -q "RESUMED-RUN .*sagent-run claude --dangerously-skip-permissions --continue"
+    fi
+' _ "$SCLAUDE" "$SCODEX"
 
 print_results

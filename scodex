@@ -20,6 +20,9 @@ SESSIONS_PER_PROJECT=false
 # shares exactly what 1 already does.
 SESSIONS_EXTRA_DIRS=()
 YOLO_FLAG="--dangerously-bypass-approvals-and-sandbox"
+# Arguments that pick the last session back up, after the engine restarted
+# under a running one.
+RESUME_ARGS=(resume --last)
 # Subcommands that manage the CLI rather than run a session; they get no
 # yolo flag. exec, resume, fork and review run the agent and keep it.
 NO_YOLO_SUBCOMMANDS="agents login logout mcp plugin app-server remote-control completion update doctor sandbox debug apply queue archive delete migrate-rollouts unarchive cloud exec-server features help"
@@ -364,10 +367,12 @@ run_with_timeout_quiet() {
 
     "$@" >/dev/null 2>&1 &
     cmd_pid=$!
+    # The timer's sleep outlives a kill of its subshell: with the output
+    # closed it cannot hold a caller's $(...) open until it ends.
     (
         sleep "$seconds"
         kill "$cmd_pid" 2>/dev/null || true
-    ) &
+    ) >/dev/null 2>&1 &
     timer_pid=$!
 
     if wait "$cmd_pid"; then
@@ -391,6 +396,7 @@ select_engine() {
         fi
         if ! run_with_timeout_quiet "$ENGINE_TIMEOUT_SECONDS" "$requested" info; then
             echo "[$SCRIPT_NAME] ERROR: requested container engine is not responding: $requested" >&2
+            stopped_engine_hints >&2 || true
             return 1
         fi
         ENGINE_CMD="$requested"
@@ -408,7 +414,10 @@ select_engine() {
     # "no engine" message.
     if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] ERROR: a container engine CLI is installed but no daemon answered within ${ENGINE_TIMEOUT_SECONDS}s (tried: docker, podman)." >&2
-        echo "[$SCRIPT_NAME] Start Docker Desktop, Rancher Desktop, colima, or the podman machine, then retry. SAGENT_ENGINE_TIMEOUT_SECONDS raises the probe timeout." >&2
+        if ! stopped_engine_hints >&2; then
+            echo "[$SCRIPT_NAME] Start Docker Desktop, Rancher Desktop, colima, or the podman machine, then retry." >&2
+        fi
+        echo "[$SCRIPT_NAME] SAGENT_ENGINE_TIMEOUT_SECONDS raises the probe timeout." >&2
     elif command -v rdctl >/dev/null 2>&1 || command -v nerdctl >/dev/null 2>&1; then
         echo "[$SCRIPT_NAME] ERROR: Rancher Desktop is installed but no docker CLI is available." >&2
         echo "[$SCRIPT_NAME] The wrappers need the dockerd (moby) engine: Rancher Desktop > Preferences > Container Engine > dockerd (moby), and ~/.rd/bin on PATH. The containerd engine (nerdctl) is not supported." >&2
@@ -417,6 +426,87 @@ select_engine() {
     fi
     echo "[$SCRIPT_NAME] Set SAGENT_CONTAINER_ENGINE=docker or SAGENT_CONTAINER_ENGINE=podman to choose explicitly." >&2
     return 1
+}
+
+# What is installed and not running, one line each with the command that
+# starts it. Non-zero when nothing specific was found. Every probe is local
+# (a VM's state file or process), so this is quick with the engine down.
+stopped_engine_hints() {
+    local found=1 endpoint context state name
+
+    if command -v docker >/dev/null 2>&1; then
+        context=$(docker context show 2>/dev/null || true)
+        endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
+        case "$endpoint" in
+            unix://*)
+                if [ ! -S "${endpoint#unix://}" ]; then
+                    echo "[$SCRIPT_NAME] docker context '$context' points at ${endpoint#unix://}, and nothing is listening there."
+                    found=0
+                fi
+                ;;
+        esac
+    fi
+    if command -v rdctl >/dev/null 2>&1 || [ -d "/Applications/Rancher Desktop.app" ]; then
+        if ! command -v rdctl >/dev/null 2>&1 || ! run_with_timeout_quiet 5 rdctl list-settings; then
+            echo "[$SCRIPT_NAME] Rancher Desktop is not running, or still starting: open it, or run rdctl start, and wait until its engine is up."
+            found=0
+        fi
+    fi
+    if command -v colima >/dev/null 2>&1 && ! run_with_timeout_quiet 5 colima status; then
+        echo "[$SCRIPT_NAME] colima is not running: colima start."
+        found=0
+    fi
+    if command -v podman >/dev/null 2>&1; then
+        while read -r name state; do
+            [ -n "$name" ] || continue
+            case "$state" in
+                running) ;;
+                starting) echo "[$SCRIPT_NAME] podman machine $name is still starting; retry in a moment."; found=0 ;;
+                *) echo "[$SCRIPT_NAME] podman machine $name is $state: podman machine start $name."; found=0 ;;
+            esac
+        done <<EOF_MACHINES
+$(podman machine inspect --format '{{.Name}} {{.State}}' 2>/dev/null || true)
+EOF_MACHINES
+    fi
+    if [ -d /Applications/Docker.app ] && ! pgrep -f 'Docker.app/Contents/MacOS' >/dev/null 2>&1; then
+        echo "[$SCRIPT_NAME] Docker Desktop is not running: open -a Docker."
+        found=0
+    fi
+    return "$found"
+}
+
+# The engine stopped under a running session: a Docker Desktop, Rancher
+# Desktop, colima or podman machine restart takes the sandbox down with its
+# VM, since the sandbox runs inside it. Nothing is lost but the processes:
+# the workspace, volumes and transcripts live outside the container. In a
+# terminal, wait for the engine and resume the last session; otherwise say
+# how to. Non-zero when the engine is fine (the run ended on its own).
+resume_after_engine_loss() {
+    if run_with_timeout_quiet "$ENGINE_TIMEOUT_SECONDS" "$ENGINE_CMD" info; then
+        return 1
+    fi
+    echo "" >&2
+    echo "[$SCRIPT_NAME] The container engine stopped during the session (did Docker Desktop, Rancher Desktop, colima or the podman machine restart?). The sandbox stopped with it. The workspace, volumes and transcripts are kept." >&2
+    # Only an interactive session resumes by itself: a print or exec run
+    # would come back as a different kind of session.
+    local interactive=true arg
+    for arg in "${ARGS[@]+"${ARGS[@]}"}"; do
+        case "$arg" in -p | --print | exec) interactive=false ;; esac
+    done
+    if [ "$TOOL_BIN" = bash ] || [ "$interactive" = false ] || [ ! -t 0 ] || [ ! -t 2 ]; then
+        echo "[$SCRIPT_NAME] Start the engine again, then run: $SCRIPT_NAME ${RESUME_ARGS[*]}" >&2
+        return 1
+    fi
+    stopped_engine_hints >&2 || true
+    echo "[$SCRIPT_NAME] Waiting for the engine to come back, then resuming the session. Ctrl+C stops waiting." >&2
+    while ! run_with_timeout_quiet "$ENGINE_TIMEOUT_SECONDS" "$ENGINE_CMD" info; do
+        sleep 3
+    done
+    echo "[$SCRIPT_NAME] The engine is back. Resuming with: $SCRIPT_NAME ${RESUME_ARGS[*]}" >&2
+    # A restarted VM may have lost the volumes; their creation is idempotent.
+    create_volumes
+    ARGS=("${RESUME_ARGS[@]}")
+    return 0
 }
 
 # `docker` may be podman's shim, and a real docker CLI may talk to a podman
@@ -697,7 +787,7 @@ DOCKERFILE_END
 # podman with the docker CLI shim, confined entirely to the sandbox. passt
 # provides pasta, podman 5's default rootless network backend.
 RUN apt-get update && apt-get install -y \
-    podman podman-docker passt slirp4netns fuse-overlayfs \
+    podman podman-docker passt slirp4netns fuse-overlayfs docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/*
 DOCKERFILE_END
 
@@ -747,12 +837,106 @@ RUN set -eux; \
 # /proc/sys is read-only. nodocker silences the docker-shim notice, and the
 # shim clamps podman's log level: the single-mapping rootless startup
 # warnings are benign by design here and only add noise to every nested run.
+# Without /dev/fuse the run was started with --no-docker, and the shim says so
+# instead of failing on a missing device.
+#
+# docker compose, the Docker SDKs and testcontainers talk to a daemon socket,
+# not the CLI: sagent-docker-api serves podman's Docker API on
+# /run/podman/podman.sock, where podman-docker's /var/run/docker.sock link and
+# DOCKER_HOST point, and restarts it if it stops. sagent-run starts it; the
+# shim starts it again if it is missing. The host's engine socket is never
+# mounted, so nothing here depends on the host engine staying up.
+#
+# helper_binaries_dir puts sagent's netavark first: it lets bridge networks
+# (docker network create, every compose project) set their sysctls under the
+# read-only /proc/sys.
 RUN set -eux; \
     sed -i '/^agent:/d' /etc/subuid /etc/subgid; \
     touch /etc/containers/nodocker; \
-    printf '%s\n' '#!/bin/sh' 'exec /usr/bin/podman --log-level=error "$@"' > /usr/bin/docker; \
-    chmod 0755 /usr/bin/docker; \
-    printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\n' > /etc/containers/containers.conf; \
+    install -d -o agent -m 0755 /run/podman; \
+    ln -sfn /run/podman/podman.sock /var/run/docker.sock; \
+    if [ -x /usr/libexec/docker/cli-plugins/docker-compose ]; then \
+        ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose; \
+    fi; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent-docker-api: podman'"'"'s Docker API on /run/podman/podman.sock, kept' \
+        '# running by one supervisor (the lock keeps it to one).' \
+        'sock=/run/podman/podman.sock' \
+        '[ -c /dev/fuse ] || exit 1' \
+        'nohup flock -n /tmp/sagent-docker-api.lock sh -c '"'"'' \
+        '    while :; do' \
+        '        rm -f "$1"' \
+        '        podman --log-level=error system service --time=0 "unix://$1"' \
+        '        sleep 2' \
+        '    done'"'"' _ "$sock" >>/tmp/sagent-docker-api.log 2>&1 </dev/null &' \
+        'i=0' \
+        'while [ ! -S "$sock" ] && [ "$i" -lt 100 ]; do' \
+        '    sleep 0.05' \
+        '    i=$((i + 1))' \
+        'done' \
+        'if [ ! -S "$sock" ]; then' \
+        '    echo "[sagent] the Docker API socket did not come up in 5s; see /tmp/sagent-docker-api.log" >&2' \
+        '    exit 1' \
+        'fi' \
+        > /usr/local/bin/sagent-docker-api; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ ! -c /dev/fuse ]; then' \
+        '    echo "[sagent] Containers are off in this sandbox: it was started with --no-docker or SAGENT_DOCKER=0. Run the wrapper without them to get docker and podman here. The host'"'"'s engine is not reachable from the sandbox." >&2' \
+        '    exit 1' \
+        'fi' \
+        '[ -S /run/podman/podman.sock ] || /usr/local/bin/sagent-docker-api || true' \
+        'exec /usr/bin/podman --log-level=error "$@"' \
+        > /usr/bin/docker; \
+    mkdir -p /usr/local/lib/sagent/podman; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent netavark: the outer engine mounts /proc/sys read-only, and netavark' \
+        '# sets a few per-interface sysctls (route_localnet, rp_filter, arp_notify,' \
+        '# accept_dad) on every bridge network it creates. Those only tune the nested' \
+        '# network namespaces, so here they go to files on a private tmpfs over' \
+        '# /proc/sys, in a mount namespace only this netavark and its aardvark-dns' \
+        '# see. ip_forward stays the real, read-only file: a nested network namespace' \
+        '# without forwarding still fails loudly.' \
+        'real=/usr/lib/podman/netavark' \
+        '[ -x "$real" ] || real=/usr/libexec/podman/netavark' \
+        'if [ "${SAGENT_NETAVARK_NS:-}" != 1 ]; then' \
+        '    case " $* " in' \
+        '        *" setup "*) SAGENT_NETAVARK_NS=1 exec unshare --mount --propagation private "$0" "$@" ;;' \
+        '        *) exec "$real" "$@" ;;' \
+        '    esac' \
+        'fi' \
+        'unset SAGENT_NETAVARK_NS' \
+        'set -e' \
+        'opts=$(mktemp)' \
+        'cat > "$opts"' \
+        'names=$(grep -oE '"'"'"(network_interface|interface_name)" *: *"[^"]+"'"'"' "$opts" | sed -E '"'"'s/.*"([^"]+)"$/\1/'"'"')' \
+        'exec 3< "$opts"' \
+        'rm -f "$opts"' \
+        'sys=$(mktemp -d)' \
+        'mount --bind /proc/sys "$sys"' \
+        'mount -t tmpfs -o size=1m,mode=0755 sagent-sysctl /proc/sys' \
+        'for v in 4 6; do' \
+        '    for n in all default $names; do' \
+        '        mkdir -p "/proc/sys/net/ipv$v/conf/$n"' \
+        '        for k in forwarding route_localnet rp_filter arp_notify accept_dad accept_ra autoconf disable_ipv6; do' \
+        '            : > "/proc/sys/net/ipv$v/conf/$n/$k"' \
+        '        done' \
+        '    done' \
+        'done' \
+        'for f in net/ipv4/ip_forward net/ipv6/conf/all/forwarding; do' \
+        '    if [ -e "$sys/$f" ]; then' \
+        '        : > "/proc/sys/$f"' \
+        '        mount --bind "$sys/$f" "/proc/sys/$f"' \
+        '    fi' \
+        'done' \
+        'umount "$sys"' \
+        'rmdir "$sys"' \
+        'exec "$real" "$@" <&3 3<&-' \
+        > /usr/local/lib/sagent/podman/netavark; \
+    chmod 0755 /usr/bin/docker /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark; \
+    printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\ncompose_warning_logs = false\nhelper_binaries_dir = ["/usr/local/lib/sagent/podman", "/usr/local/libexec/podman", "/usr/local/lib/podman", "/usr/libexec/podman", "/usr/lib/podman"]\n' > /etc/containers/containers.conf; \
     printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
 
 # Browser-open shim: the sandbox has no browser, but the user's terminal can
@@ -1069,7 +1253,8 @@ RUN set -eux; \
     printf '%s\n' \
         '#!/bin/bash' \
         '# sagent-run: starts the X display and its clipboard for a run with the host' \
-        '# bridge mounted, then runs the tool in its place.' \
+        '# bridge mounted, and the Docker API when nested containers are on, then' \
+        '# runs the tool in its place.' \
         'if [ -n "${DISPLAY:-}" ] && [ -d /run/sagent/clipboard ]; then' \
         '    mkdir -p /tmp/.X11-unix 2>/dev/null || true' \
         '    Xvfb "$DISPLAY" -screen 0 8x8x24 -nolisten tcp >/tmp/sagent-xvfb.log 2>&1 &' \
@@ -1084,6 +1269,9 @@ RUN set -eux; \
         '        sleep 0.05' \
         '    done' \
         '    [ -e /tmp/sagent-x11-clipboard.ready ] || echo "[sagent] the X clipboard did not come up in 5s; see /tmp/sagent-x11-clipboard.log" >&2' \
+        'fi' \
+        'if [ -c /dev/fuse ]; then' \
+        '    /usr/local/bin/sagent-docker-api || true' \
         'fi' \
         'exec "$@"' \
         > /usr/local/bin/sagent-run; \
@@ -1125,6 +1313,9 @@ ENV LANG=C.UTF-8
 # even `pip install --user` into the dedicated pip volume. The sandbox is
 # disposable, so let pip install into the user site freely.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
+# The nested podman's Docker API (sagent-docker-api). podman compose hands this
+# to its compose provider instead of looking for its own socket.
+ENV DOCKER_HOST=unix:///run/podman/podman.sock
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
 # Persistent, user-writable install locations first (npm globals, pip user
 # scripts, cargo install, go install), then the system-wide toolchains.
@@ -4028,4 +4219,12 @@ build_docker_tty_flags
 if [ "$WRAPPER_COMMAND" = "shell" ]; then
     open_shell
 fi
-run_tool
+run_rc=0
+run_tool || run_rc=$?
+while [ "$run_rc" -ne 0 ] && resume_after_engine_loss; do
+    run_rc=0
+    run_tool || run_rc=$?
+done
+if [ "$run_rc" -ne 0 ]; then
+    exit "$run_rc"
+fi
