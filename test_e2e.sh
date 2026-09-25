@@ -1071,7 +1071,8 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
             for _ in \$(seq 1 20); do docker compose logs client 2>/dev/null | grep -q served-by-web && break; sleep 1; done
             docker compose logs client | grep -q served-by-web || fail \"client reaches web by service name\"
             timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web || fail \"published port 18080\"
-            docker compose down >/dev/null 2>&1
+            # Stopping signals the container, not the sandbox (cgroup v2).
+            docker compose down 2>&1 || fail \"docker compose down\"
         "
     # Without the nested devices (--no-docker) the shim says why.
     out=$("$ENGINE" run --rm "$IMG" docker ps 2>&1 || true)
@@ -2704,5 +2705,34 @@ STUB
         echo "$out" | grep -q "RESUMED-RUN .*sagent-run claude --dangerously-skip-permissions --continue"
     fi
 ' _ "$SCLAUDE" "$SCODEX"
+
+# ── T59: a broken CLI in the npm volume is removed, or the run stops ─
+run_test "T59: broken CLI in the npm volume removed, or named with its fix" bash -ec '
+    # An npm-installed copy whose binary is missing: removed, then the
+    # image copy runs.
+    out=$("$ENGINE" run --rm "$SUITE_IMG" bash -c "
+        d=/home/agent/.npm-global/lib/node_modules/@anthropic-ai/claude-code
+        mkdir -p \$d /home/agent/.npm-global/bin
+        printf \"{\\\"name\\\":\\\"@anthropic-ai/claude-code\\\",\\\"version\\\":\\\"0.0.1\\\",\\\"bin\\\":{\\\"claude\\\":\\\"cli.js\\\"}}\" > \$d/package.json
+        printf \"#!/bin/sh\necho claude native binary not installed >&2\nexit 1\n\" > \$d/cli.js
+        chmod +x \$d/cli.js
+        ln -s ../lib/node_modules/@anthropic-ai/claude-code/cli.js /home/agent/.npm-global/bin/claude
+        sagent-run claude --version
+        test ! -e /home/agent/.npm-global/bin/claude && echo REMOVED
+    " 2>&1)
+    echo "$out" | grep -q "Removing it: npm uninstall -g @anthropic-ai/claude-code" || { echo "no removal notice: $out" >&2; exit 1; }
+    echo "$out" | grep -q "Claude Code" || { echo "image claude did not run: $out" >&2; exit 1; }
+    echo "$out" | grep -q REMOVED || { echo "broken copy still there: $out" >&2; exit 1; }
+    # A copy npm cannot remove: the run stops with the command.
+    rc=0
+    out=$("$ENGINE" run --rm "$SUITE_IMG" bash -c "
+        mkdir -p /home/agent/.npm-global/bin
+        printf \"#!/bin/sh\nexit 1\n\" > /home/agent/.npm-global/bin/codex
+        chmod +x /home/agent/.npm-global/bin/codex
+        sagent-run codex --version
+    " 2>&1) || rc=$?
+    [ "$rc" = 1 ] || { echo "expected exit 1, got $rc: $out" >&2; exit 1; }
+    echo "$out" | grep -q "Run: scodex shell -c .npm uninstall -g @openai/codex., or scodex reset-caches" || { echo "no recovery command: $out" >&2; exit 1; }
+'
 
 print_results

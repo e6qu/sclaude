@@ -121,7 +121,9 @@ The mode changes four run options:
 networks, writes a few per-interface sysctls such as `route_localnet`. The
 image runs it in a private mount namespace where those files are on a
 tmpfs, so the writes change nothing outside it. `ip_forward` there is the
-real, read-only file.
+real, read-only file. Stopping a nested container signals its own
+processes: a crun wrapper replaces `kill --all`, which on cgroup v2 would
+signal the sandbox's whole cgroup, since nested containers share it.
 
 That is more kernel surface. `SAGENT_DOCKER=0` or `--no-docker` runs with
 the default profiles, no extra devices and `PIDS_LIMIT`. Nested containers

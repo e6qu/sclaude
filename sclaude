@@ -851,6 +851,10 @@ RUN set -eux; \
 # helper_binaries_dir puts sagent's netavark first: it lets bridge networks
 # (docker network create, every compose project) set their sysctls under the
 # read-only /proc/sys.
+#
+# The crun in [engine.runtimes] is a wrapper: stopping a container that shares
+# the sandbox's PID namespace otherwise signals the sandbox's whole cgroup on
+# cgroup v2 (docker stop and compose down hung, or took the sandbox down).
 RUN set -eux; \
     sed -i '/^agent:/d' /etc/subuid /etc/subgid; \
     touch /etc/containers/nodocker; \
@@ -904,11 +908,7 @@ RUN set -eux; \
         '[ -x "$real" ] || real=/usr/libexec/podman/netavark' \
         'if [ "${SAGENT_NETAVARK_NS:-}" != 1 ]; then' \
         '    case " $* " in' \
-        '        *" setup "*)' \
-        '            if unshare --mount true 2>/dev/null; then' \
-        '                SAGENT_NETAVARK_NS=1 exec unshare --mount --propagation private "$0" "$@"' \
-        '            fi' \
-        '            ;;' \
+        '        *" setup "*) SAGENT_NETAVARK_NS=1 exec unshare --mount --propagation private "$0" "$@" ;;' \
         '    esac' \
         '    exec "$real" "$@"' \
         'fi' \
@@ -939,13 +939,72 @@ RUN set -eux; \
         '    umount "$sys"' \
         '    rmdir "$sys"' \
         '}' \
-        '# Without the private sysctls a bridge network fails as it would anyway;' \
-        '# the real netavark still reports why.' \
-        'private_sysctls || echo "[sagent] netavark: could not set up private sysctls; bridge networks may fail" >&2' \
+        'if ! private_sysctls; then' \
+        '    echo "[sagent] netavark: could not give this network its own sysctls under the read-only /proc/sys, so bridge networks (docker network create, compose) cannot start here. Plain docker run still works. Run sclaude doctor, and report it with its output." >&2' \
+        '    exit 1' \
+        'fi' \
         'exec "$real" "$@" <&3 3<&-' \
         > /usr/local/lib/sagent/podman/netavark; \
-    chmod 0755 /usr/bin/docker /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark; \
-    printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\ncompose_warning_logs = false\nhelper_binaries_dir = ["/usr/local/lib/sagent/podman", "/usr/local/libexec/podman", "/usr/local/lib/podman", "/usr/libexec/podman", "/usr/lib/podman"]\n' > /etc/containers/containers.conf; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent crun: nested containers share the sandbox'"'"'s PID namespace and, on' \
+        '# cgroup v2, its cgroup. `crun kill --all`, which podman uses to stop such a' \
+        '# container, signals the container'"'"'s cgroup: the whole sandbox, or nothing.' \
+        '# Here it signals the container'"'"'s own processes instead: every descendant' \
+        '# of its conmons (the init process and any exec sessions).' \
+        'real=/usr/bin/crun' \
+        'all=false' \
+        'before=""' \
+        'id=""' \
+        'sig=""' \
+        'seen_kill=false' \
+        'for a in "$@"; do' \
+        '    if [ "$seen_kill" = true ]; then' \
+        '        case "$a" in' \
+        '            -a | --all) all=true ;;' \
+        '            -*) ;;' \
+        '            *) if [ -z "$id" ]; then id=$a; elif [ -z "$sig" ]; then sig=$a; fi ;;' \
+        '        esac' \
+        '    elif [ "$a" = kill ]; then' \
+        '        seen_kill=true' \
+        '    fi' \
+        'done' \
+        'if [ "$all" != true ] || [ -z "$id" ]; then' \
+        '    exec "$real" "$@"' \
+        'fi' \
+        'sig=${sig:-TERM}' \
+        'sig=${sig#SIG}' \
+        '# The global options come before "kill".' \
+        'for a in "$@"; do' \
+        '    [ "$a" = kill ] && break' \
+        '    before="$before $a"' \
+        'done' \
+        '# Every conmon podman started for this container: its own and one per exec' \
+        '# session. The processes to signal are their descendants.' \
+        'roots=$(ps -eo pid=,args= | awk -v id="$id" '"'"'$2 ~ /conmon$/ && index($0, " -c " id " ") { print $1 }'"'"')' \
+        'pids=""' \
+        'if [ -n "$roots" ]; then' \
+        '    pids=$(ps -eo pid=,ppid= | awk -v roots="$roots" '"'"'' \
+        '        BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }' \
+        '        { parent[$1] = $2; order[NR] = $1 }' \
+        '        END {' \
+        '            for (i = 1; i <= NR; i++) {' \
+        '                p = order[i]; q = parent[p]' \
+        '                while (q != "" && !(q in root) && q != 1 && q != 0) q = parent[q]' \
+        '                if (q in root) print p' \
+        '            }' \
+        '        }'"'"')' \
+        'fi' \
+        'rc=0' \
+        '# shellcheck disable=SC2086' \
+        '"$real" $before kill "$id" "$sig" || rc=$?' \
+        'for p in $pids; do' \
+        '    kill "-$sig" "$p" 2>/dev/null || true' \
+        'done' \
+        'exit "$rc"' \
+        > /usr/local/lib/sagent/podman/crun; \
+    chmod 0755 /usr/bin/docker /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark /usr/local/lib/sagent/podman/crun; \
+    printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\ncompose_warning_logs = false\nhelper_binaries_dir = ["/usr/local/lib/sagent/podman", "/usr/local/libexec/podman", "/usr/local/lib/podman", "/usr/libexec/podman", "/usr/lib/podman"]\nruntime = "crun"\n[engine.runtimes]\ncrun = ["/usr/local/lib/sagent/podman/crun"]\n' > /etc/containers/containers.conf; \
     printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
 
 # Browser-open shim: the sandbox has no browser, but the user's terminal can
@@ -1282,6 +1341,25 @@ RUN set -eux; \
         'if [ -c /dev/fuse ]; then' \
         '    /usr/local/bin/sagent-docker-api || true' \
         'fi' \
+        '# A claude or codex installed into the npm volume (an auto-update, or' \
+        '# npm i -g in the sandbox) comes first on PATH and outlives the image.' \
+        '# When that copy cannot start (its platform binary never downloaded),' \
+        '# remove it, so the image'"'"'s copy is the one on PATH; when that fails,' \
+        '# stop with the command that does it.' \
+        'case "${1:-}" in' \
+        '    claude | codex)' \
+        '        if [ -x "/home/agent/.npm-global/bin/$1" ] &&' \
+        '            ! "/home/agent/.npm-global/bin/$1" --version >/dev/null 2>&1; then' \
+        '            case "$1" in claude) pkg=@anthropic-ai/claude-code ;; *) pkg=@openai/codex ;; esac' \
+        '            echo "[sagent] The $1 in /home/agent/.npm-global cannot start (its platform binary is missing). Removing it: npm uninstall -g $pkg" >&2' \
+        '            if ! npm uninstall -g "$pkg" >&2 || [ -e "/home/agent/.npm-global/bin/$1" ]; then' \
+        '                echo "[sagent] Could not remove it. Run: s$1 shell -c '"'"'npm uninstall -g $pkg'"'"', or s$1 reset-caches to clear the npm volume." >&2' \
+        '                exit 1' \
+        '            fi' \
+        '            hash -r' \
+        '        fi' \
+        '        ;;' \
+        'esac' \
         'exec "$@"' \
         > /usr/local/bin/sagent-run; \
     chmod 0755 /usr/local/lib/sagent/x11-clipboard.py /usr/local/bin/sagent-run
@@ -1338,8 +1416,21 @@ USER root
 ARG AGENT_CLI_REFRESH=initial
 # NPM_CONFIG_PREFIX is set above for the agent's runtime npm (a volume at
 # /home/agent/.npm-global): install into the system prefix instead, or the
-# CLIs would land where that volume later hides them.
-RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex
+# CLIs would land where that volume later hides them. Both ship their
+# binary as a per-platform optional dependency, and npm only warns when one
+# fails to download: the build runs each CLI, reinstalls once if either does
+# not start, and fails with the command to retry rather than ship one that
+# cannot.
+RUN set -eux; \
+    echo "agent CLIs: ${AGENT_CLI_REFRESH}"; \
+    NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex; \
+    if ! claude --version || ! codex --version; then \
+        NPM_CONFIG_PREFIX=/usr/local npm install -g --include=optional --force @anthropic-ai/claude-code @openai/codex; \
+        if ! claude --version || ! codex --version; then \
+            echo "The agent CLIs installed without their platform binary twice (a download npm skipped). Retry with: sclaude update --force-rebuild" >&2; \
+            exit 1; \
+        fi; \
+    fi
 USER agent
 DOCKERFILE_END
 }
