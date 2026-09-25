@@ -95,8 +95,11 @@ aliases.
 ### Engine socket
 
 The wrapper never mounts the engine socket. `docker` and `podman` inside
-run through nested podman. A daemon that listens on the network, or a
-socket inside a mounted directory, is a separate exposure.
+run through nested podman. `/var/run/docker.sock` inside is podman's own API
+socket at `/run/podman/podman.sock`, served by a process in the sandbox as
+the sandbox user, for docker compose, the Docker SDKs and testcontainers. It
+reaches only the nested containers. A daemon that listens on the network,
+or a socket inside a mounted directory, is a separate exposure.
 
 ### Nested containers
 
@@ -113,6 +116,14 @@ The mode changes four run options:
 - The AppArmor profile is off on hosts that enforce one.
 - `/dev/fuse` and `/dev/net/tun` are passed in.
 - The process limit is `PIDS_LIMIT_NESTED`, 512 by default.
+
+`/proc/sys` stays read-only. netavark, which sets up the nested bridge
+networks, writes a few per-interface sysctls such as `route_localnet`. The
+image runs it in a private mount namespace where those files are on a
+tmpfs, so the writes change nothing outside it. `ip_forward` there is the
+real, read-only file. Stopping a nested container signals its own
+processes: a crun wrapper replaces `kill --all`, which on cgroup v2 would
+signal the sandbox's whole cgroup, since nested containers share it.
 
 That is more kernel surface. `SAGENT_DOCKER=0` or `--no-docker` runs with
 the default profiles, no extra devices and `PIDS_LIMIT`. Nested containers

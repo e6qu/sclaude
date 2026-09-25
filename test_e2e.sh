@@ -1046,13 +1046,40 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         --pids-limit=512 \
         "$IMG" bash -c "
             set -e
+            # On a failure, say which step and show the nested engine state.
+            fail() {
+                echo \"T27 step failed: \$1\" >&2
+                docker compose ps -a >&2 2>&1 || true
+                docker compose logs >&2 2>&1 || true
+                tail -20 /tmp/sagent-docker-api.log >&2 2>/dev/null || true
+                exit 1
+            }
             # public.ecr.aws mirror: Docker Hub anonymous pulls are rate-limited
             # per IP, which flakes on shared CI runners.
-            docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
+            docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok || fail \"docker run\"
             printf \"FROM public.ecr.aws/docker/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
-            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
-            docker run --rm nested-t27 | grep -q built
+            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null || fail \"docker build\"
+            docker run --rm nested-t27 | grep -q built || fail \"run the built image\"
+            # The Docker API answers where docker.sock and DOCKER_HOST point,
+            # for compose, SDKs and testcontainers.
+            curl -fsS --unix-socket /var/run/docker.sock http://d/_ping | grep -q OK || fail \"API ping on /var/run/docker.sock\"
+            # A compose project gets its own bridge network: service names
+            # resolve, and a published port reaches the sandbox.
+            mkdir -p /tmp/t27 && cd /tmp/t27
+            printf \"services:\n  web:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: nc -lk -p 8080 -e echo served-by-web\n    ports: [\\\"18080:8080\\\"]\n  client:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: sh -c \\\"sleep 2; nc -w5 web 8080 </dev/null\\\"\n    depends_on: [web]\n\" > compose.yml
+            docker compose up -d 2>&1 || fail \"docker compose up\"
+            for _ in \$(seq 1 20); do docker compose logs client 2>/dev/null | grep -q served-by-web && break; sleep 1; done
+            docker compose logs client | grep -q served-by-web || fail \"client reaches web by service name\"
+            timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web || fail \"published port 18080\"
+            # Stopping signals the container, not the sandbox (cgroup v2).
+            docker compose down 2>&1 || fail \"docker compose down\"
         "
+    # Without the nested devices (--no-docker) the shim says why.
+    out=$("$ENGINE" run --rm "$IMG" docker ps 2>&1 || true)
+    if ! echo "$out" | grep -q "Containers are off in this sandbox"; then
+        echo "without /dev/fuse, docker said: $out" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T28: config file ─────────────────────────────────────────────────
@@ -2607,5 +2634,105 @@ STUB
     [ ! -e "$tmp/ro/new" ]
     [ "$(cat "$tmp/rw/out.txt")" = out ]
 ' _ "$SCLAUDE"
+
+# ── T58: a stopped engine is named, and a session it took down resumes ─
+run_test "T58: stopped engine named, lost session resumed" bash -ec '
+    export SAGENT_SKIP_RELEASE_CHECK=1
+    tmp=$(mktemp -d "$SAGENT_TEST_TMPDIR/sagent-t58.XXXXXX")
+    trap "rm -rf \"$tmp\"" EXIT
+    tmp=$(cd "$tmp" && pwd -P)
+    mkdir -p "$tmp/bin" "$tmp/ws"
+    # No engine answers: the docker context points at a missing socket and
+    # the podman machine is stopped. Each is named with its fix.
+    cat > "$tmp/bin/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "context show") echo rancher-desktop ;;
+    "context inspect") echo "unix://$tmp/no-such.sock" ;;
+    *) exit 1 ;;
+esac
+STUB
+    cat > "$tmp/bin/podman" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "machine inspect") echo "podman-machine-default stopped" ;;
+    *) exit 1 ;;
+esac
+STUB
+    chmod +x "$tmp/bin/docker" "$tmp/bin/podman"
+    for w in "$1" "$2"; do
+        if out=$(cd "$tmp/ws" && env -u SAGENT_CONTAINER_ENGINE PATH="$tmp/bin:$PATH" "$w" -p hi 2>&1); then
+            echo "ran without an engine" >&2; exit 1
+        fi
+        echo "$out" | grep -q "docker context .rancher-desktop. points at $tmp/no-such.sock"
+        echo "$out" | grep -q "podman machine podman-machine-default is stopped: podman machine start podman-machine-default"
+    done
+    # The engine goes away under a running session: the run says so and how
+    # to resume, and keeps the exit code.
+    cat > "$tmp/fake-engine" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+    info) [ -e "$tmp/down" ] && exit 1; echo 8; exit 0 ;;
+    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
+    context) echo desktop-linux; exit 0 ;;
+    image|volume) exit 0 ;;
+    run)
+        [ -t 0 ] || cat >/dev/null 2>&1
+        case " \$* " in *" sagent-run "*) ;; *) exit 0 ;; esac
+        if [ ! -e "$tmp/ran" ]; then
+            touch "$tmp/ran" "$tmp/down"
+            ( sleep 3; rm -f "$tmp/down" ) >/dev/null 2>&1 &
+            exit 137
+        fi
+        echo "RESUMED-RUN \$*"; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$tmp/fake-engine"
+    rc=0
+    out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$1" -p hi </dev/null 2>&1) || rc=$?
+    [ "$rc" = 137 ]
+    echo "$out" | grep -q "The container engine stopped during the session"
+    echo "$out" | grep -q "then run: sclaude --continue"
+    rm -f "$tmp/ran" "$tmp/down"
+    out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" "$2" exec hi </dev/null 2>&1) || true
+    echo "$out" | grep -q "then run: scodex resume --last"
+    # In a terminal the wrapper waits for the engine and resumes by itself.
+    if script -qec true /dev/null >/dev/null 2>&1; then
+        rm -f "$tmp/ran" "$tmp/down"
+        out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" timeout 60 script -qec "\"$1\" \"fix the bug\"" /dev/null 2>&1 | tr -d "\r")
+        echo "$out" | grep -q "The engine is back. Resuming with: sclaude --continue"
+        echo "$out" | grep -q "RESUMED-RUN .*sagent-run claude --dangerously-skip-permissions --continue"
+    fi
+' _ "$SCLAUDE" "$SCODEX"
+
+# ── T59: a broken CLI in the npm volume is removed, or the run stops ─
+run_test "T59: broken CLI in the npm volume removed, or named with its fix" bash -ec '
+    # An npm-installed copy whose binary is missing: removed, then the
+    # image copy runs.
+    out=$("$ENGINE" run --rm "$SUITE_IMG" bash -c "
+        d=/home/agent/.npm-global/lib/node_modules/@anthropic-ai/claude-code
+        mkdir -p \$d /home/agent/.npm-global/bin
+        printf \"{\\\"name\\\":\\\"@anthropic-ai/claude-code\\\",\\\"version\\\":\\\"0.0.1\\\",\\\"bin\\\":{\\\"claude\\\":\\\"cli.js\\\"}}\" > \$d/package.json
+        printf \"#!/bin/sh\necho claude native binary not installed >&2\nexit 1\n\" > \$d/cli.js
+        chmod +x \$d/cli.js
+        ln -s ../lib/node_modules/@anthropic-ai/claude-code/cli.js /home/agent/.npm-global/bin/claude
+        sagent-run claude --version
+        test ! -e /home/agent/.npm-global/bin/claude && echo REMOVED
+    " 2>&1)
+    echo "$out" | grep -q "Removing it: npm uninstall -g @anthropic-ai/claude-code" || { echo "no removal notice: $out" >&2; exit 1; }
+    echo "$out" | grep -q "Claude Code" || { echo "image claude did not run: $out" >&2; exit 1; }
+    echo "$out" | grep -q REMOVED || { echo "broken copy still there: $out" >&2; exit 1; }
+    # A copy npm cannot remove: the run stops with the command.
+    rc=0
+    out=$("$ENGINE" run --rm "$SUITE_IMG" bash -c "
+        mkdir -p /home/agent/.npm-global/bin
+        printf \"#!/bin/sh\nexit 1\n\" > /home/agent/.npm-global/bin/codex
+        chmod +x /home/agent/.npm-global/bin/codex
+        sagent-run codex --version
+    " 2>&1) || rc=$?
+    [ "$rc" = 1 ] || { echo "expected exit 1, got $rc: $out" >&2; exit 1; }
+    echo "$out" | grep -q "Run: scodex shell -c .npm uninstall -g @openai/codex., or scodex reset-caches" || { echo "no recovery command: $out" >&2; exit 1; }
+'
 
 print_results

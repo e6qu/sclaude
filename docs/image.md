@@ -6,9 +6,10 @@ settings.
 ## Contents
 
 Ubuntu 26.04 with Claude Code, Codex, `gh`, git, git-lfs and
-build-essential. `SAGENT_UBUNTU_VERSION` picks another release. podman and
-its `docker` command shim are always installed. `--no-docker` turns the
-nested tooling off at run time.
+build-essential. `SAGENT_UBUNTU_VERSION` picks another release. podman,
+its `docker` command shim and docker compose are always installed. Each run
+serves podman's Docker API on `/var/run/docker.sock` and `DOCKER_HOST`.
+`--no-docker` turns the nested tooling off at run time.
 
 | Toolchain | Default | Setting |
 |---|---|---|
