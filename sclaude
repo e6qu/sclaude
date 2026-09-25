@@ -904,36 +904,44 @@ RUN set -eux; \
         '[ -x "$real" ] || real=/usr/libexec/podman/netavark' \
         'if [ "${SAGENT_NETAVARK_NS:-}" != 1 ]; then' \
         '    case " $* " in' \
-        '        *" setup "*) SAGENT_NETAVARK_NS=1 exec unshare --mount --propagation private "$0" "$@" ;;' \
-        '        *) exec "$real" "$@" ;;' \
+        '        *" setup "*)' \
+        '            if unshare --mount true 2>/dev/null; then' \
+        '                SAGENT_NETAVARK_NS=1 exec unshare --mount --propagation private "$0" "$@"' \
+        '            fi' \
+        '            ;;' \
         '    esac' \
+        '    exec "$real" "$@"' \
         'fi' \
         'unset SAGENT_NETAVARK_NS' \
-        'set -e' \
-        'opts=$(mktemp)' \
+        'opts=$(mktemp) || exit 1' \
         'cat > "$opts"' \
         'names=$(grep -oE '"'"'"(network_interface|interface_name)" *: *"[^"]+"'"'"' "$opts" | sed -E '"'"'s/.*"([^"]+)"$/\1/'"'"')' \
         'exec 3< "$opts"' \
         'rm -f "$opts"' \
-        'sys=$(mktemp -d)' \
-        'mount --bind /proc/sys "$sys"' \
-        'mount -t tmpfs -o size=1m,mode=0755 sagent-sysctl /proc/sys' \
-        'for v in 4 6; do' \
-        '    for n in all default $names; do' \
-        '        mkdir -p "/proc/sys/net/ipv$v/conf/$n"' \
-        '        for k in forwarding route_localnet rp_filter arp_notify accept_dad accept_ra autoconf disable_ipv6; do' \
-        '            : > "/proc/sys/net/ipv$v/conf/$n/$k"' \
+        'private_sysctls() {' \
+        '    sys=$(mktemp -d) || return 1' \
+        '    mount --bind /proc/sys "$sys" || return 1' \
+        '    mount -t tmpfs -o size=1m,mode=0755 sagent-sysctl /proc/sys || return 1' \
+        '    for v in 4 6; do' \
+        '        for n in all default $names; do' \
+        '            mkdir -p "/proc/sys/net/ipv$v/conf/$n" || return 1' \
+        '            for k in forwarding route_localnet rp_filter arp_notify accept_dad accept_ra autoconf disable_ipv6; do' \
+        '                : > "/proc/sys/net/ipv$v/conf/$n/$k" || return 1' \
+        '            done' \
         '        done' \
         '    done' \
-        'done' \
-        'for f in net/ipv4/ip_forward net/ipv6/conf/all/forwarding; do' \
-        '    if [ -e "$sys/$f" ]; then' \
-        '        : > "/proc/sys/$f"' \
-        '        mount --bind "$sys/$f" "/proc/sys/$f"' \
-        '    fi' \
-        'done' \
-        'umount "$sys"' \
-        'rmdir "$sys"' \
+        '    for f in net/ipv4/ip_forward net/ipv6/conf/all/forwarding; do' \
+        '        if [ -e "$sys/$f" ]; then' \
+        '            : > "/proc/sys/$f" || return 1' \
+        '            mount --bind "$sys/$f" "/proc/sys/$f" || return 1' \
+        '        fi' \
+        '    done' \
+        '    umount "$sys"' \
+        '    rmdir "$sys"' \
+        '}' \
+        '# Without the private sysctls a bridge network fails as it would anyway;' \
+        '# the real netavark still reports why.' \
+        'private_sysctls || echo "[sagent] netavark: could not set up private sysctls; bridge networks may fail" >&2' \
         'exec "$real" "$@" <&3 3<&-' \
         > /usr/local/lib/sagent/podman/netavark; \
     chmod 0755 /usr/bin/docker /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark; \

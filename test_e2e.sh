@@ -1046,28 +1046,39 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         --pids-limit=512 \
         "$IMG" bash -c "
             set -e
+            # On a failure, say which step and show the nested engine state.
+            fail() {
+                echo \"T27 step failed: \$1\" >&2
+                docker compose ps -a >&2 2>&1 || true
+                docker compose logs >&2 2>&1 || true
+                tail -20 /tmp/sagent-docker-api.log >&2 2>/dev/null || true
+                exit 1
+            }
             # public.ecr.aws mirror: Docker Hub anonymous pulls are rate-limited
             # per IP, which flakes on shared CI runners.
-            docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok
+            docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok || fail \"docker run\"
             printf \"FROM public.ecr.aws/docker/library/alpine:latest\nRUN echo built > /msg\nCMD cat /msg\n\" > /tmp/Dockerfile
-            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null
-            docker run --rm nested-t27 | grep -q built
+            docker build -q -t nested-t27 -f /tmp/Dockerfile /tmp >/dev/null || fail \"docker build\"
+            docker run --rm nested-t27 | grep -q built || fail \"run the built image\"
             # The Docker API answers where docker.sock and DOCKER_HOST point,
             # for compose, SDKs and testcontainers.
-            curl -fsS --unix-socket /var/run/docker.sock http://d/_ping | grep -q OK
+            curl -fsS --unix-socket /var/run/docker.sock http://d/_ping | grep -q OK || fail \"API ping on /var/run/docker.sock\"
             # A compose project gets its own bridge network: service names
             # resolve, and a published port reaches the sandbox.
             mkdir -p /tmp/t27 && cd /tmp/t27
             printf \"services:\n  web:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: nc -lk -p 8080 -e echo served-by-web\n    ports: [\\\"18080:8080\\\"]\n  client:\n    image: public.ecr.aws/docker/library/alpine:latest\n    command: sh -c \\\"sleep 2; nc -w5 web 8080 </dev/null\\\"\n    depends_on: [web]\n\" > compose.yml
-            docker compose up -d >/dev/null 2>&1
+            docker compose up -d 2>&1 || fail \"docker compose up\"
             for _ in \$(seq 1 20); do docker compose logs client 2>/dev/null | grep -q served-by-web && break; sleep 1; done
-            docker compose logs client | grep -q served-by-web
-            timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web
+            docker compose logs client | grep -q served-by-web || fail \"client reaches web by service name\"
+            timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web || fail \"published port 18080\"
             docker compose down >/dev/null 2>&1
         "
     # Without the nested devices (--no-docker) the shim says why.
     out=$("$ENGINE" run --rm "$IMG" docker ps 2>&1 || true)
-    echo "$out" | grep -q "Containers are off in this sandbox"
+    if ! echo "$out" | grep -q "Containers are off in this sandbox"; then
+        echo "without /dev/fuse, docker said: $out" >&2
+        exit 1
+    fi
 ' _ "$SCLAUDE"
 
 # ── T28: config file ─────────────────────────────────────────────────
