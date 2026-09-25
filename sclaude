@@ -1413,24 +1413,31 @@ ENV PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:/home/agent/.cargo/
 # part of the image hash; `update` passes the new version pair to rebuild
 # this one layer from a cached image instead of the whole thing.
 USER root
+# The agent-CLI install and its check (see the last layer).
+RUN set -eux; \
+    mkdir -p /usr/local/lib/sagent; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# sagent-install-clis: run the agent-CLI install command it is given into' \
+        '# the system prefix, then start both CLIs. They ship their binary as a' \
+        '# per-platform optional dependency, and npm only warns when one fails to' \
+        '# download: reinstall once, then fail with the command to retry rather than' \
+        '# ship a CLI that cannot start.' \
+        'export NPM_CONFIG_PREFIX=/usr/local' \
+        '"$@" || exit 1' \
+        'if claude --version && codex --version; then exit 0; fi' \
+        '"$@" --include=optional --force || exit 1' \
+        'if claude --version && codex --version; then exit 0; fi' \
+        'echo "The agent CLIs installed without their platform binary twice (a download npm skipped). Retry with: sclaude update --force-rebuild" >&2' \
+        'exit 1' \
+        > /usr/local/lib/sagent/install-clis; \
+    chmod 0755 /usr/local/lib/sagent/install-clis
 ARG AGENT_CLI_REFRESH=initial
 # NPM_CONFIG_PREFIX is set above for the agent's runtime npm (a volume at
 # /home/agent/.npm-global): install into the system prefix instead, or the
-# CLIs would land where that volume later hides them. Both ship their
-# binary as a per-platform optional dependency, and npm only warns when one
-# fails to download: the build runs each CLI, reinstalls once if either does
-# not start, and fails with the command to retry rather than ship one that
-# cannot.
-RUN set -eux; \
-    echo "agent CLIs: ${AGENT_CLI_REFRESH}"; \
-    NPM_CONFIG_PREFIX=/usr/local npm install -g @anthropic-ai/claude-code @openai/codex; \
-    if ! claude --version || ! codex --version; then \
-        NPM_CONFIG_PREFIX=/usr/local npm install -g --include=optional --force @anthropic-ai/claude-code @openai/codex; \
-        if ! claude --version || ! codex --version; then \
-            echo "The agent CLIs installed without their platform binary twice (a download npm skipped). Retry with: sclaude update --force-rebuild" >&2; \
-            exit 1; \
-        fi; \
-    fi
+# CLIs would land where that volume later hides them; install-clis does
+# that and checks that both start.
+RUN echo "agent CLIs: ${AGENT_CLI_REFRESH}" && /usr/local/lib/sagent/install-clis npm install -g @anthropic-ai/claude-code @openai/codex
 USER agent
 DOCKERFILE_END
 }
