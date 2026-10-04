@@ -101,6 +101,10 @@ else
     unset _name _value
 fi
 
+# Per-run limits can shrink to the engine capacity without changing settings.
+EFFECTIVE_CPU_LIMIT="$CPU_LIMIT"
+EFFECTIVE_MEMORY_LIMIT="$MEMORY_LIMIT"
+
 # Toolchain version settings, validated so a typo fails here instead of deep
 # inside a 20-minute image build.
 UBUNTU_VERSION="${SAGENT_UBUNTU_VERSION:-$UBUNTU_VERSION}"
@@ -504,6 +508,8 @@ resume_after_engine_loss() {
         sleep 3
     done
     echo "[$SCRIPT_NAME] The engine is back. Resuming with: $SCRIPT_NAME ${RESUME_ARGS[*]}" >&2
+    detect_engine_flavor
+    adjust_limits
     # A restarted VM may have lost the volumes; their creation is idempotent.
     create_volumes
     ARGS=("${RESUME_ARGS[@]}")
@@ -513,7 +519,7 @@ resume_after_engine_loss() {
 # `docker` may be podman's shim, and a real docker CLI may talk to a podman
 # server; build and export semantics depend on both, so identify both once.
 detect_engine_flavor() {
-    local version_output client_section server_section
+    local version_output client_section server_section info security
 
     # `version`, not `--version`: podman as `docker` emulates the one-line
     # form, but "Podman Engine" shows in the Client and Server sections.
@@ -538,19 +544,21 @@ detect_engine_flavor() {
 
     # A rootless daemon maps the sandbox user to a subordinate UID, which
     # cannot use the workspace (#75); podman's keep-id fixes that, docker cannot.
-    # The CPU count comes from the same call, for validate_limits.
+    # Capacity belongs to the server (the VM on macOS), not the local CLI.
     ENGINE_ROOTLESS=false
     ENGINE_CPUS=""
+    ENGINE_MEMORY=""
     USERNS_ARGS=()
     if [ "$ENGINE_CLI_FLAVOR" = "podman" ]; then
-        if [ "$("$ENGINE_CMD" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
+        info=$("$ENGINE_CMD" info --format '{{.Host.CPUs}} {{.Host.MemTotal}} {{.Host.Security.Rootless}}' 2>/dev/null || true)
+        read -r ENGINE_CPUS ENGINE_MEMORY security <<< "$info"
+        if [ "$security" = "true" ]; then
             ENGINE_ROOTLESS=true
             USERNS_ARGS=("--userns=keep-id:uid=$HOST_UID,gid=$HOST_GID")
         fi
     else
-        local info
-        info=$("$ENGINE_CMD" info --format '{{.NCPU}} {{join .SecurityOptions ","}}' 2>/dev/null || true)
-        ENGINE_CPUS="${info%% *}"
+        info=$("$ENGINE_CMD" info --format '{{.NCPU}} {{.MemTotal}} {{join .SecurityOptions ","}}' 2>/dev/null || true)
+        read -r ENGINE_CPUS ENGINE_MEMORY security <<< "$info"
         case "$info" in
             *name=rootless*) ENGINE_ROOTLESS=true ;;
         esac
@@ -784,12 +792,19 @@ DOCKERFILE_END
 
     cat <<'DOCKERFILE_END'
 
-# Nested container tooling (used by the wrappers' --docker mode): rootless
-# podman with the docker CLI shim, confined entirely to the sandbox. passt
+# Nested container tooling: the Docker CLI talks to rootless Podman, and
+# Buildx uses a rootless BuildKit service inside the sandbox. passt
 # provides pasta, podman 5's default rootless network backend.
 RUN apt-get update && apt-get install -y \
-    podman podman-docker passt slirp4netns fuse-overlayfs docker-compose-v2 \
+    podman docker.io docker-buildx docker-compose-v2 rootlesskit libcap2-bin \
+    passt slirp4netns fuse-overlayfs \
     && rm -rf /var/lib/apt/lists/*
+# Pinned BuildKit includes its matching OCI runtime and user-mode emulators.
+RUN arch="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://github.com/moby/buildkit/releases/download/v0.33.1/buildkit-v0.33.1.linux-${arch}.tar.gz" -o /tmp/buildkit.tar.gz \
+    && tar -xzf /tmp/buildkit.tar.gz -C /usr/local \
+    && rm -f /tmp/buildkit.tar.gz \
+    && buildkitd --version && buildctl --version
 DOCKERFILE_END
 
     # yarn and pnpm come through corepack (Node no longer bundles it). The
@@ -828,25 +843,21 @@ RUN set -eux; \
     echo 'agent ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' > /etc/sudoers.d/agent; \
     chmod 0440 /etc/sudoers.d/agent
 
-# Nested podman configuration for --docker mode. Single-uid rootless mapping:
-# drop the subuid/subgid ranges useradd created so podman never invokes the
-# setuid newuidmap helper (which would need CAP_SYS_ADMIN under the sandbox's
-# capability drop); ignore_chown_errors makes multi-uid images extract cleanly
-# under the single mapping. pidns=host keeps nested containers in the sandbox's
-# pid namespace so the runtime never needs a fresh /proc mount (the outer
-# engine's masked /proc forbids one). default_sysctls=[] because the outer
-# /proc/sys is read-only. nodocker silences the docker-shim notice, and the
-# shim clamps podman's log level: the single-mapping rootless startup
-# warnings are benign by design here and only add noise to every nested run.
-# Without /dev/fuse the run was started with --no-docker, and the shim says so
-# instead of failing on a missing device.
+# Nested Podman needs multiple UIDs for apt's _apt user, PostgreSQL and
+# USER instructions. File capabilities let the mapping helpers keep agent's
+# identity while opening /proc/.../{uid,gid}_map; setuid-root helpers cannot
+# do that with the sandbox's capability bounding set. No SYS_ADMIN is added.
+# Delegate sandbox IDs 1..65535 except agent's own ID. This fits the usual
+# outer rootless mapping too, unlike useradd's 100000+ subordinate range.
+# pidns=host avoids mounting a new /proc under the outer engine's masks.
+# default_sysctls=[] keeps the outer /proc/sys read-only.
 #
 # docker compose, the Docker SDKs and testcontainers talk to a daemon socket,
 # not the CLI: sagent-docker-api serves podman's Docker API on
-# /run/podman/podman.sock, where podman-docker's /var/run/docker.sock link and
+# /run/podman/podman.sock, where our /var/run/docker.sock link and
 # DOCKER_HOST point, and restarts it if it stops. sagent-run starts it; the
-# shim starts it again if it is missing. The host's engine socket is never
-# mounted, so nothing here depends on the host engine staying up.
+# launcher checks that the API answers before handing off to the Docker CLI. The host's
+# engine socket is never mounted; this API only controls nested containers.
 #
 # helper_binaries_dir puts sagent's netavark first: it lets bridge networks
 # (docker network create, every compose project) set their sysctls under the
@@ -856,19 +867,109 @@ RUN set -eux; \
 # the sandbox's PID namespace otherwise signals the sandbox's whole cgroup on
 # cgroup v2 (docker stop and compose down hung, or took the sandbox down).
 RUN set -eux; \
-    sed -i '/^agent:/d' /etc/subuid /etc/subgid; \
-    touch /etc/containers/nodocker; \
-    install -d -o agent -m 0755 /run/podman; \
+    for entry in "subuid:$USER_UID" "subgid:$USER_GID"; do \
+        file="/etc/${entry%:*}"; id="${entry#*:}"; \
+        sed -i '/^agent:/d' "$file"; \
+        awk -v id="$id" 'BEGIN { \
+            if (id >= 1 && id <= 65535) { \
+                if (id > 1) printf "agent:1:%d\n", id - 1; \
+                if (id < 65535) printf "agent:%d:%d\n", id + 1, 65535 - id; \
+            } else print "agent:1:65535"; \
+        }' >> "$file"; \
+    done; \
+    chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap; \
+    setcap cap_setuid=ep /usr/bin/newuidmap; \
+    setcap cap_setgid=ep /usr/bin/newgidmap; \
+    install -d -o agent -m 0755 /run/podman /run/buildkit; \
     ln -sfn /run/podman/podman.sock /var/run/docker.sock; \
-    if [ -x /usr/libexec/docker/cli-plugins/docker-compose ]; then \
-        ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose; \
-    fi; \
+    rm -f /usr/local/bin/docker /usr/local/bin/docker-compose; \
+    mkdir -p /usr/local/lib/sagent; \
+    printf '%s\n' \
+        '#!/usr/bin/env python3' \
+        '"""Schedule Podman'"'"'s own health checks when no systemd user manager exists."""' \
+        'import http.client' \
+        'import json' \
+        'import socket' \
+        'import subprocess' \
+        'import time' \
+        '' \
+        '' \
+        'class Connection(http.client.HTTPConnection):' \
+        '    def connect(self):' \
+        '        self.sock = socket.socket(socket.AF_UNIX)' \
+        '        self.sock.settimeout(2)' \
+        '        self.sock.connect('"'"'/run/podman/podman.sock'"'"')' \
+        '' \
+        '' \
+        'def get(path):' \
+        '    conn = Connection('"'"'localhost'"'"')' \
+        '    try:' \
+        '        conn.request('"'"'GET'"'"', path)' \
+        '        response = conn.getresponse()' \
+        '        if response.status != 200:' \
+        '            raise OSError('"'"'Docker API returned %s'"'"' % response.status)' \
+        '        return json.loads(response.read())' \
+        '    finally:' \
+        '        conn.close()' \
+        '' \
+        '' \
+        'checks = {}' \
+        'while True:' \
+        '    now = time.monotonic()' \
+        '    for entry in checks.values():' \
+        '        process = entry.get('"'"'process'"'"')' \
+        '        if process is not None and process.poll() is not None:' \
+        '            entry['"'"'process'"'"'] = None' \
+        '            entry['"'"'next'"'"'] = now + entry['"'"'interval'"'"']' \
+        '    try:' \
+        '        containers = get('"'"'/containers/json'"'"')' \
+        '        alive = {item['"'"'Id'"'"'] for item in containers}' \
+        '        for cid in list(checks):' \
+        '            if cid not in alive and checks[cid].get('"'"'process'"'"') is None:' \
+        '                del checks[cid]' \
+        '        for item in containers:' \
+        '            cid = item['"'"'Id'"'"']' \
+        '            data = get('"'"'/containers/%s/json'"'"' % cid)' \
+        '            health = data.get('"'"'Config'"'"', {}).get('"'"'Healthcheck'"'"') or {}' \
+        '            command = health.get('"'"'Test'"'"') or []' \
+        '            if not command or command[0] == '"'"'NONE'"'"':' \
+        '                continue' \
+        '            state = data.get('"'"'State'"'"', {})' \
+        '            interval = (health.get('"'"'Interval'"'"') or 30_000_000_000) / 1_000_000_000' \
+        '            if (state.get('"'"'Health'"'"') or {}).get('"'"'Status'"'"') == '"'"'starting'"'"':' \
+        '                interval = (health.get('"'"'StartInterval'"'"') or interval * 1_000_000_000) / 1_000_000_000' \
+        '            entry = checks.setdefault(cid, {'"'"'next'"'"': now, '"'"'process'"'"': None})' \
+        '            if entry.get('"'"'started'"'"') != state.get('"'"'StartedAt'"'"'):' \
+        '                entry['"'"'next'"'"'] = now' \
+        '                entry['"'"'started'"'"'] = state.get('"'"'StartedAt'"'"')' \
+        '            entry['"'"'interval'"'"'] = max(interval, 0.1)' \
+        '            active = sum(e.get('"'"'process'"'"') is not None for e in checks.values())' \
+        '            if entry['"'"'process'"'"'] is None and now >= entry['"'"'next'"'"'] and active < 4:' \
+        '                # Podman implements timeout, start period, retries and status;' \
+        '                # this process supplies only the missing timer.' \
+        '                entry['"'"'process'"'"'] = subprocess.Popen(' \
+        '                    ['"'"'podman'"'"', '"'"'--log-level=error'"'"', '"'"'healthcheck'"'"', '"'"'run'"'"', cid],' \
+        '                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,' \
+        '                    stderr=subprocess.DEVNULL)' \
+        '    except (OSError, ValueError, http.client.HTTPException):' \
+        '        pass  # API startup/restart or a container removed between requests.' \
+        '    time.sleep(0.5)' \
+        > /usr/local/lib/sagent/healthchecks.py; \
     printf '%s\n' \
         '#!/bin/sh' \
         '# sagent-docker-api: podman'"'"'s Docker API on /run/podman/podman.sock, kept' \
         '# running by one supervisor (the lock keeps it to one).' \
         'sock=/run/podman/podman.sock' \
+        'if [ -d "$HOME/.local/share/containers/storage" ] && [ ! -d "$HOME/.local/share/containers/storage-multiuser" ]; then' \
+        '    echo "[sagent] Nested containers now use multiple UIDs. Starting a new store; previous images and volume data are retained in $HOME/.local/share/containers/storage. See docs/image.md for migration." >&2' \
+        'fi' \
         '[ -c /dev/fuse ] || exit 1' \
+        '# A dead service can leave a socket behind; test HTTP, not just -S.' \
+        'api_ready() {' \
+        '    curl -fsS --noproxy "*" --max-time 0.2 --unix-socket "$sock" http://localhost/_ping >/dev/null 2>&1' \
+        '}' \
+        'nohup flock -n /tmp/sagent-healthchecks.lock sh -c '"'"'while :; do python3 /usr/local/lib/sagent/healthchecks.py; sleep 2; done'"'"' >>/tmp/sagent-healthchecks.log 2>&1 </dev/null &' \
+        'api_ready && exit 0' \
         'nohup flock -n /tmp/sagent-docker-api.lock sh -c '"'"'' \
         '    while :; do' \
         '        rm -f "$1"' \
@@ -876,24 +977,64 @@ RUN set -eux; \
         '        sleep 2' \
         '    done'"'"' _ "$sock" >>/tmp/sagent-docker-api.log 2>&1 </dev/null &' \
         'i=0' \
-        'while [ ! -S "$sock" ] && [ "$i" -lt 100 ]; do' \
-        '    sleep 0.05' \
+        'while [ "$i" -lt 50 ]; do' \
+        '    api_ready && exit 0' \
+        '    sleep 0.1' \
         '    i=$((i + 1))' \
         'done' \
-        'if [ ! -S "$sock" ]; then' \
-        '    echo "[sagent] the Docker API socket did not come up in 5s; see /tmp/sagent-docker-api.log" >&2' \
-        '    exit 1' \
-        'fi' \
+        'echo "[sagent] the Docker API did not become ready; see /tmp/sagent-docker-api.log" >&2' \
+        'exit 1' \
         > /usr/local/bin/sagent-docker-api; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# Rootless BuildKit shares only the outer sandbox'"'"'s PID/network namespaces.' \
+        '[ -c /dev/fuse ] || exit 1' \
+        sock=/run/buildkit/buildkitd.sock \
+        'ready() {' \
+        '    timeout 0.5 buildctl --addr "unix://$sock" debug workers >/dev/null 2>&1' \
+        '}' \
+        'if ! ready; then' \
+        '    nohup flock -n /tmp/sagent-buildkit.lock sh -c '"'"'' \
+        '        while :; do' \
+        '            rm -f "$1"' \
+        '            XDG_RUNTIME_DIR=/run/buildkit rootlesskit buildkitd \' \
+        '                --addr "unix://$1" --root "$HOME/.local/share/containers/buildkit" \' \
+        '                --oci-worker-no-process-sandbox --oci-worker-snapshotter=fuse-overlayfs \' \
+        '                --oci-worker-binary=/usr/local/bin/buildkit-runc --containerd-worker=false' \
+        '            sleep 2' \
+        '        done'"'"' _ "$sock" >>/tmp/sagent-buildkit.log 2>&1 </dev/null &' \
+        '    i=0' \
+        '    while [ "$i" -lt 100 ]; do' \
+        '        ready && break' \
+        '        sleep 0.1' \
+        '        i=$((i + 1))' \
+        '    done' \
+        '    if ! ready; then' \
+        '        echo "[sagent] BuildKit did not become ready; see /tmp/sagent-buildkit.log" >&2' \
+        '        exit 1' \
+        '    fi' \
+        fi \
+        '# Configuration persists in the home volume. Serialize first-use creation.' \
+        'flock /tmp/sagent-buildx.lock sh -ec '"'"'' \
+        '    bx=/usr/libexec/docker/cli-plugins/docker-buildx' \
+        '    "$bx" inspect sagent >/dev/null 2>&1 ||' \
+        '        "$bx" create --name sagent --driver remote --driver-opt default-load=true unix:///run/buildkit/buildkitd.sock >/dev/null' \
+        ''"'"'' \
+        > /usr/local/bin/sagent-buildkit; \
     printf '%s\n' \
         '#!/bin/sh' \
         'if [ ! -c /dev/fuse ]; then' \
         '    echo "[sagent] Containers are off in this sandbox: it was started with --no-docker or SAGENT_DOCKER=0. Run the wrapper without them to get docker and podman here. The host'"'"'s engine is not reachable from the sandbox." >&2' \
         '    exit 1' \
-        'fi' \
-        '[ -S /run/podman/podman.sock ] || /usr/local/bin/sagent-docker-api || true' \
-        'exec /usr/bin/podman --log-level=error "$@"' \
-        > /usr/bin/docker; \
+        fi \
+        '/usr/local/bin/sagent-docker-api || exit 1' \
+        '/usr/local/bin/sagent-buildkit || exit 1' \
+        'exec /usr/bin/docker "$@"' \
+        > /usr/local/bin/docker; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'exec /usr/local/bin/docker compose "$@"' \
+        > /usr/local/bin/docker-compose; \
     mkdir -p /usr/local/lib/sagent/podman; \
     printf '%s\n' \
         '#!/bin/sh' \
@@ -1003,9 +1144,9 @@ RUN set -eux; \
         'done' \
         'exit "$rc"' \
         > /usr/local/lib/sagent/podman/crun; \
-    chmod 0755 /usr/bin/docker /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark /usr/local/lib/sagent/podman/crun; \
+    chmod 0755 /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/sagent-buildkit /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark /usr/local/lib/sagent/podman/crun; \
     printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\ncompose_warning_logs = false\nhelper_binaries_dir = ["/usr/local/lib/sagent/podman", "/usr/local/libexec/podman", "/usr/local/lib/podman", "/usr/libexec/podman", "/usr/lib/podman"]\nruntime = "crun"\n[engine.runtimes]\ncrun = ["/usr/local/lib/sagent/podman/crun"]\n' > /etc/containers/containers.conf; \
-    printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nignore_chown_errors = "true"\n' > /etc/containers/storage.conf
+    printf '[storage]\ndriver = "overlay"\ngraphroot = "/home/agent/.local/share/containers/storage-multiuser"\n' > /etc/containers/storage.conf
 
 # Browser-open shim: the sandbox has no browser, but the user's terminal can
 # open links on the host (Cmd/Ctrl+click). Render every xdg-open/$BROWSER
@@ -1340,6 +1481,7 @@ RUN set -eux; \
         'fi' \
         'if [ -c /dev/fuse ]; then' \
         '    /usr/local/bin/sagent-docker-api || true' \
+        '    /usr/local/bin/sagent-buildkit || true' \
         'fi' \
         '# A claude or codex installed into the npm volume (an auto-update, or' \
         '# npm i -g in the sandbox) comes first on PATH and outlives the image.' \
@@ -1402,7 +1544,10 @@ ENV LANG=C.UTF-8
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # The nested podman's Docker API (sagent-docker-api). podman compose hands this
 # to its compose provider instead of looking for its own socket.
+ENV CONTAINERS_STORAGE_CONF=/etc/containers/storage.conf
 ENV DOCKER_HOST=unix:///run/podman/podman.sock
+ENV DOCKER_BUILDKIT=1
+ENV BUILDX_BUILDER=sagent
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
 # Persistent, user-writable install locations first (npm globals, pip user
 # scripts, cargo install, go install), then the system-wide toolchains.
@@ -1743,12 +1888,13 @@ show_version() {
     local meta
     local tool_version
 
+    adjust_limits
     echo "Script: $SCRIPT_NAME"
     echo "Wrapper version: v$WRAPPER_VERSION"
     echo "Engine: $ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR, rootless: $ENGINE_ROOTLESS)"
     echo "Sandbox image: $IMAGE_NAME"
     echo "Image hash: $VERSION_HASH"
-    echo "Limits: memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
+    echo "Limits: memory=$EFFECTIVE_MEMORY_LIMIT cpus=$EFFECTIVE_CPU_LIMIT pids=$PIDS_LIMIT pids-nested=$PIDS_LIMIT_NESTED"
     echo "Toolchain: ubuntu=$UBUNTU_VERSION node=$NODE_VERSION python=$PYTHON_VERSION go=$GO_VERSION rust=$RUST_VERSION java=$JAVA_VERSION"
     echo "Tools: ${TOOLS_SELECTED:-none}"
     if [ -n "$CA_BUNDLE_PATH" ]; then
@@ -2417,6 +2563,7 @@ status_command() {
 
     if select_engine >/dev/null 2>&1; then
         detect_engine_flavor
+        adjust_limits
         engine_line="$ENGINE_CMD (CLI: $ENGINE_CLI_FLAVOR, server: $ENGINE_SERVER_FLAVOR, rootless: $ENGINE_ROOTLESS"
         if [ "$ENGINE_CLI_FLAVOR" = docker ]; then
             engine_line="$engine_line, context: $("$ENGINE_CMD" context show 2>/dev/null || echo unknown)"
@@ -2444,7 +2591,7 @@ status_command() {
     else
         printf '%-13s %s\n' "Nested:" "on (--no-docker or SAGENT_DOCKER=0 to disable)"
     fi
-    printf '%-13s %s\n' "Limits:" "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
+    printf '%-13s %s\n' "Limits:" "memory=$EFFECTIVE_MEMORY_LIMIT cpus=$EFFECTIVE_CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
     printf '%-13s %s\n' "Credentials:" "Claude: $(host_has_claude_credentials && echo "found on host (the newer of host and sandbox wins)" || echo "none on host (log in inside the sandbox)"); Codex: $(host_has_codex_auth && echo "auth.json found" || echo "none"); GH_TOKEN: $([ -n "${GH_TOKEN:-}" ] && echo set || echo unset)"
     printf '%-13s %s\n' "Host state:" "git: $(host_git_identity_line); gh: $(host_gh_logins_line); protocol: $(git_protocol_line) (synced into the sandbox each run)"
     printf '%-13s %s\n' "Clipboard:" "$(clipboard_bridge_line)"
@@ -2708,17 +2855,18 @@ EOF
     fi
 
     # workspace and limits (engine-dependent checks inside validate_workspace
-    # and validate_limits)
+    # and adjust_limits)
     if [ -n "$ENGINE_CMD" ]; then
         if msg=$( (validate_workspace) 2>&1 ); then
             doctor_report PASS workspace "$PWD can be mounted$([ "$(pwd -P)" != "$PWD" ] && echo " (from $(pwd -P))")"
         else
             doctor_report FAIL workspace "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
         fi
-        if msg=$( (validate_limits) 2>&1 ); then
-            doctor_report PASS limits "memory=$MEMORY_LIMIT cpus=$CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
+        adjust_limits
+        if [ "$LIMITS_CAPACITY_KNOWN" = true ]; then
+            doctor_report PASS limits "memory=$EFFECTIVE_MEMORY_LIMIT cpus=$EFFECTIVE_CPU_LIMIT pids=$PIDS_LIMIT (nested: $PIDS_LIMIT_NESTED)"
         else
-            doctor_report FAIL limits "$(printf '%s' "$msg" | sed "s/^\[$SCRIPT_NAME\] ERROR: //; s/^\[$SCRIPT_NAME\] //" | tr '\n' ' ')"
+            doctor_report WARN limits "memory=$EFFECTIVE_MEMORY_LIMIT cpus=$EFFECTIVE_CPU_LIMIT; engine capacity incomplete, unknown resources keep their configured limits"
         fi
     fi
     if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -3714,11 +3862,14 @@ sync_state() {
             stamp_volume /vol-apt-cache "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
             stamp_volume /vol-apt-lists "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
             stamp_volume /vol-containers "ubuntu='"$UBUNTU_VERSION"'" "Sandbox Ubuntu"
-            for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-share /vol-containers; do
+            for d in /vol-config /vol-rootfs /vol-npm /vol-pip /vol-share; do
                 if [ "$(stat -c %u "$d" 2>/dev/null)" != "$TARGET_UID" ]; then
                     chown -R "$TARGET_UID:$TARGET_GID" "$d"
                 fi
             done
+            # Nested storage contains mapped image owners and BuildKit snapshots.
+            # Only its mount root should be assigned to the sandbox user.
+            chown "$TARGET_UID:$TARGET_GID" /vol-containers
             mkdir -p /vol-apt-cache/archives/partial /vol-apt-lists/partial
             chown -R root:root /vol-apt-cache /vol-apt-lists
             chmod 755 /vol-apt-cache /vol-apt-cache/archives /vol-apt-lists
@@ -3782,21 +3933,49 @@ NEWEST
         ' || echo "[$SCRIPT_NAME] Warning: host state sync failed (non-fatal)" >&2
 }
 
-# The docker daemon refuses --cpus above its CPU count ("range of CPUs is
-# from 0.01 to N.00"); podman accepts it. Colima and Rancher Desktop start
-# their VMs with 2 CPUs, fewer than the default CPU_LIMIT.
-validate_limits() {
-    [ "$ENGINE_SERVER_FLAVOR" = "docker" ] || return 0
+# Use the requested limits up to the server's capacity. Docker rejects excess
+# CPUs, while Podman and memory limits can accept ceilings the engine cannot
+# supply. Keep configured values so a later run on a larger engine uses them.
+adjust_limits() {
+    local memory_bytes
+    EFFECTIVE_CPU_LIMIT="$CPU_LIMIT"
+    EFFECTIVE_MEMORY_LIMIT="$MEMORY_LIMIT"
+    LIMITS_CAPACITY_KNOWN=true
     case "$ENGINE_CPUS" in
-        '' | *[!0-9]*)
-            echo "[$SCRIPT_NAME] ERROR: \`$ENGINE_CMD info\` did not report a CPU count (got '$ENGINE_CPUS')." >&2
-            exit 1
+        "" | *[!0-9]*) LIMITS_CAPACITY_KNOWN=false ;;
+        *)
+            if [ "$ENGINE_CPUS" -gt 0 ]; then
+                if awk -v want="$CPU_LIMIT" -v have="$ENGINE_CPUS" 'BEGIN { exit !(want > have) }'; then
+                    EFFECTIVE_CPU_LIMIT="$ENGINE_CPUS"
+                fi
+            else
+                LIMITS_CAPACITY_KNOWN=false
+            fi
             ;;
     esac
-    if awk -v want="$CPU_LIMIT" -v have="$ENGINE_CPUS" 'BEGIN { exit !(want > have) }'; then
-        echo "[$SCRIPT_NAME] ERROR: CPU_LIMIT is $CPU_LIMIT but the engine has $ENGINE_CPUS CPUs, and the docker daemon refuses a limit above that." >&2
-        echo "[$SCRIPT_NAME] Give the engine's VM more CPUs, or lower the limit: $SCRIPT_NAME config set CPU_LIMIT $ENGINE_CPUS" >&2
-        exit 1
+    case "$ENGINE_MEMORY" in
+        "" | *[!0-9]*) LIMITS_CAPACITY_KNOWN=false ;;
+        *)
+            if [ "$ENGINE_MEMORY" -gt 0 ]; then
+                # Docker's k/m/g suffixes use powers of 1024, unlike the
+                # decimal units in image/volume size reports.
+                memory_bytes=$(awk -v s="$MEMORY_LIMIT" 'BEGIN {
+                    u = tolower(substr(s, length(s))); m = 1;
+                    if (u == "k") m = 1024; else if (u == "m") m = 1048576; else if (u == "g") m = 1073741824;
+                    printf "%.0f", (s + 0) * m }')
+                if awk -v want="$memory_bytes" -v have="$ENGINE_MEMORY" 'BEGIN { exit !(want > have) }'; then
+                    EFFECTIVE_MEMORY_LIMIT="$ENGINE_MEMORY"
+                fi
+            else
+                LIMITS_CAPACITY_KNOWN=false
+            fi
+            ;;
+    esac
+    if [ "$EFFECTIVE_CPU_LIMIT" != "$CPU_LIMIT" ] || [ "$EFFECTIVE_MEMORY_LIMIT" != "$MEMORY_LIMIT" ]; then
+        echo "[$SCRIPT_NAME] Adjusted sandbox limits to engine capacity: memory=$EFFECTIVE_MEMORY_LIMIT cpus=$EFFECTIVE_CPU_LIMIT (configured memory=$MEMORY_LIMIT cpus=$CPU_LIMIT)." >&2
+    fi
+    if [ "$LIMITS_CAPACITY_KNOWN" = false ]; then
+        echo "[$SCRIPT_NAME] Engine capacity is incomplete; keeping the configured limit for each unknown resource." >&2
     fi
 }
 
@@ -4050,7 +4229,10 @@ start_clipboard_bridge() {
         return 0
     fi
     base="${XDG_CACHE_HOME:-$HOME/.cache}/sagent"
-    mkdir -p "$base"
+    if ! mkdir -p "$base"; then
+        echo "[$SCRIPT_NAME] Clipboard bridge unavailable: cannot create $base" >&2
+        return 0
+    fi
     # A run that died without its exit trap leaves its directory; its agent
     # is gone (it watches the wrapper's pid), so sweep those by the pid file.
     for stale in "$base"/clipboard.*; do
@@ -4062,7 +4244,11 @@ start_clipboard_bridge() {
     done
     # Physical path: VM-backed engines resolve mounts against their shares
     # (the home directory), and a symlinked cache directory would mount empty.
-    dir=$(cd "$(mktemp -d "$base/clipboard.XXXXXX")" && pwd -P)
+    if ! dir=$(mktemp -d "$base/clipboard.XXXXXX"); then
+        echo "[$SCRIPT_NAME] Clipboard bridge unavailable: cannot create a temporary directory in $base" >&2
+        return 0
+    fi
+    dir=$(cd "$dir" && pwd -P) || return 0
     chmod 700 "$dir"
     TEMP_FILES+=("$dir")
     clipboard_bridge_serve "$dir" &
@@ -4086,7 +4272,7 @@ stop_clipboard_bridge() {
 run_tool() {
     local tool_args=()
     local nested_args=()
-    local tmpfs_args=(--tmpfs "/tmp:rw,nosuid,size=1g")
+    local tmpfs_args=(--tmpfs "/tmp:rw,nosuid,nodev,exec,size=1g")
     local pids_limit="$PIDS_LIMIT"
 
     case "$WORKSPACE_PATH" in
@@ -4148,8 +4334,8 @@ run_tool() {
         -w "$WORKSPACE_PATH" \
         --label "sagent.workspace=$WORKSPACE_PATH" \
         --label "sagent.tool=$SCRIPT_NAME" \
-        --memory="$MEMORY_LIMIT" \
-        --cpus="$CPU_LIMIT" \
+        --memory="$EFFECTIVE_MEMORY_LIMIT" \
+        --cpus="$EFFECTIVE_CPU_LIMIT" \
         --pids-limit="$pids_limit" \
         "${nested_args[@]+"${nested_args[@]}"}" \
         "${tmpfs_args[@]+"${tmpfs_args[@]}"}" \
@@ -4277,7 +4463,7 @@ case "$WRAPPER_COMMAND" in
 esac
 
 validate_workspace
-validate_limits
+adjust_limits
 ensure_image
 check_release false
 create_volumes

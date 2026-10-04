@@ -484,6 +484,11 @@ run_test "T19: image has both CLIs, gh, and the configured toolchains" bash -ec 
         [ \"$rust\" = none ] || { cargo --version >/dev/null && rustfmt --version >/dev/null && cargo clippy --version >/dev/null; }
         [ \"$java\" = none ] || { java -version 2>&1 | grep -q \"version \\\"$java\\.\"; [ -n \"\$JAVA_HOME\" ]; }
         podman --version >/dev/null && command -v pasta >/dev/null
+        /usr/bin/docker --version >/dev/null
+        /usr/libexec/docker/cli-plugins/docker-buildx version >/dev/null
+        /usr/libexec/docker/cli-plugins/docker-compose version >/dev/null
+        buildkitd --version >/dev/null && buildctl --version >/dev/null
+        rootlesskit --version >/dev/null
         # Everyday utilities
         for u in tree htop btop top jq rg fd bat vim nano wget zip unzip rsync ssh file lsof ip dig nc tmux sqlite3 less; do
             command -v \$u >/dev/null || { echo \"utility missing: \$u\" >&2; exit 1; }
@@ -1033,7 +1038,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
     fi
     "$ENGINE" volume create sagent-containers$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
     "$ENGINE" run --rm --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
-        chown -R "$(id -u):$(id -g)" /vol-containers
+        chown "$(id -u):$(id -g)" /vol-containers
     "$ENGINE" run --rm \
         -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
@@ -1051,9 +1056,18 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
                 echo \"T27 step failed: \$1\" >&2
                 docker compose ps -a >&2 2>&1 || true
                 docker compose logs >&2 2>&1 || true
-                tail -20 /tmp/sagent-docker-api.log >&2 2>/dev/null || true
+                tail -n 20 /tmp/sagent-docker-api.log >&2 2>/dev/null || true
                 exit 1
             }
+            # A socket left by a dead service must not count as ready. Hold
+            # the supervisor lock briefly to make the startup race repeatable.
+            python3 -c \"import socket; s = socket.socket(socket.AF_UNIX); s.bind(\\\"/run/podman/podman.sock\\\")\"
+            flock /tmp/sagent-docker-api.lock sh -c \"touch /tmp/t27-api-locked; sleep 2\" &
+            for _ in \$(seq 1 100); do [ -f /tmp/t27-api-locked ] && break; sleep 0.05; done
+            [ -f /tmp/t27-api-locked ] || fail \"startup lock fixture\"
+            (flock /tmp/sagent-docker-api.lock true; sagent-docker-api) &
+            # Start through the real entrypoint, before any docker invocation.
+            sagent-run curl -fsS --max-time 2 --unix-socket /var/run/docker.sock http://d/_ping | grep -q OK || fail \"entrypoint waits for a live API\"
             # public.ecr.aws mirror: Docker Hub anonymous pulls are rate-limited
             # per IP, which flakes on shared CI runners.
             docker run --rm public.ecr.aws/docker/library/alpine:latest echo nested-run-ok | grep -q nested-run-ok || fail \"docker run\"
@@ -1071,6 +1085,18 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
             for _ in \$(seq 1 20); do docker compose logs client 2>/dev/null | grep -q served-by-web && break; sleep 1; done
             docker compose logs client | grep -q served-by-web || fail \"client reaches web by service name\"
             timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/18080; cat <&3\" | grep -q served-by-web || fail \"published port 18080\"
+            # Crash the API with a stale socket while delaying its supervisor.
+            # The next Compose call must wait for recovery, not just see -S.
+            # Rootless Podman can reexec: kill both parent and child processes.
+            api_pid=\$(pgrep -f \"^podman --log-level=error system service\")
+            [ -n \"\$api_pid\" ] || fail \"find API service\"
+            api_parent=\$(pgrep -of \"^podman --log-level=error system service\")
+            supervisor=\$(ps -o ppid= -p \"\$api_parent\" | tr -d \" \")
+            kill -STOP \"\$supervisor\"
+            kill -KILL \$api_pid
+            (sleep 1; kill -CONT \"\$supervisor\") &
+            docker compose ps --status running --services | grep -qx web || fail \"Compose after API crash\"
+            docker-compose ps --status running --services | grep -qx web || fail \"standalone Compose via DOCKER_HOST\"
             # Stopping signals the container, not the sandbox (cgroup v2).
             docker compose down 2>&1 || fail \"docker compose down\"
         "
@@ -1088,8 +1114,8 @@ run_test "T28: config file sourced with env precedence" bash -ec '
     TMP_CFG_DIR=$(mktemp -d)
     trap "rm -rf \"$TMP_CFG_DIR\"" EXIT
     printf "MEMORY_LIMIT=\"9g\"\n" > "$TMP_CFG_DIR/config"
-    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" version \
-        | grep -q "^Limits: memory=9g "
+    SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONFIG_FILE="$TMP_CFG_DIR/config" "$1" config get MEMORY_LIMIT \
+        | grep -qx "9g"
     # Env var must beat a config-file value for SAGENT_CONTAINER_ENGINE: the
     # config points at a nonexistent engine; the env var must rescue the run.
     printf "SAGENT_CONTAINER_ENGINE=\"no-such-engine\"\n" > "$TMP_CFG_DIR/config"
@@ -1712,12 +1738,12 @@ run_test "T38: tools/config commands" bash -ec '
     "$1" config list | grep -qE "^  SAGENT_NODE_VERSION +24 +config$"
     "$1" config list | grep -qE "^  MEMORY_LIMIT +12g +config$"
     "$1" version | grep -q "^Toolchain: .*node=24 "
-    "$1" version | grep -q "^Limits: memory=12g "
+    "$1" config get MEMORY_LIMIT | grep -qx "12g"
     if "$1" config set SAGENT_NODE_VERSION v24 >/dev/null 2>&1; then echo "invalid value accepted" >&2; exit 1; fi
     if "$1" config set NOT_A_SETTING 1 >/dev/null 2>&1; then echo "unknown key accepted" >&2; exit 1; fi
     "$1" config unset MEMORY_LIMIT 2>/dev/null
     if grep -q MEMORY_LIMIT "$cfg/config"; then echo "unset left the key" >&2; exit 1; fi
-    "$1" version | grep -q "^Limits: memory=8g "
+    "$1" config get MEMORY_LIMIT | grep -qx "8g"
     [ "$("$1" config path)" = "$cfg/config" ]
     # Environment wins over the file and the command says so.
     SAGENT_TOOLS=js "$1" tools disable tsx 2>&1 | grep -q "takes precedence"
@@ -2539,45 +2565,76 @@ run_test "T55: build downloads go to a file first" bash -ec '
     done
 ' _ "$SCLAUDE"
 
-# ── T56: a CPU limit above the docker daemon's CPUs is refused ───────
-# The daemon refuses it at create; the wrapper says so first and names the
-# setting. Stub engines report 2 CPUs, as Colima and Rancher Desktop start.
-run_test "T56: CPU limit above the docker daemon CPUs refused" bash -ec '
+# ── T56: limits adapt to the engine's CPU and memory capacity ────────
+# Check the actual run arguments, diagnostics and persisted configuration
+# for Docker, Podman and the Docker CLI talking to Podman's API.
+run_test "T56: CPU and memory limits adapt to engine capacity" bash -ec '
     tmp=$(mktemp -d /tmp/sagent-t56.XXXXXX)
     trap "rm -rf \"$tmp\"" EXIT
-    cat > "$tmp/fake-engine" <<STUB
+    cat > "$tmp/fake-engine" <<"STUB"
 #!/usr/bin/env bash
-case "\$1" in
-    info) echo "2 name=seccomp,profile=default"; exit 0 ;;
-    version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
-    *) echo "STUB-CALLED \$*"; exit 0 ;;
+case "$1" in
+    info)
+        case "${3:-}" in
+            *Host*) echo "$TEST_CPUS $TEST_MEMORY ${TEST_ROOTLESS:-false}" ;;
+            *) echo "$TEST_CPUS $TEST_MEMORY name=seccomp,profile=default" ;;
+        esac ;;
+    version)
+        case "$TEST_FLAVOR" in
+            podman) printf "Client: Podman Engine\nServer: Podman Engine\n" ;;
+            compat) printf "Client: Docker Engine\nServer:\n Podman Engine:\n" ;;
+            *) printf "Client: Docker Engine\nServer: Docker Engine\n" ;;
+        esac ;;
+    image | volume) exit 0 ;;
+    run) echo "STUB-RUN $*" ;;
+    *) exit 0 ;;
 esac
 STUB
     chmod +x "$tmp/fake-engine"
     export SAGENT_SKIP_RELEASE_CHECK=1 SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" SAGENT_CONFIG_FILE="$tmp/config"
-    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
-    if "$1" --help >"$tmp/out" 2>"$tmp/err"; then
-        echo "a CPU limit above the engine CPUs should have been refused" >&2
-        exit 1
-    fi
-    grep -q "CPU_LIMIT is 4 but the engine has 2 CPUs" "$tmp/err"
-    grep -q "config set CPU_LIMIT 2" "$tmp/err"
-    if grep -q "STUB-CALLED" "$tmp/out"; then
-        echo "engine was invoked (image build, volumes or run) despite the refusal" >&2
-        exit 1
-    fi
-    if out=$("$1" doctor); then echo "doctor should exit 1 on a CPU limit the engine refuses" >&2; exit 1; fi
-    echo "$out" | grep -qE "^  FAIL  limits +CPU_LIMIT is 4 "
-    # At the engine CPU count the limit passes.
-    printf "CPU_LIMIT=\"2\"\n" > "$tmp/config"
-    out=$("$1" doctor) || true
-    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=2 "
-    # podman accepts a limit above its CPUs, so a podman server is not refused.
-    printf "CPU_LIMIT=\"4\"\n" > "$tmp/config"
-    sed -i.bak "s/Server: Docker Engine/Server:\\\\n Podman Engine:/" "$tmp/fake-engine"
-    out=$("$1" doctor) || true
-    echo "$out" | grep -qE "^  PASS  limits +memory=8g cpus=4 "
-' _ "$SCLAUDE"
+    export SAGENT_CLIPBOARD=0 SAGENT_SESSIONS=0
+    export TEST_CPUS=2 TEST_MEMORY=3221225472 TEST_FLAVOR=docker
+    for wrapper in "$1" "$2"; do
+        for TEST_FLAVOR in docker podman compat; do
+            export TEST_ROOTLESS=false
+            [ "$TEST_FLAVOR" != podman ] || TEST_ROOTLESS=true
+            printf "CPU_LIMIT=4\nMEMORY_LIMIT=8g\n" > "$tmp/config"
+            "$wrapper" --help >"$tmp/out" 2>"$tmp/err" || { cat "$tmp/err" >&2; exit 1; }
+            grep -q "STUB-RUN.*--memory=3221225472.*--cpus=2.*--help" "$tmp/out"
+            grep -q "Adjusted sandbox limits to engine capacity" "$tmp/err"
+            if [ "$TEST_FLAVOR" = podman ]; then
+                grep -q "STUB-RUN.*--userns=keep-id:.*--memory=3221225472.*--cpus=2" "$tmp/out"
+            fi
+            [ "$("$wrapper" config get CPU_LIMIT)" = 4 ]
+            [ "$("$wrapper" config get MEMORY_LIMIT)" = 8g ]
+            "$wrapper" version 2>/dev/null | grep -q "^Limits: memory=3221225472 cpus=2 "
+        done
+        # Lower explicit limits (including fractional CPUs) stay unchanged.
+        printf "CPU_LIMIT=0.5\nMEMORY_LIMIT=512M\n" > "$tmp/config"
+        "$wrapper" --help >"$tmp/out" 2>"$tmp/err"
+        grep -q "STUB-RUN.*--memory=512M.*--cpus=0.5.*--help" "$tmp/out"
+        if grep -q "Adjusted sandbox limits" "$tmp/err"; then cat "$tmp/err" >&2; exit 1; fi
+        # Units are binary: 3g equals the engine capacity; 4g exceeds it.
+        for memory in 3g 3072m 3145728K 3221225472; do
+            printf "CPU_LIMIT=2\nMEMORY_LIMIT=%s\n" "$memory" > "$tmp/config"
+            "$wrapper" version 2>"$tmp/err" | grep -q "^Limits: memory=$memory cpus=2 "
+            if grep -q "Adjusted sandbox limits" "$tmp/err"; then cat "$tmp/err" >&2; exit 1; fi
+        done
+        # Unknown capacities must never become --memory=0 or --cpus=0.
+        for capacity in 0 unknown ""; do
+            printf "CPU_LIMIT=4\nMEMORY_LIMIT=8g\n" > "$tmp/config"
+            TEST_CPUS="$capacity" TEST_MEMORY="$capacity" "$wrapper" version 2>/dev/null \
+                | grep -q "^Limits: memory=8g cpus=4 "
+        done
+        # One unknown resource does not stop the other from being capped.
+        TEST_CPUS=unknown "$wrapper" version 2>/dev/null | grep -q "^Limits: memory=3221225472 cpus=4 "
+        TEST_MEMORY=unknown "$wrapper" version 2>/dev/null | grep -q "^Limits: memory=8g cpus=2 "
+        # A larger engine on the next run uses the original requested limits.
+        TEST_CPUS=8 TEST_MEMORY=17179869184 "$wrapper" version 2>/dev/null | grep -q "^Limits: memory=8g cpus=4 "
+        out=$("$wrapper" doctor 2>"$tmp/err") || true
+        echo "$out" | grep -qE "^  PASS  limits +memory=3221225472 cpus=2 "
+    done
+' _ "$SCLAUDE" "$SCODEX"
 
 # ── T57: extra mounts, more host folders for the agent ───────────────
 # SAGENT_EXTRA_MOUNTS: comma-separated, each at its own path, read-only
@@ -2672,7 +2729,10 @@ STUB
     cat > "$tmp/fake-engine" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-    info) [ -e "$tmp/down" ] && exit 1; echo 8; exit 0 ;;
+    info)
+        [ -e "$tmp/down" ] && exit 1
+        if [ -e "$tmp/ran" ]; then echo "2 3221225472"; else echo "8 17179869184"; fi
+        exit 0 ;;
     version) printf "Client: Docker Engine\nServer: Docker Engine\n"; exit 0 ;;
     context) echo desktop-linux; exit 0 ;;
     image|volume) exit 0 ;;
@@ -2702,7 +2762,7 @@ STUB
         rm -f "$tmp/ran" "$tmp/down"
         out=$(cd "$tmp/ws" && SAGENT_CONTAINER_ENGINE="$tmp/fake-engine" timeout 60 script -qec "\"$1\" \"fix the bug\"" /dev/null 2>&1 | tr -d "\r")
         echo "$out" | grep -q "The engine is back. Resuming with: sclaude --continue"
-        echo "$out" | grep -q "RESUMED-RUN .*sagent-run claude --dangerously-skip-permissions --continue"
+        echo "$out" | grep -q "RESUMED-RUN .*--memory=3221225472.*--cpus=2.*sagent-run claude --dangerously-skip-permissions --continue"
     fi
 ' _ "$SCLAUDE" "$SCODEX"
 
@@ -2734,5 +2794,44 @@ run_test "T59: broken CLI in the npm volume removed, or named with its fix" bash
     [ "$rc" = 1 ] || { echo "expected exit 1, got $rc: $out" >&2; exit 1; }
     echo "$out" | grep -q "Run: scodex shell -c .npm uninstall -g @openai/codex., or scodex reset-caches" || { echo "no recovery command: $out" >&2; exit 1; }
 '
+
+# ── T60: BuildKit, multi-user images and nested browser tests ────────
+run_test "T60: BuildKit, PostgreSQL and Playwright" bash -ec '
+    "$ENGINE" run --rm -i \
+        --device /dev/fuse --device /dev/net/tun \
+        --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+        --security-opt label=disable --cap-drop=ALL \
+        --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
+        --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
+        --pids-limit=512 --tmpfs /tmp:rw,nosuid,nodev,exec,size=1g \
+        "$SUITE_IMG" bash -c "cat > /tmp/sagent-nested-test.sh; exec bash /tmp/sagent-nested-test.sh" < "$1"
+' _ "$SCRIPT_DIR/test_nested.sh"
+
+# ── T61: a failed clipboard mktemp never registers the workspace ─────
+run_test "T61: clipboard temp failure preserves the workspace" bash -ec '
+    tmp=$(mktemp -d /tmp/sagent-t61.XXXXXX)
+    trap "rm -rf \"$tmp\"" EXIT
+    for wrapper in "$1" "$2"; do
+        fn=$(sed -n "/^start_clipboard_bridge()/,/^}/p" "$wrapper")
+        eval "$fn"
+        host_clipboard_kind() { echo mac; }
+        clipboard_bridge_serve() { :; }
+        SCRIPT_NAME=test
+        SAGENT_CLIPBOARD=1
+        TEMP_FILES=()
+        XDG_CACHE_HOME="$tmp/not-a-dir"
+        printf sentinel > "$XDG_CACHE_HOME"
+        start_clipboard_bridge 2>"$tmp/err"
+        [ "${#TEMP_FILES[@]}" = 0 ]
+        XDG_CACHE_HOME="$tmp/cache"
+        mkdir -p "$tmp/ws"
+        cd "$tmp/ws"
+        mktemp() { return 1; }
+        start_clipboard_bridge 2>"$tmp/err"
+        unset -f mktemp
+        [ "${#TEMP_FILES[@]}" = 0 ]
+        [ -d "$tmp/ws" ]
+    done
+' _ "$SCLAUDE" "$SCODEX"
 
 print_results

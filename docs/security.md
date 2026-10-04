@@ -79,11 +79,17 @@ process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
 
-On macOS the engine's VM is the ceiling. A Docker daemon refuses a CPU
-limit above its CPU count, so the wrapper stops when `CPU_LIMIT` is higher
-than the VM's CPUs. Colima and Rancher Desktop start with 2. Give the VM
-more CPUs, or set `CPU_LIMIT` to the VM's count. A memory limit above the
-VM's memory is accepted but never reached.
+The wrapper caps CPU and memory limits at the capacity reported by Docker
+or Podman. On macOS that is the engine VM's capacity. For example, a request
+for 4 CPUs and 8 GiB on a 2-CPU, 3-GiB engine runs with 2 CPUs and 3 GiB.
+Lower configured limits are kept. Memory uses total engine RAM, not a
+snapshot of free RAM: these are usage ceilings, not resource reservations.
+
+Each reduction is reported at startup. `version`, `status` and `doctor`
+show the limits that would apply; `config` keeps the requested values, so a
+later run can use more capacity if the engine grows. Capacity is checked
+again when resuming after an engine restart. If an engine cannot report a
+resource's capacity, the wrapper says so and keeps that configured limit.
 
 ### Network
 
@@ -106,8 +112,11 @@ or a socket inside a mounted directory, is a separate exposure.
 Container tooling inside the sandbox is on by default. It runs through a
 rootless podman inside the container, with images in the
 `sagent-containers` volume. The mode adds no capabilities beyond the set
-above. The single-uid mapping means the privileged `newuidmap` path is
-never used.
+above. `newuidmap` and `newgidmap` carry only `SETUID` and `SETGID` file
+capabilities respectively, without setuid-root bits. They delegate sandbox
+IDs 1 through 65535, excluding the agent's own ID. UID 0 is not delegated;
+nested root maps to the agent. This allows images to retain multiple owners
+and switch users, while fitting ordinary outer rootless UID mappings.
 
 The mode changes four run options:
 
@@ -127,8 +136,17 @@ signal the sandbox's whole cgroup, since nested containers share it.
 
 That is more kernel surface. `SAGENT_DOCKER=0` or `--no-docker` runs with
 the default profiles, no extra devices and `PIDS_LIMIT`. Nested containers
-share the sandbox's PID namespace and use single-uid storage, so images
-that rely on multi-user file ownership may behave differently.
+share the sandbox's PID namespace. Rootless BuildKit also runs there with
+`--oci-worker-no-process-sandbox`, because the outer `/proc` masks prevent
+mounting a fresh `/proc` for each build step. Build steps can signal other
+processes in the sandbox; they are within the same trust boundary as the
+agent and nested containers. The host's PID namespace and engine socket
+are not exposed. BuildKit uses a Unix socket owned by the agent, not a
+network listener.
+
+The sandbox's `/tmp` is executable for compilers and browser tooling, while
+`nosuid` and `nodev` remain set. Service-specific tmpfs mounts keep the
+options requested in their Compose configuration.
 
 ### Ephemeral container
 

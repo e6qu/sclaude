@@ -6,8 +6,8 @@ settings.
 ## Contents
 
 Ubuntu 26.04 with Claude Code, Codex, `gh`, git, git-lfs and
-build-essential. `SAGENT_UBUNTU_VERSION` picks another release. podman,
-its `docker` command shim and docker compose are always installed. Each run
+build-essential. `SAGENT_UBUNTU_VERSION` picks another release. Podman,
+the Docker CLI, Compose, Buildx and BuildKit are always installed. Each run
 serves podman's Docker API on `/var/run/docker.sock` and `DOCKER_HOST`.
 `--no-docker` turns the nested tooling off at run time.
 
@@ -37,6 +37,83 @@ exclusion. `sclaude tools disable cloud` drops a group or named tools, and
 that alters the generated Dockerfile builds a new image on the next run.
 [Toolchain stamps](storage-layout.md#toolchain-stamps) covers the caches
 that are cleared then.
+
+## Nested containers
+
+The Docker CLI, Compose and Docker SDKs use Podman's Docker-compatible API,
+served inside the sandbox with
+`podman system service --time=0`. `DOCKER_HOST` points to
+`unix:///run/podman/podman.sock`; `/var/run/docker.sock` links there too.
+This is the sandbox's socket on both macOS and Linux, never the host's.
+Startup and the `docker` launcher wait for an API response, including when a
+dead service leaves a socket file behind. A supervisor restarts the service
+if it exits.
+
+If Compose cannot connect, run these inside the sandbox:
+
+```bash
+sagent-docker-api
+curl --fail --noproxy '*' --max-time 5 --unix-socket /var/run/docker.sock http://localhost/_ping
+tail -n 50 /tmp/sagent-docker-api.log
+```
+
+The ping should return `OK`. The API service was added in sclaude 3.2.1;
+older installations need an update and a new sandbox session. Compose uses
+Podman's Docker compatibility API, so Docker-specific features still depend
+on Podman's support for them.
+
+## Nested builds and browser tests
+
+`docker build`, `docker buildx build` and `docker compose build` use a
+rootless BuildKit service in the sandbox. The `sagent` Buildx builder uses
+the remote driver over `/run/buildkit/buildkitd.sock` and loads built images
+into the nested Podman store by default. BuildKit cache, secret and SSH mounts, multi-stage builds, multi-platform
+OCI exports and non-root image users are supported. Build cache
+persists in the containers volume. `docker buildx prune` clears it.
+
+Compose health checks are scheduled inside the sandbox, which has no
+systemd user manager. The scheduler calls `podman healthcheck run`; Podman
+handles each check's timeout, start period, retries and health status.
+This supports `depends_on: condition: service_healthy` and `compose up --wait`.
+
+The service starts with the sandbox and restarts if it exits. Its log is
+`/tmp/sagent-buildkit.log`. The image sets `DOCKER_BUILDKIT=1` and
+`BUILDX_BUILDER=sagent`. `podman build` still uses Podman's own builder.
+
+Nested containers can switch to other UIDs, including apt's `_apt` user
+and PostgreSQL's UID 999. A nested image still needs its own dependencies:
+installing a library in the outer sandbox does not add it to that image.
+Install Playwright's dependencies as root while building the service image,
+then switch to its runtime user. For example, after installing Playwright:
+
+```dockerfile
+RUN npx playwright install --with-deps chromium
+USER node
+```
+
+This build step needs no `sudo`. For an existing container, Compose's
+`exec --user root` can run apt directly. A slim service image may omit sudo
+even though the outer sandbox includes it. On Ubuntu 24.04 and later,
+the ALSA package is `libasound2t64`; Playwright's dependency installer picks
+the distribution's packages.
+
+The sandbox's `/tmp` allows execution, with `nosuid` and `nodev` retained.
+If a Compose service mounts its own temporary filesystem and needs to
+execute files there, use `tmpfs: ["/tmp:rw,nosuid,nodev,exec,size=256m"]`.
+The integration test in [test_nested.sh](../test_nested.sh) builds a browser
+image, starts PostgreSQL and a web service, and runs Chromium against it.
+
+### Upgrading nested storage
+
+Earlier releases flattened image ownership into a single UID. Those layers
+cannot be repaired just by changing the UID map. New runs use
+`~/.local/share/containers/storage-multiuser`; the previous
+`~/.local/share/containers/storage` directory is retained in the same volume.
+Images must be pulled or built again, and Compose recreates its containers.
+Before recreating a database, recover any needed named-volume data from
+the old store's `volumes/<name>/_data` directory into the new volume, with
+ownership appropriate for that image. Bind-mounted project data is unchanged.
+Do not delete the old store until any needed data has been recovered.
 
 ## Builds
 
