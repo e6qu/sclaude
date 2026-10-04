@@ -56,7 +56,7 @@
 | T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
-| T27: Nested containers | `--docker` mode: nested pull/run/build via rootless podman | -- |
+| T27: Nested containers | `--docker` mode: nested pull/run/build; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; `--no-docker` diagnostic | #115, #116, #118, #120 |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks; Claude Code's localhost-callback sign-in URL is rewritten to the manual-code redirect with a paste note, other URLs untouched | #78 |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
@@ -90,8 +90,12 @@
 | T53: Drop dir mounted at its own path, unsafe values refused | `~/sagent-drop` is created and mounted by default; `SAGENT_DROP_DIR` names another; a relative path, a missing directory, `/` and the workspace are refused; a real run reads and writes a file there | -- |
 | T54: X11 clipboard served from the host, both ways | In a real run, an X client (what arboard does) finds an owner, reads the host PNG and text, and its own copy reaches the host before the sandbox takes the selection back | -- |
 | T55: Build downloads go to a file first | No build download is piped into `tar`, `sh`, `env`, `gpg`, `unzip` or `tee`; every `-o /tmp/...` download is removed in the same step | #113 |
-| T56: CPU limit above the docker daemon's CPUs refused | A stub docker server with 2 CPUs: `CPU_LIMIT=4` is refused before the engine is called, naming `config set CPU_LIMIT 2`, and `doctor` reports FAIL `limits`; `CPU_LIMIT=2` passes, and a podman server is not refused | #114 |
+| T56: CPU and memory limits adapt to engine capacity | Both wrappers use reduced limits in actual run arguments and diagnostics across Docker, Podman and the Docker compatibility API; lower limits, fractional CPUs and binary memory units work; unknown capacity keeps the requested limit; configured values persist | #114, #121 |
 | T57: Extra mounts at their own paths, read-only by default | `SAGENT_EXTRA_MOUNTS` entries mount read-only, or read-write with `:rw`; spaces and a trailing slash are dropped; `status` lists them; a relative path, a missing directory, `/`, a colon, the workspace, the drop folder and a repeated entry are refused; in a real run the read-only folder refuses writes and the read-write one takes them | -- |
+| T58: Engine recovery | Names a stopped engine; reports a lost session and resumes in a terminal, recalculating resource limits after restart | #117, #121 |
+| T59: Broken cached CLI | Removes a broken CLI from the npm volume so the image copy can run, or reports the failed removal | #119 |
+| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126 |
+| T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -179,7 +183,15 @@ image builds do not depend on the engine and run in the Linux jobs, and
 T12b, because colima shares only `$HOME` and `/tmp/colima` with its VM and
 Rancher Desktop only `$HOME`.
 
-T27 runs a container inside the sandbox through nested podman.
+T27 runs containers inside the sandbox through nested podman. It starts
+with a stale API socket and checks readiness through `sagent-run`, then
+checks a Compose project before and after killing the API process. It
+also checks service-name DNS, a published port and `compose down`.
+
+T60 runs [test_nested.sh](../test_nested.sh) inside the sandbox with its
+normal nested-container restrictions. It builds and runs real PostgreSQL
+and Playwright services, so it needs registry, PyPI and browser-download
+network access. Browser dependencies are installed in the nested image.
 
 ## Running part of the suite
 

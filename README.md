@@ -107,7 +107,9 @@ Commit before you start. Afterwards, review with `git diff`, then commit or
 Containers the agent starts run in the sandbox, on a podman of its own, not
 on your engine. `docker`, `docker compose` and anything that talks to
 `/var/run/docker.sock` work there. Their images are kept in a volume.
-`--no-docker` turns this off.
+Buildx and Compose builds use the sandbox's own rootless BuildKit service.
+`--no-docker` turns this off. See [nested builds and browser tests](docs/image.md#nested-builds-and-browser-tests)
+for dependencies and upgrading older nested storage.
 
 The sandbox runs inside your engine's VM, so a restart of Docker Desktop,
 Rancher Desktop, colima or the podman machine stops it. The wrapper says
@@ -156,6 +158,10 @@ Settings live in `~/.config/sagent/config`, a bash file that is sourced.
 `sclaude config set KEY VALUE` writes it. For the `SAGENT_` settings, an
 environment variable wins over the file. The resource limits are read from
 the file only.
+
+CPU and memory limits are automatically capped at the engine's capacity.
+On macOS this is the engine VM's capacity. Each run reports any reduction;
+the settings file keeps your requested limits for future runs.
 
 | Setting | Meaning | Default |
 |---|---|---|
