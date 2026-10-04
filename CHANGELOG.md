@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.2](https://github.com/e6qu/sclaude/compare/v3.2.1...v3.2.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* support nested Compose, BuildKit and multi-user workloads ([#107](https://github.com/e6qu/sclaude/issues/107)) ([13d77c9](https://github.com/e6qu/sclaude/commit/13d77c9ed551de534db5a0217d2e33e5f9a6e5ec))
+
 ## [3.2.1](https://github.com/e6qu/sclaude/compare/v3.2.0...v3.2.1) (2026-09-25)
 
 
