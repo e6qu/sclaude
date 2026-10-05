@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.3](https://github.com/e6qu/sclaude/compare/v3.2.2...v3.2.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* accept slow BuildKit readiness replies on busy VMs ([#111](https://github.com/e6qu/sclaude/issues/111)) ([c1a322d](https://github.com/e6qu/sclaude/commit/c1a322dea9810a39a600960b8fcc996cd809fe90))
+
 ## [3.2.2](https://github.com/e6qu/sclaude/compare/v3.2.1...v3.2.2) (2026-10-04)
 
 
