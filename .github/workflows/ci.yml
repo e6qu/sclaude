@@ -234,9 +234,9 @@ jobs:
     env:
       # The mirror is part of the image hash, so it must match the builder.
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
-    # A slice takes about 50 minutes (5 VM + 15 load + 30 tests), on a VM
-    # whose speed varies twofold.
-    timeout-minutes: 100
+    # macOS VM/image preparation has taken 46m and pre-T60 tests 38m.
+    # Budget those alongside the full 60m nested workflow and cleanup.
+    timeout-minutes: 160
     steps:
       - uses: actions/checkout@v5
       - name: Install docker CLI, buildx, and colima
@@ -298,8 +298,8 @@ jobs:
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           # docker info has stalled past 10s under build load here.
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
-          # Cold browser dependencies and nested layer export exceed 20m.
-          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "2400"
+          # A successful cold build can consume 40m before service startup.
+          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "3600"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
@@ -319,9 +319,9 @@ jobs:
       matrix:
         shard: ["1/2", "2/2"]
     name: test-macos-rancher (${{ matrix.shard }})
-    # A slice takes about 50 minutes (5 VM + 15 load + 30 tests), on a VM
-    # whose speed varies twofold; a VM restart below adds up to 7.
-    timeout-minutes: 100
+    # VM/image preparation has taken 46m and pre-T60 tests another 38m.
+    # Budget those alongside the full 60m nested workflow and cleanup.
+    timeout-minutes: 160
     env:
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl
@@ -425,7 +425,7 @@ jobs:
         env:
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
-          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "2400"
+          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "3600"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
