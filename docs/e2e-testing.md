@@ -77,7 +77,7 @@
 | T40: `doctor` | Healthy setup: engine, workspace, limits, build-time TLS, image, CLIs, sandbox TLS, nested devices and cache stamps PASS, exit 0; missing engine and a rootless docker CLI stub produce FAIL lines and exit 1 | -- |
 | T41: TLS interception auto-fix | Stub engine answers the pre-build probe TLS-FAIL until a bundle arrives: the wrapper exports the host trust store, verifies it, persists bundle and setting, builds with the CA block; a configured bundle lacking the CA stops before the build naming the issuer | #77 |
 | T42: `scodex login` | Stub engine: `login` gets `--device-auth`; explicit modes, `status` and `--help` are left alone; the tool container carries the workspace label | #78 |
-| T43: `shell` | Fresh sandbox shell sees the workspace and runs as `agent`; with a sandbox running for the workspace, `shell` attaches to that container | -- |
+| T43: `shell` | Fresh sandbox shell sees the workspace and runs as `agent`; with a sandbox running for the workspace, `shell` attaches to that container; failures preserve stderr before workspace cleanup | #133 |
 | T44: Install and migrate without sudo | `install` copies both wrappers into a user directory and adds it to the shell startup file once (a second run and an rc that already has it change nothing); `update` moves an install out of a directory the user cannot write and clears the old copies; a writable directory and a git checkout are left alone | -- |
 | T45: Update lists the changes and their PRs | With a stubbed releases API and CHANGELOG, `update` prints each version newer than the installed one, its entries and their pull request URLs, and stops at the version already installed | -- |
 | T46: Timeout helper reaps its own timer | After a command finishes, the harness's timer subshell and its `sleep` are both gone | -- |
@@ -97,7 +97,8 @@
 | T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 | T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor; a stale socket fails at the startup deadline and prints the daemon log | #131 |
-| T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured | #132 |
+| T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
+| T64: Shell lookup | Both wrappers preserve engine lookup errors and their exit status, consume large container listings without SIGPIPE, and select a fresh shell when the listing is empty | #133 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -228,7 +229,9 @@ seven days. T60 includes the complete BuildKit daemon log on failure,
 then prints PID/memory cgroup counters and the first 40 lines of the
 latest fatal error again, so a long Go dump or supervisor restart cannot
 hide its cause beyond the console tail. T63 checks this with synthetic
-logs and a deliberately failing harness command, without containers.
+logs, a deliberately failing harness command, and fresh/attached shell
+failures, without containers. T43 prints captured shell errors before its
+workspace cleanup, so the artifact includes the original stderr.
 
 The trace covers the test's own shell only. The wrappers and scripts it
 runs are untraced, so their captured stderr is clean. Capturing the stderr

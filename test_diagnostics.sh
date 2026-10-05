@@ -48,4 +48,36 @@ PATH="$tmp/bin:$PATH" SAGENT_TEST_LOG_DIR="$tmp/artifacts" \
 grep -F cause-at-start "$tmp/artifacts/T99.log" >/dev/null
 grep -F 'T99: synthetic failure' "$tmp/console" >/dev/null
 grep -F FAIL "$tmp/console" >/dev/null
+
+# Run the real T43 body against stubs. Both shell invocations must print
+# their captured stderr before the workspace's EXIT trap removes it.
+sed -n '/^run_test "T43:/,/^#.*T44:/p' "$SCRIPT_DIR/test_e2e.sh" > "$tmp/t43"
+cat > "$tmp/bin/shell-wrapper" <<'SH'
+#!/bin/sh
+if [ "$SHELL_FAILURE_MODE" = fresh ] || [ "$3" = hostname ]; then
+    echo "$SHELL_FAILURE_MODE-shell-failure" >&2
+    exit 42
+fi
+cat probe.txt
+echo agent
+echo 'starting a fresh one' >&2
+SH
+cat > "$tmp/bin/engine" <<'SH'
+#!/bin/sh
+if [ "$1" = ps ]; then echo 123456789abc; fi
+exit 0
+SH
+chmod +x "$tmp/bin/shell-wrapper" "$tmp/bin/engine"
+for mode in fresh attached; do
+    rc=0
+    SHELL_FAILURE_MODE="$mode" SAGENT_TEST_TMPDIR="$tmp" \
+        SCLAUDE="$tmp/bin/shell-wrapper" ENGINE="$tmp/bin/engine" \
+        SAGENT_TEST_USERNS='' SUITE_IMG=stub bash -c '
+            run_test() { shift; "$@"; }
+            . "$1"
+        ' _ "$tmp/t43" > "$tmp/shell-failure" 2>&1 || rc=$?
+    [ "$rc" = 42 ]
+    grep -F "$mode-shell-failure" "$tmp/shell-failure" >/dev/null
+done
 printf 'Long daemon dumps retain their fatal header, resource counters and full capture\n'
+printf 'Fresh and attached shell failures retain stderr before cleanup\n'

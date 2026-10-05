@@ -133,6 +133,8 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 131 | BuildKit readiness killed each worker RPC after half a second, so a busy VM could report an available daemon as unready; Rancher T27 failed before docker build while the later full workflow passed, and T27 omitted the BuildKit log | Allow five seconds per readiness RPC, check for a socket first, and bound startup with a separate 60-second deadline. Print the daemon log on startup failure and include it in T27 diagnostics. T62 checks slow healthy replies and stale-socket failure for both wrappers |
 | 132 | T60's last-40-lines daemon log lost the fatal header of a long Go dump during BuildKit export; the harness discarded the complete capture, leaving the exit cause unknown | Preserve failed-test captures as CI artifacts, include the full BuildKit log, and repeat the latest fatal header with PID/memory counters in the console tail. T63 covers long dumps, supervisor restarts, missing counters and failed-test capture |
 
+| 133 | Shell lookup discarded engine errors and could exit under pipefail when head closed a large listing; T43 deleted captured shell stderr during cleanup | Preserve lookup errors and status, select the first container after consuming the listing, and print failed shell stderr before cleanup. T64 covers both wrappers; T63 checks fresh and attached shell failure capture |
+
 ## False positives
 
 | Item | Reason |
