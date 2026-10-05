@@ -990,8 +990,12 @@ RUN set -eux; \
         '[ -c /dev/fuse ] || exit 1' \
         sock=/run/buildkit/buildkitd.sock \
         'ready() {' \
-        '    timeout 0.5 buildctl --addr "unix://$sock" debug workers >/dev/null 2>&1' \
+        '    [ -S "$sock" ] || return 1' \
+        '    timeout 5 buildctl --addr "unix://$sock" debug workers >/dev/null 2>&1' \
         '}' \
+        '# A busy VM can take more than half a second to answer a healthy RPC.' \
+        '# Bound the whole startup wait separately from each readiness probe.' \
+        'deadline=$(( $(date +%s) + 60 ))' \
         'if ! ready; then' \
         '    nohup flock -n /tmp/sagent-buildkit.lock sh -c '"'"'' \
         '        while :; do' \
@@ -1002,16 +1006,14 @@ RUN set -eux; \
         '                --oci-worker-binary=/usr/local/bin/buildkit-runc --containerd-worker=false' \
         '            sleep 2' \
         '        done'"'"' _ "$sock" >>/tmp/sagent-buildkit.log 2>&1 </dev/null &' \
-        '    i=0' \
-        '    while [ "$i" -lt 100 ]; do' \
-        '        ready && break' \
-        '        sleep 0.1' \
-        '        i=$((i + 1))' \
+        '    while ! ready; do' \
+        '        if [ "$(date +%s)" -ge "$deadline" ]; then' \
+        '            echo "[sagent] BuildKit did not become ready; see /tmp/sagent-buildkit.log" >&2' \
+        '            tail -n 40 /tmp/sagent-buildkit.log >&2 2>/dev/null || true' \
+        '            exit 1' \
+        '        fi' \
+        '        sleep 0.2' \
         '    done' \
-        '    if ! ready; then' \
-        '        echo "[sagent] BuildKit did not become ready; see /tmp/sagent-buildkit.log" >&2' \
-        '        exit 1' \
-        '    fi' \
         fi \
         '# Configuration persists in the home volume. Serialize first-use creation.' \
         'flock /tmp/sagent-buildx.lock sh -ec '"'"'' \

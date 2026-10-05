@@ -56,7 +56,7 @@
 | T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
-| T27: Nested containers | `--docker` mode: nested pull/run/build with the wrapper's rootless cache mapping; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; `--no-docker` diagnostic | #115, #116, #118, #120, #127 |
+| T27: Nested containers | `--docker` mode: nested pull/run/build with the wrapper's rootless cache mapping; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; API and BuildKit failure logs; `--no-docker` diagnostic | #115, #116, #118, #120, #127, #131 |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks; Claude Code's localhost-callback sign-in URL is rewritten to the manual-code redirect with a paste note, other URLs untouched | #78 |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
@@ -96,6 +96,7 @@
 | T59: Broken cached CLI | Removes a broken CLI from the npm volume so the image copy can run, or reports the failed removal | #119 |
 | T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
+| T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor; a stale socket fails at the startup deadline and prints the daemon log | #131 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -187,6 +188,11 @@ T27 runs containers inside the sandbox through nested podman. It starts
 with a stale API socket and checks readiness through `sagent-run`, then
 checks a Compose project before and after killing the API process. It
 also checks service-name DNS, a published port and `compose down`.
+Failures include both the API and BuildKit service logs.
+
+T62 runs [test_buildkit.sh](../test_buildkit.sh) with stubbed RPCs and a
+temporary Unix socket. It needs no container engine or daemon and can also
+run directly with `bash test_buildkit.sh`. It checks both wrappers.
 
 T60 runs [test_nested.sh](../test_nested.sh) inside the sandbox with its
 normal nested-container restrictions. It builds and runs real PostgreSQL
