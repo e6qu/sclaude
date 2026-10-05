@@ -97,6 +97,7 @@
 | T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 | T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor; a stale socket fails at the startup deadline and prints the daemon log | #131 |
+| T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured | #132 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -220,6 +221,14 @@ On failure the harness prints the last 30 lines of the test's output.
 `FAIL_OUTPUT_LINES` changes that. Test bodies run with `-x`, so the tail
 usually names the command that failed, even when that command sent its
 own output elsewhere.
+
+Set `SAGENT_TEST_LOG_DIR` to retain complete failed-test captures in that
+directory. CI uploads them as `diagnostics-*` artifacts, retained for
+seven days. T60 includes the complete BuildKit daemon log on failure,
+then prints PID/memory cgroup counters and the first 40 lines of the
+latest fatal error again, so a long Go dump or supervisor restart cannot
+hide its cause beyond the console tail. T63 checks this with synthetic
+logs and a deliberately failing harness command, without containers.
 
 The trace covers the test's own shell only. The wrappers and scripts it
 runs are untraced, so their captured stderr is clean. Capturing the stderr

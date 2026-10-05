@@ -6,11 +6,45 @@ work=$(mktemp -d /tmp/sagent-nested.XXXXXX)
 cd "$work"
 export COMPOSE_PROJECT_NAME=sagent-nested-check
 ssh_pid=""
+# Keep the complete dump in the harness capture, then repeat a bounded
+# summary at the end so CI's console tail retains the reason for the exit.
+report_buildkit_failure() {
+    local log="${1:-/tmp/sagent-buildkit.log}"
+    local cgroup="${2:-/sys/fs/cgroup}"
+    local counter
+    if [ -r "$log" ]; then
+        printf '\n=== Complete BuildKit daemon log ===\n'
+        cat "$log"
+    fi
+    printf '\n=== Sandbox resource counters ===\n'
+    for counter in pids.current pids.peak pids.max pids.events memory.current memory.peak memory.max memory.events; do
+        if [ -r "$cgroup/$counter" ]; then
+            printf '%s: ' "$counter"
+            cat "$cgroup/$counter"
+        fi
+    done
+    if [ -r "$log" ]; then
+        printf '\n=== Latest BuildKit fatal error (first 40 lines) ===\n'
+        awk '
+            /^SIG[A-Z]+:|^panic:|^fatal error:|^runtime: (out of memory|failed to create new OS thread|goroutine stack exceeds)/ {
+                if (!start || NR - start > 3) {
+                    start = NR
+                    count = 0
+                }
+            }
+            start && count < 40 { lines[count++] = $0 }
+            END { for (i = 0; i < count; i++) print lines[i] }
+        ' "$log"
+        printf '\n=== BuildKit daemon log tail ===\n'
+        tail -n 15 "$log"
+    fi
+}
 cleanup() {
     rc=$?
     if [ "$rc" -ne 0 ]; then
         docker compose logs >&2 || true
-        tail -n 40 /tmp/sagent-docker-api.log /tmp/sagent-buildkit.log >&2 || true
+        tail -n 10 /tmp/sagent-docker-api.log >&2 || true
+        report_buildkit_failure /tmp/sagent-buildkit.log /sys/fs/cgroup >&2 || true
     fi
     docker compose down -v --remove-orphans >/dev/null 2>&1 || true
     [ -z "$ssh_pid" ] || kill "$ssh_pid" 2>/dev/null || true

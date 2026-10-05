@@ -2844,4 +2844,6 @@ run_test "T61: clipboard temp failure preserves the workspace" bash -ec '
 # The helper regression runs without starting any container services.
 run_test "T62: BuildKit readiness accepts slow healthy replies" bash "$SCRIPT_DIR/test_buildkit.sh" "$SCLAUDE" "$SCODEX"
 
+run_test "T63: nested daemon failure diagnostics" bash "$SCRIPT_DIR/test_diagnostics.sh"
+
 print_results
