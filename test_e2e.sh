@@ -1037,9 +1037,11 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         exit 1
     fi
     "$ENGINE" volume create sagent-containers$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
-    "$ENGINE" run --rm --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
+    # This cache was populated by the wrapper with keep-id on rootless
+    # Podman. Preserve that mapping for both ownership setup and the test.
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
         chown "$(id -u):$(id -g)" /vol-containers
-    "$ENGINE" run --rm \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS \
         -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \
@@ -2796,6 +2798,10 @@ run_test "T59: broken CLI in the npm volume removed, or named with its fix" bash
 '
 
 # ── T60: BuildKit, multi-user images and nested browser tests ────────
+# Cold browser dependencies and layer export are slow in the macOS CI VMs.
+# Give this scenario its own budget without extending the other tests.
+_t60_prev_timeout="$TEST_TIMEOUT_SECONDS"
+TEST_TIMEOUT_SECONDS="${SAGENT_TEST_NESTED_TIMEOUT_SECONDS:-$TEST_TIMEOUT_SECONDS}"
 run_test "T60: BuildKit, PostgreSQL and Playwright" bash -ec '
     "$ENGINE" run --rm -i \
         --device /dev/fuse --device /dev/net/tun \
@@ -2806,6 +2812,7 @@ run_test "T60: BuildKit, PostgreSQL and Playwright" bash -ec '
         --pids-limit=512 --tmpfs /tmp:rw,nosuid,nodev,exec,size=1g \
         "$SUITE_IMG" bash -c "cat > /tmp/sagent-nested-test.sh; exec bash /tmp/sagent-nested-test.sh" < "$1"
 ' _ "$SCRIPT_DIR/test_nested.sh"
+TEST_TIMEOUT_SECONDS="$_t60_prev_timeout"
 
 # ── T61: a failed clipboard mktemp never registers the workspace ─────
 run_test "T61: clipboard temp failure preserves the workspace" bash -ec '
