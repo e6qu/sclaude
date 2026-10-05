@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.4](https://github.com/e6qu/sclaude/compare/v3.2.3...v3.2.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* preserve errors while opening sandbox shells ([#114](https://github.com/e6qu/sclaude/issues/114)) ([dd2dcfe](https://github.com/e6qu/sclaude/commit/dd2dcfe348e8e1ffbacc43e18f66ab10e9935a78))
+
 ## [3.2.3](https://github.com/e6qu/sclaude/compare/v3.2.2...v3.2.3) (2026-10-05)
 
 
