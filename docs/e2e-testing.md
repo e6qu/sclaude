@@ -56,7 +56,7 @@
 | T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
-| T27: Nested containers | `--docker` mode: nested pull/run/build; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; `--no-docker` diagnostic | #115, #116, #118, #120 |
+| T27: Nested containers | `--docker` mode: nested pull/run/build with the wrapper's rootless cache mapping; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; `--no-docker` diagnostic | #115, #116, #118, #120, #127 |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks; Claude Code's localhost-callback sign-in URL is rewritten to the manual-code redirect with a paste note, other URLs untouched | #78 |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
@@ -94,7 +94,7 @@
 | T57: Extra mounts at their own paths, read-only by default | `SAGENT_EXTRA_MOUNTS` entries mount read-only, or read-write with `:rw`; spaces and a trailing slash are dropped; `status` lists them; a relative path, a missing directory, `/`, a colon, the workspace, the drop folder and a repeated entry are refused; in a real run the read-only folder refuses writes and the read-write one takes them | -- |
 | T58: Engine recovery | Names a stopped engine; reports a lost session and resumes in a terminal, recalculating resource limits after restart | #117, #121 |
 | T59: Broken cached CLI | Removes a broken CLI from the npm volume so the image copy can run, or reports the failed removal | #119 |
-| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126 |
+| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
@@ -192,6 +192,9 @@ T60 runs [test_nested.sh](../test_nested.sh) inside the sandbox with its
 normal nested-container restrictions. It builds and runs real PostgreSQL
 and Playwright services, so it needs registry, PyPI and browser-download
 network access. Browser dependencies are installed in the nested image.
+`SAGENT_TEST_NESTED_TIMEOUT_SECONDS` gives T60 a separate time budget;
+it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 2400 seconds
+to cover the cold dependency install and layer export on its slower VMs.
 
 ## Running part of the suite
 
@@ -216,4 +219,3 @@ lines, because the trace follows file descriptor 2 into the capture. Do
 not assert on those captures. Capture an external command instead. The
 bash 3.2 that macOS ships lacks `BASH_XTRACEFD`, which would send the trace
 elsewhere.
-

@@ -298,6 +298,8 @@ jobs:
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           # docker info has stalled past 10s under build load here.
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
+          # Cold browser dependencies and nested layer export exceed 20m.
+          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "2400"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
@@ -423,6 +425,7 @@ jobs:
         env:
           SAGENT_TEST_SKIP: "T02 T10 T10b T31 T12b"
           SAGENT_ENGINE_TIMEOUT_SECONDS: "60"
+          SAGENT_TEST_NESTED_TIMEOUT_SECONDS: "2400"
         run: |
           mkdir -p "$HOME/sagent-test"
           SAGENT_TEST_TMPDIR="$HOME/sagent-test" bash test_e2e.sh
