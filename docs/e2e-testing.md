@@ -94,7 +94,7 @@
 | T57: Extra mounts at their own paths, read-only by default | `SAGENT_EXTRA_MOUNTS` entries mount read-only, or read-write with `:rw`; spaces and a trailing slash are dropped; `status` lists them; a relative path, a missing directory, `/`, a colon, the workspace, the drop folder and a repeated entry are refused; in a real run the read-only folder refuses writes and the read-write one takes them | -- |
 | T58: Engine recovery | Names a stopped engine; reports a lost session and resumes in a terminal, recalculating resource limits after restart | #117, #121 |
 | T59: Broken cached CLI | Removes a broken CLI from the npm volume so the image copy can run, or reports the failed removal | #119 |
-| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129 |
+| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
@@ -193,8 +193,10 @@ normal nested-container restrictions. It builds and runs real PostgreSQL
 and Playwright services, so it needs registry, PyPI and browser-download
 network access. Browser dependencies are installed in the nested image.
 `SAGENT_TEST_NESTED_TIMEOUT_SECONDS` gives T60 a separate time budget;
-it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 2400 seconds
-to cover the cold dependency install and layer export on its slower VMs.
+it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 3600 seconds
+to cover cold dependency installation, image export/import and service startup
+on its slower VMs. Each macOS job allows 140 minutes for VM startup, image
+loading and the full test slice; VM/image preparation alone has taken 46 minutes.
 
 ## Running part of the suite
 
