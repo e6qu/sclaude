@@ -77,7 +77,7 @@ checks out the pull request's code hands them to that code. Use
 | Path | What it is |
 |---|---|
 | `sclaude`, `scodex` | The two wrappers |
-| `test_e2e.sh`, `test_lib.sh`, `test_nested.sh` | The test suite, harness and nested BuildKit/PostgreSQL/Playwright scenario |
+| `test_e2e.sh`, `test_lib.sh`, `test_nested.sh`, `test_buildkit.sh` | The test suite, harness, nested BuildKit/PostgreSQL/Playwright scenario and standalone BuildKit readiness regression |
 | `test_devcontainers.sh` | Dev container build and smoke tests |
 | `cleanup.sh` | macOS helper for reclaiming disk and engine state |
 | `.devcontainer/` | Dev container for working on sclaude |

@@ -77,7 +77,10 @@ handles each check's timeout, start period, retries and health status.
 This supports `depends_on: condition: service_healthy` and `compose up --wait`.
 
 The service starts with the sandbox and restarts if it exits. Its log is
-`/tmp/sagent-buildkit.log`. The image sets `DOCKER_BUILDKIT=1` and
+`/tmp/sagent-buildkit.log`. Readiness probes allow five seconds per RPC,
+with a 60-second startup deadline, so a busy VM can answer without being
+mistaken for a dead service. Startup failures print the last 40 log lines.
+The image sets `DOCKER_BUILDKIT=1` and
 `BUILDX_BUILDER=sagent`. `podman build` still uses Podman's own builder.
 
 Nested containers can switch to other UIDs, including apt's `_apt` user

@@ -1058,7 +1058,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
                 echo \"T27 step failed: \$1\" >&2
                 docker compose ps -a >&2 2>&1 || true
                 docker compose logs >&2 2>&1 || true
-                tail -n 20 /tmp/sagent-docker-api.log >&2 2>/dev/null || true
+                tail -n 40 /tmp/sagent-docker-api.log /tmp/sagent-buildkit.log >&2 2>/dev/null || true
                 exit 1
             }
             # A socket left by a dead service must not count as ready. Hold
@@ -2840,5 +2840,8 @@ run_test "T61: clipboard temp failure preserves the workspace" bash -ec '
         [ -d "$tmp/ws" ]
     done
 ' _ "$SCLAUDE" "$SCODEX"
+
+# The helper regression runs without starting any container services.
+run_test "T62: BuildKit readiness accepts slow healthy replies" bash "$SCRIPT_DIR/test_buildkit.sh" "$SCLAUDE" "$SCODEX"
 
 print_results
