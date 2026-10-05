@@ -234,9 +234,9 @@ jobs:
     env:
       # The mirror is part of the image hash, so it must match the builder.
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
-    # T60 needs up to 60m; VM/image preparation has taken 46m on macOS.
-    # Leave room for both and the other tests on these variable-speed VMs.
-    timeout-minutes: 140
+    # macOS VM/image preparation has taken 46m and pre-T60 tests 38m.
+    # Budget those alongside the full 60m nested workflow and cleanup.
+    timeout-minutes: 160
     steps:
       - uses: actions/checkout@v5
       - name: Install docker CLI, buildx, and colima
@@ -319,9 +319,9 @@ jobs:
       matrix:
         shard: ["1/2", "2/2"]
     name: test-macos-rancher (${{ matrix.shard }})
-    # T60 needs up to 60m; VM/image preparation has taken 46m here.
-    # Leave room for both, the other tests and a possible VM restart.
-    timeout-minutes: 140
+    # VM/image preparation has taken 46m and pre-T60 tests another 38m.
+    # Budget those alongside the full 60m nested workflow and cleanup.
+    timeout-minutes: 160
     env:
       SAGENT_TEST_SHARD: ${{ matrix.shard }}
       RDCTL: /Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl

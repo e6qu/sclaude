@@ -195,8 +195,10 @@ network access. Browser dependencies are installed in the nested image.
 `SAGENT_TEST_NESTED_TIMEOUT_SECONDS` gives T60 a separate time budget;
 it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 3600 seconds
 to cover cold dependency installation, image export/import and service startup
-on its slower VMs. Each macOS job allows 140 minutes for VM startup, image
-loading and the full test slice; VM/image preparation alone has taken 46 minutes.
+on its slower VMs. Each macOS job allows 160 minutes for VM startup, image
+loading and the full test slice. One Rancher runner needed 46 minutes for
+VM/image preparation and another 38 minutes of tests before T60; its previous
+100-minute job limit cancelled T60 before that test's own budget elapsed.
 
 ## Running part of the suite
 
