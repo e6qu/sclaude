@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run by T60 inside the sandbox, never directly on the host.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'printf "Nested check failed at line %s (exit %s; pipeline %s): %s\n" "$LINENO" "$?" "${PIPESTATUS[*]}" "$BASH_COMMAND" >&2' ERR
 work=$(mktemp -d /tmp/sagent-nested.XXXXXX)
 cd "$work"
 export COMPOSE_PROJECT_NAME=sagent-nested-check
@@ -26,8 +27,10 @@ cp /bin/true ./exec-check
 legacy="$HOME/.local/share/containers/storage/volumes/legacy-check/_data"
 mkdir -p "$legacy"
 printf preserved > "$legacy/value"
-podman info --format "{{.Store.GraphRoot}}" | grep -qx "$HOME/.local/share/containers/storage-multiuser"
-docker buildx inspect --bootstrap | grep -qE '^Driver: +remote$'
+podman info --format "{{.Store.GraphRoot}}" | grep -x "$HOME/.local/share/containers/storage-multiuser" >/dev/null
+# Consume the full output: quiet grep can close early and SIGPIPE Buildx
+# while it is printing its remaining node details under pipefail.
+docker buildx inspect --bootstrap | grep -E '^Driver: +remote$' >/dev/null
 printf test-secret > token
 export SSH_SOCKET="$work/ssh.sock"
 ssh-agent -D -a "$SSH_SOCKET" >/dev/null 2>&1 &
@@ -108,9 +111,9 @@ volumes:
 COMPOSE
 
 docker build --target probe --secret id=token,src=token --ssh "default=$SSH_SOCKET" -t sagent-build-check .
-docker run --rm sagent-build-check | grep -qx buildkit-ok
+docker run --rm sagent-build-check | grep -x buildkit-ok >/dev/null
 docker buildx build --target probe --secret id=token,src=token --ssh "default=$SSH_SOCKET" -t sagent-buildx-check .
-docker run --rm sagent-buildx-check | grep -qx buildkit-ok
+docker run --rm sagent-buildx-check | grep -x buildkit-ok >/dev/null
 docker buildx build --platform linux/amd64,linux/arm64 --target probe \
     --secret id=token,src=token --ssh "default=$SSH_SOCKET" \
     --output type=oci,dest="$work/multiarch.tar" .
@@ -119,7 +122,7 @@ docker compose build browser
 docker compose up -d --wait --wait-timeout 90 db web
 docker compose exec -T --user root db sh -ec 'test "$(runuser -u _apt -- id -u)" = 42; apt-get update -qq'
 docker compose exec -T db sh -c 'test "$(id -u postgres)" = 999'
-docker compose exec -T db psql -U postgres -Atqc 'select 1' | grep -qx 1
-docker compose run --rm browser | grep -qx playwright-ok
+docker compose exec -T db psql -U postgres -Atqc 'select 1' | grep -x 1 >/dev/null
+docker compose run --rm browser | grep -x playwright-ok >/dev/null
 [ "$(cat "$legacy/value")" = preserved ]
 printf 'BuildKit, PostgreSQL and Playwright passed\n'
