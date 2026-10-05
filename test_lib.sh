@@ -12,6 +12,9 @@ SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 # How much of a failed test's capture to print. Tests run traced, so the
 # tail of it holds the commands that led to the failure.
 FAIL_OUTPUT_LINES="${FAIL_OUTPUT_LINES:-30}"
+# Optional directory for complete failed-test captures, including daemon
+# dumps too long for the console tail. CI uploads these as artifacts.
+SAGENT_TEST_LOG_DIR="${SAGENT_TEST_LOG_DIR:-}"
 # "2/3" runs every third test from the second. Tests are numbered in file
 # order, skipped or not, so every slice agrees on which test is which.
 SAGENT_TEST_SHARD="${SAGENT_TEST_SHARD:-}"
@@ -140,6 +143,12 @@ run_test() {
         PASS=$((PASS + 1))
     else
         printf "FAIL\n"
+        if [ -n "$SAGENT_TEST_LOG_DIR" ]; then
+            if ! mkdir -p "$SAGENT_TEST_LOG_DIR" ||
+                ! cp "$output_file" "$SAGENT_TEST_LOG_DIR/${name%%:*}.log"; then
+                printf '    Could not preserve the full capture in %s\n' "$SAGENT_TEST_LOG_DIR" >&2
+            fi
+        fi
         if [ ! -s "$output_file" ]; then
             printf "    Output: (none — the test wrote nothing and was not traced)\n"
         elif [ "$lines" -gt "$FAIL_OUTPUT_LINES" ]; then
