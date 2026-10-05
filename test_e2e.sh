@@ -1037,9 +1037,11 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         exit 1
     fi
     "$ENGINE" volume create sagent-containers$SAGENT_VOLUME_SUFFIX >/dev/null 2>&1 || true
-    "$ENGINE" run --rm --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
+    # This cache was populated by the wrapper with keep-id on rootless
+    # Podman. Preserve that mapping for both ownership setup and the test.
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
         chown "$(id -u):$(id -g)" /vol-containers
-    "$ENGINE" run --rm \
+    "$ENGINE" run --rm $SAGENT_TEST_USERNS \
         -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \

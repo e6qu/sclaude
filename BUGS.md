@@ -126,6 +126,7 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 124 | Podman-backed sandboxes could mount the outer `/tmp` with the engine's default `noexec`, breaking temporary native executables used by build and browser tooling | Request `exec` explicitly while retaining `nosuid` and `nodev`. Nested service tmpfs options remain controlled by the Compose file. T60 |
 | 125 | If creating the clipboard temporary directory failed, `cd ""` could resolve to the workspace, which was then registered for recursive deletion on exit | Check directory creation before resolving its path or adding a cleanup target; unavailable clipboard storage is non-fatal. T61 |
 | 126 | Nested Podman had no systemd user manager to schedule health checks, leaving healthy services in `starting` and blocking Compose dependency waits | A supervised scheduler invokes Podman's native health-check runner with the configured intervals and bounded concurrency. T60 waits for PostgreSQL health before SQL and browser tests |
+| 127 | T27 reused the wrapper's nested cache under rootless Podman's default UID mapping instead of the wrapper's keep-id mapping, leaving existing store directories unreadable and failing API startup | Use the wrapper's rootless user mapping for both cache ownership setup and the nested test container, preserving the existing mapped image owners. T27 |
 
 ## False positives
 
