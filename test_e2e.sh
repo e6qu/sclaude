@@ -1912,7 +1912,11 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
     trap "rm -rf \"$WS\"; \"$ENGINE\" rm -f sagent-t43-running >/dev/null 2>&1" EXIT
     echo t43-marker > "$WS/probe.txt"
     # Fresh shell: same workspace mount, no yolo flag, arguments go to bash.
-    out=$(cd "$WS" && "$1" shell -c "cat probe.txt; whoami" 2>"$WS/err")
+    out=$(cd "$WS" && "$1" shell -c "cat probe.txt; whoami" 2>"$WS/err") || {
+        rc=$?
+        cat "$WS/err" >&2
+        exit "$rc"
+    }
     echo "$out" | grep -q t43-marker
     echo "$out" | grep -q "^agent$"
     grep -q "starting a fresh one" "$WS/err"
@@ -1920,7 +1924,11 @@ run_test "T43: shell command (fresh and attached)" bash -ec '
     "$ENGINE" run -d --name sagent-t43-running --label "sagent.workspace=$WS" $SAGENT_TEST_USERNS \
         -v "$(cd "$WS" && pwd -P):$WS:rw" -w "$WS" "$SUITE_IMG" sleep 120 >/dev/null
     cid=$("$ENGINE" ps -q --filter name=sagent-t43-running | head -1)
-    out=$(cd "$WS" && "$1" shell -c "hostname" 2>"$WS/err")
+    out=$(cd "$WS" && "$1" shell -c "hostname" 2>"$WS/err") || {
+        rc=$?
+        cat "$WS/err" >&2
+        exit "$rc"
+    }
     grep -q "Attaching a shell to the sandbox running for $WS" "$WS/err"
     [ "$out" = "${cid:0:12}" ]
 ' _ "$SCLAUDE"
@@ -2845,5 +2853,7 @@ run_test "T61: clipboard temp failure preserves the workspace" bash -ec '
 run_test "T62: BuildKit readiness accepts slow healthy replies" bash "$SCRIPT_DIR/test_buildkit.sh" "$SCLAUDE" "$SCODEX"
 
 run_test "T63: nested daemon failure diagnostics" bash "$SCRIPT_DIR/test_diagnostics.sh"
+
+run_test "T64: sandbox shell lookup errors and large listings" bash "$SCRIPT_DIR/test_shell.sh" "$SCLAUDE" "$SCODEX"
 
 print_results

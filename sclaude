@@ -4090,8 +4090,15 @@ build_docker_tty_flags() {
 # bash in the sandbox: attached to the one running for this workspace, or a
 # fresh one with the same mounts. Extra arguments go to bash.
 open_shell() {
-    local running
-    running=$("$ENGINE_CMD" ps --filter "label=sagent.workspace=$WORKSPACE_PATH" --filter status=running --format '{{.ID}}' 2>/dev/null | head -1)
+    local running rc=0
+    running=$("$ENGINE_CMD" ps --filter "label=sagent.workspace=$WORKSPACE_PATH" --filter status=running --format '{{.ID}}') || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "[$SCRIPT_NAME] Could not check for a running sandbox in $WORKSPACE_PATH." >&2
+        return "$rc"
+    fi
+    # Consume the listing before choosing a container; head can SIGPIPE
+    # the engine under pipefail when this workspace has many sandboxes.
+    running=${running%%$'\n'*}
     if [ -n "$running" ]; then
         echo "[$SCRIPT_NAME] Attaching a shell to the sandbox running for $WORKSPACE_PATH (container $running)." >&2
         exec "$ENGINE_CMD" exec "${DOCKER_TTY_FLAGS[@]}" -w "$WORKSPACE_PATH" "$running" bash "${ARGS[@]+"${ARGS[@]}"}"
