@@ -1098,7 +1098,24 @@ RUN set -eux; \
         '    exit 1' \
         fi \
         '/usr/local/bin/sagent-docker-api || exit 1' \
-        '/usr/local/bin/sagent-buildkit || exit 1' \
+        '# Only build commands need a worker. Skip Docker global option values' \
+        '# so a context named build does not accidentally start BuildKit.' \
+        'needs_buildkit() {' \
+        '    while [ "$#" -gt 0 ]; do' \
+        '        case "$1" in' \
+        '            --config | --context | -c | --host | -H | --log-level | -l | --tlscacert | --tlscert | --tlskey)' \
+        '                shift; [ "$#" -gt 0 ] && shift ;;' \
+        '            -*) shift ;;' \
+        '            build | buildx | builder | compose) return 0 ;;' \
+        '            image) shift; [ "${1:-}" = build ]; return ;;' \
+        '            *) return 1 ;;' \
+        '        esac' \
+        '    done' \
+        '    return 1' \
+        '}' \
+        'if needs_buildkit "$@"; then' \
+        '    /usr/local/bin/sagent-buildkit || exit 1' \
+        'fi' \
         'exec /usr/bin/docker "$@"' \
         > /usr/local/bin/docker; \
     printf '%s\n' \
@@ -1551,7 +1568,6 @@ RUN set -eux; \
         'fi' \
         'if [ -c /dev/fuse ]; then' \
         '    /usr/local/bin/sagent-docker-api || true' \
-        '    /usr/local/bin/sagent-buildkit || true' \
         'fi' \
         '# A claude or codex installed into the npm volume (an auto-update, or' \
         '# npm i -g in the sandbox) comes first on PATH and outlives the image.' \
@@ -4395,7 +4411,10 @@ run_tool() {
     # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
     # exec'd: the clipboard agent stops with the run.
     local rc=0
-    "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
+    # Reap orphaned tool/engine children before they consume the PID budget.
+    # nproc counts the shared host UID across sessions; the cgroup PID limit
+    # below remains the per-sandbox bound, including threads and nested work.
+    "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm --init "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
         "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \
@@ -4430,6 +4449,7 @@ run_tool() {
         --cap-add=NET_BIND_SERVICE \
         --network bridge \
         --ulimit nofile=8192:8192 \
+        --ulimit nproc=-1:-1 \
         -e "$CONFIG_ENV_NAME=$CONFIG_MOUNT" \
         -e ANTHROPIC_API_KEY \
         -e ANTHROPIC_AUTH_TOKEN \

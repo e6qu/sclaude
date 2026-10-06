@@ -100,7 +100,8 @@
 | T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
 | T64: Shell lookup | Both wrappers preserve engine lookup errors and their exit status, consume large container listings without SIGPIPE, and select a fresh shell when the listing is empty | #133 |
 | T65: Nested storage leases | Real file locks allocate distinct slots for concurrent sandboxes, isolate projects, reuse released slots, retain old data and fail closed after lease loss; cold storage assertion ordering and both API process spellings | #134, #135 |
-| T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data | #134 |
+| T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data. A third project runs repeated non-build commands without starting BuildKit or accumulating zombies | #134, #137 |
+| T67: Session processes | Both wrappers defer BuildKit until build-capable Docker commands, forward global options, request init and retain cgroup PID bounds without a shared-UID nproc ceiling; 256 orphaned tool children are reaped under a 64-task limit | #137 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 

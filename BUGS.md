@@ -138,6 +138,8 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 135 | T60 evaluated its expected storage path before the first Podman call created the lease marker; T27 matched only a bare podman argv[0], so the new /usr/bin/podman launcher made its API recovery lookup exit under errexit | Complete Podman initialization before reading the marker, match both executable spellings, and report lookup failures through T27's diagnostics. T65 reproduces the cold-start ordering race and checks both process spellings; all nested build, Compose and recovery assertions remain |
 | 136 | Colima's cold BuildKit worker discovery took 78 seconds to start its server, but the helper reported startup failure after 60 seconds; T66 failed while the same integration test passed in every Linux environment and Rancher Desktop | Allow 120 seconds for startup while retaining five-second RPC probes and stale-socket failure diagnostics. T62 models a 90-second cold start with a virtual clock and still checks bounded failure for both wrappers |
 
+| 137 | Sessions launched without an init process, leaving orphaned helper and test children as zombies; every session and even non-build Docker commands started BuildKit, and inherited nproc limits could apply across all sessions sharing a host UID | Run sessions with init, retain the per-sandbox cgroup PID limits while disabling the shared-UID ceiling, and defer BuildKit until a build-capable command. Keep the API ready for SDKs. T67 checks both launchers and argument forwarding, and reaps 256 orphaned children under a 64-task budget |
+
 ## False positives
 
 | Item | Reason |

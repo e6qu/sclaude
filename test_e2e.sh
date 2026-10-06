@@ -1041,7 +1041,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
     # Podman. Preserve that mapping for both ownership setup and the test.
     "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
         chown "$(id -u):$(id -g)" /vol-containers
-    "$ENGINE" run --rm $SAGENT_TEST_USERNS \
+    "$ENGINE" run --rm --init --ulimit nproc=-1:-1 $SAGENT_TEST_USERNS \
         -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \
@@ -2860,5 +2860,7 @@ run_test "T64: sandbox shell lookup errors and large listings" bash "$SCRIPT_DIR
 run_test "T66: concurrent sandbox builds and Compose isolation" bash "$SCRIPT_DIR/test_concurrent.sh"
 
 run_test "T65: concurrent nested storage leases" bash "$SCRIPT_DIR/test_storage.sh" "$SCLAUDE" "$SCODEX"
+
+run_test "T67: session process reaping and lazy BuildKit" bash "$SCRIPT_DIR/test_sessions.sh" "$SCLAUDE" "$SCODEX"
 
 print_results
