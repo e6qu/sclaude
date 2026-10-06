@@ -278,9 +278,12 @@ jobs:
           mkdir -p ~/.docker/cli-plugins
           ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
       - name: Start colima VM
-        # vz is markedly faster than qemu here. --dns: the VM's own resolver
-        # failed 597 times in one build (#93).
-        run: colima start --vm-type vz --cpu 4 --memory 10 --disk 30 --dns 1.1.1.1 --dns 8.8.8.8
+        # Configure both the VM and Docker: --dns alone left containers using
+        # Lima's 192.168.5.1 forwarder, which timed out in T27/T40/T60 (#138).
+        run: |
+          mkdir -p "$HOME/.colima/default"
+          cp .github/colima-ci.yaml "$HOME/.colima/default/colima.yaml"
+          colima start
       - name: Wait for the VM's docker daemon
         # colima start can return before dockerd is reachable.
         run: |
@@ -323,6 +326,10 @@ jobs:
             echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
             exit 1
           fi
+          echo "SAGENT_CI_IMAGE=sagent-sandbox:$want" >> "$GITHUB_ENV"
+      - name: Check container DNS before E2E tests
+        timeout-minutes: 3
+        run: bash test_dns.sh docker "$SAGENT_CI_IMAGE"
       - name: Run E2E tests
         # Skipped: T02 (built above), T10, T10b and T31 (full builds the
         # Linux jobs cover), T12b (colima shares only $HOME and /tmp/colima,

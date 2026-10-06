@@ -2863,4 +2863,6 @@ run_test "T65: concurrent nested storage leases" bash "$SCRIPT_DIR/test_storage.
 
 run_test "T67: session process reaping and lazy BuildKit" bash "$SCRIPT_DIR/test_sessions.sh" "$SCLAUDE" "$SCODEX"
 
+run_test "T68: container registry and package DNS" bash "$SCRIPT_DIR/test_dns.sh" "$ENGINE" "$SUITE_IMG"
+
 print_results
