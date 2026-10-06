@@ -3,7 +3,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$#" -eq 0 ]; then set -- "$SCRIPT_DIR/sclaude" "$SCRIPT_DIR/scodex"; fi
-python3 - "$@" <<'PY'
+python3 - "$SCRIPT_DIR" "$@" <<'PY'
 import concurrent.futures
 import fcntl
 import json
@@ -23,7 +23,53 @@ def extract(source, target):
     return subprocess.check_output(['bash', '-c', block[:-1] + '\n']).decode()
 
 
-for wrapper in sys.argv[1:]:
+script_dir = Path(sys.argv[1])
+errors = []
+with tempfile.TemporaryDirectory(prefix='sagent-storage-cold-test.') as tmp:
+    path = Path(tmp)
+    marker = path / 'storage-root'
+    root = path / 'slot'
+    source = (script_dir / 'test_nested.sh').read_text()
+    start = source.rfind('\n', 0, source.index('podman info --format')) + 1
+    end = source.index('# Consume the full output:', start)
+    # The info call initializes the lease lazily. Delay it so the old
+    # pipeline always reads the marker before the producer creates it.
+    check = source[start:end].replace('/run/sagent/storage-root', str(marker))
+    stub = """
+set -euo pipefail
+podman() {
+    sleep 0.1
+    printf '%s\\n' "$TEST_STORAGE_ROOT" > "$TEST_STORAGE_MARKER"
+    printf '%s/storage-multiuser\\n' "$TEST_STORAGE_ROOT"
+}
+"""
+    env = dict(os.environ, TEST_STORAGE_ROOT=str(root), TEST_STORAGE_MARKER=str(marker))
+    result = subprocess.run(['bash', '-c', stub + check], env=env, capture_output=True, text=True)
+    if result.returncode:
+        errors.append('cold Podman initialization: ' + result.stderr.strip())
+
+source = (script_dir / 'test_e2e.sh').read_text()
+# These two lines sit in T27's escaped command body. Test both supported
+# executable spellings with the actual lookup patterns, before killing it.
+lookups = '\n'.join(line.replace('\\', '') for line in source.splitlines()
+                    if 'api_pid=' in line or 'api_parent=' in line)
+for executable in ('podman', '/usr/bin/podman'):
+    stub = """
+set -euo pipefail
+fail() { echo "$*" >&2; exit 1; }
+pgrep() {
+    printf '%s\\n' "$TEST_API_COMMAND" | grep -E -- "$2" >/dev/null || return 1
+    printf '123\\n'
+}
+"""
+    env = dict(os.environ, TEST_API_COMMAND=executable + ' --log-level=error system service --time=0 unix:///run/podman/podman.sock')
+    result = subprocess.run(['bash', '-c', stub + lookups + '\n[ "$api_pid" = 123 ] && [ "$api_parent" = 123 ]'], env=env, capture_output=True, text=True)
+    if result.returncode:
+        errors.append('API process lookup: ' + executable)
+assert not errors, '\n'.join(errors)
+print('Cold storage assertion and both API process spellings passed')
+
+for wrapper in sys.argv[2:]:
     processes = []
     with tempfile.TemporaryDirectory(prefix='sagent-storage-test.') as tmp:
         path = Path(tmp)
