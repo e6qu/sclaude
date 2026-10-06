@@ -100,9 +100,10 @@
 | T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
 | T64: Shell lookup | Both wrappers preserve engine lookup errors and their exit status, consume large container listings without SIGPIPE, and select a fresh shell when the listing is empty | #133 |
 | T65: Nested storage leases | Real file locks allocate distinct slots for concurrent sandboxes, isolate projects, reuse released slots, retain old data and fail closed after lease loss; cold storage assertion ordering and both API process spellings | #134, #135 |
-| T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data. A third project runs repeated non-build commands without starting BuildKit or accumulating zombies | #134, #137 |
+| T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data. A third project runs repeated non-build commands without starting BuildKit or accumulating zombies; sandbox removal tolerates bounded late exit notifications | #134, #137, #139 |
 | T67: Session processes | Both wrappers defer BuildKit until build-capable Docker commands, forward global options, request init and retain cgroup PID bounds without a shared-UID nproc ceiling; 256 orphaned tool children are reaped under a 64-task limit | #137 |
 | T68: Container DNS | Resolve ECR, npm and Ubuntu package hosts using the sandbox container's resolver, with a 30-second deadline per lookup | #138 |
+| T69: Container removal | Recover from delayed Docker exit notifications and removal already in progress, while preserving persistent failure and unrelated engine errors | #139 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -198,6 +199,13 @@ Lima forwarder. After loading the image, CI runs
 fails immediately. T68 runs the same probe in every engine environment;
 the existing nested pull, Compose and BuildKit tests exercise the deeper
 container networks. These public DNS settings apply only to hosted CI VMs.
+
+T69 runs [test_teardown.sh](../test_teardown.sh) with a stub engine. It
+reproduces Docker returning a missing exit event before removal finishes.
+T66 retries only that error and removal already in progress, up to six
+attempts with one second between attempts. It requires successful removal
+before testing storage reuse. Persistent and unrelated errors still fail;
+the outer test timeout also bounds a hung engine command.
 
 T27 runs containers inside the sandbox through nested podman. It starts
 with a stale API socket and checks readiness through `sagent-run`, then

@@ -33,6 +33,29 @@ if [ -n "$SAGENT_TEST_SHARD" ]; then
     fi
 fi
 
+# Docker can report a missing exit event after killing the container, then
+# finish deleting it moments later. Never reuse its storage before rm succeeds.
+remove_test_container() {
+    local engine="$1" container="$2"
+    local attempt output rc
+    for attempt in 1 2 3 4 5 6; do
+        if output=$("$engine" rm -f "$container" 2>&1); then
+            return 0
+        else
+            rc=$?
+        fi
+        printf '%s\n' "$output" >&2
+        case "$output" in
+            *"did not receive an exit event"* | *"removal"*"already in progress"*) ;;
+            *) return "$rc" ;;
+        esac
+        [ "$attempt" -lt 6 ] || break
+        sleep 1
+    done
+    printf 'Test container %s was not removed after six attempts\n' "$container" >&2
+    return "$rc"
+}
+
 terminate_process_tree() {
     local pid="$1"
     local children
