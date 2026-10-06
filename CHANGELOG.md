@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.6](https://github.com/e6qu/sclaude/compare/v3.2.5...v3.2.6) (2026-10-06)
+
+
+### Bug Fixes
+
+* allow slow cold startup of nested BuildKit ([#119](https://github.com/e6qu/sclaude/issues/119)) ([dce0ba5](https://github.com/e6qu/sclaude/commit/dce0ba5a333e4a6f93f65da822025bcbdd253192))
+
 ## [3.2.5](https://github.com/e6qu/sclaude/compare/v3.2.4...v3.2.5) (2026-10-06)
 
 
