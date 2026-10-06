@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.7](https://github.com/e6qu/sclaude/compare/v3.2.6...v3.2.7) (2026-10-06)
+
+
+### Bug Fixes
+
+* reap session processes and defer nested BuildKit ([#121](https://github.com/e6qu/sclaude/issues/121)) ([d3072ec](https://github.com/e6qu/sclaude/commit/d3072ec2443ebb2ae56b5851fd0deac039399132))
+
 ## [3.2.6](https://github.com/e6qu/sclaude/compare/v3.2.5...v3.2.6) (2026-10-06)
 
 
