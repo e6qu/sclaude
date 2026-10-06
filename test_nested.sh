@@ -61,7 +61,9 @@ cp /bin/true ./exec-check
 legacy="$HOME/.local/share/containers/storage/volumes/legacy-check/_data"
 mkdir -p "$legacy"
 printf preserved > "$legacy/value"
-podman info --format "{{.Store.GraphRoot}}" | grep -x "$(cat /run/sagent/storage-root)/storage-multiuser" >/dev/null
+# Complete lazy Podman initialization before reading the marker it creates.
+graphroot=$(podman info --format "{{.Store.GraphRoot}}")
+[ "$graphroot" = "$(cat /run/sagent/storage-root)/storage-multiuser" ]
 # Consume the full output: quiet grep can close early and SIGPIPE Buildx
 # while it is printing its remaining node details under pipefail.
 docker buildx inspect --bootstrap | grep -E '^Driver: +remote$' >/dev/null

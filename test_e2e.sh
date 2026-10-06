@@ -1090,9 +1090,9 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
             # Crash the API with a stale socket while delaying its supervisor.
             # The next Compose call must wait for recovery, not just see -S.
             # Rootless Podman can reexec: kill both parent and child processes.
-            api_pid=\$(pgrep -f \"^podman --log-level=error system service\")
+            api_pid=\$(pgrep -f \"^(/usr/bin/)?podman --log-level=error system service\") || fail \"find API service\"
             [ -n \"\$api_pid\" ] || fail \"find API service\"
-            api_parent=\$(pgrep -of \"^podman --log-level=error system service\")
+            api_parent=\$(pgrep -of \"^(/usr/bin/)?podman --log-level=error system service\") || fail \"find API service parent\"
             supervisor=\$(ps -o ppid= -p \"\$api_parent\" | tr -d \" \")
             kill -STOP \"\$supervisor\"
             kill -KILL \$api_pid

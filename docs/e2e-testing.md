@@ -56,7 +56,7 @@
 | T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
-| T27: Nested containers | `--docker` mode: nested pull/run/build with the wrapper's rootless cache mapping; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; API and BuildKit failure logs; `--no-docker` diagnostic | #115, #116, #118, #120, #127, #131 |
+| T27: Nested containers | `--docker` mode: nested pull/run/build with the wrapper's rootless cache mapping; API startup with a stale socket; Compose service DNS, published ports, recovery after an API crash, standalone Compose and teardown; API and BuildKit failure logs; `--no-docker` diagnostic | #115, #116, #118, #120, #127, #131, #135 |
 | T28: Config file | Config sourced at startup; env vars take precedence | -- |
 | T29: Browser-open shim | `xdg-open`/`$BROWSER` render clickable terminal hyperlinks; Claude Code's localhost-callback sign-in URL is rewritten to the manual-code redirect with a paste note, other URLs untouched | #78 |
 | T30: Isolation assertions | No engine socket, no cross-tool secrets, no host-sibling leakage | -- |
@@ -99,7 +99,7 @@
 | T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor; a stale socket fails at the startup deadline and prints the daemon log | #131 |
 | T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
 | T64: Shell lookup | Both wrappers preserve engine lookup errors and their exit status, consume large container listings without SIGPIPE, and select a fresh shell when the listing is empty | #133 |
-| T65: Nested storage leases | Real file locks allocate distinct slots for concurrent sandboxes, isolate projects, reuse released slots, retain old data and fail closed after lease loss | #134 |
+| T65: Nested storage leases | Real file locks allocate distinct slots for concurrent sandboxes, isolate projects, reuse released slots, retain old data and fail closed after lease loss; cold storage assertion ordering and both API process spellings | #134, #135 |
 | T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data | #134 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
@@ -200,6 +200,9 @@ run directly with `bash test_buildkit.sh`. It checks both wrappers.
 
 T65 runs [test_storage.sh](../test_storage.sh) without a container engine.
 It exercises the generated storage allocator with real filesystem locks.
+It also runs T60's storage assertion against a delayed first Podman call
+and T27's API lookup against both `podman` and `/usr/bin/podman` command
+lines, without starting either engine.
 T66 runs [test_concurrent.sh](../test_concurrent.sh) against two live
 sandboxes sharing volumes, including identical Compose names and a sandbox
 restart. Its temporary volumes are removed at the end of the test.
