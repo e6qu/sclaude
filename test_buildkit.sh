@@ -21,6 +21,9 @@ PY
 cat > "$tmp/bin/buildctl" <<'SH'
 #!/bin/sh
 [ "$BUILDKIT_TEST_MODE" != down ] || exit 1
+if [ "$BUILDKIT_TEST_MODE" = cold ]; then
+    [ "$(cat "$BUILDKIT_TEST_ROOT/clock")" -ge 1090 ] || exit 1
+fi
 sleep "$BUILDKIT_TEST_DELAY"
 SH
 cat > "$tmp/bin/flock" <<'SH'
@@ -35,7 +38,7 @@ cat > "$tmp/bin/date" <<'SH'
 #!/bin/sh
 n=$(cat "$BUILDKIT_TEST_ROOT/clock" 2>/dev/null || echo 1000)
 printf '%s\n' "$n"
-printf '%s\n' "$((n + 60))" > "$BUILDKIT_TEST_ROOT/clock"
+printf '%s\n' "$((n + ${BUILDKIT_TEST_CLOCK_STEP:-60}))" > "$BUILDKIT_TEST_ROOT/clock"
 SH
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
@@ -77,6 +80,11 @@ PY
         [ ! -e "$tmp/supervisor-started" ]
         grep -F /tmp/sagent-buildx.lock "$tmp/flock-calls" >/dev/null
     done
+    # Colima's cold worker discovery took 78 seconds before the server
+    # listened. Advance a virtual clock to model a 90-second cold start.
+    rm -f "$tmp/flock-calls" "$tmp/supervisor-started" "$tmp/clock"
+    BUILDKIT_TEST_MODE=cold BUILDKIT_TEST_DELAY=0 BUILDKIT_TEST_CLOCK_STEP=30 sh "$tmp/helper"
+    grep -F /tmp/sagent-buildx.lock "$tmp/flock-calls" >/dev/null
     # A stale socket is not readiness. Expire the startup deadline using
     # a fake clock, and retain the daemon's failure reason in stderr.
     rm -f "$tmp/flock-calls" "$tmp/supervisor-started" "$tmp/clock"
@@ -90,5 +98,5 @@ PY
     # The supervisor is asynchronous; give the stub time to record its start.
     for _ in $(seq 1 20); do [ -e "$tmp/supervisor-started" ] && break; sleep 0.05; done
     [ -e "$tmp/supervisor-started" ]
-    printf '%s: fast/slow healthy replies and stale socket checks passed\n' "$(basename "$wrapper")"
+    printf '%s: healthy replies, slow cold startup and stale socket checks passed\n' "$(basename "$wrapper")"
 done
