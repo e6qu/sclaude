@@ -49,6 +49,14 @@ Startup and the `docker` launcher wait for an API response, including when a
 dead service leaves a socket file behind. A supervisor restarts the service
 if it exits.
 
+Nested storage is reserved per project and sandbox. Different projects use
+different stores. Concurrent sandboxes in the same project reserve separate
+numbered slots, so their daemons, containers, images and Compose volumes do
+not collide. The lowest available slot is reused on the next start, keeping
+its images, build cache and named-volume data. Concurrent slots have their
+own data; data written in one slot is not copied to another. Bind-mounted
+project data still follows the project's host files.
+
 If Compose cannot connect, run these inside the sandbox:
 
 ```bash
@@ -80,8 +88,10 @@ The service starts with the sandbox and restarts if it exits. Its log is
 `/tmp/sagent-buildkit.log`. Readiness probes allow five seconds per RPC,
 with a 60-second startup deadline, so a busy VM can answer without being
 mistaken for a dead service. Startup failures print the last 40 log lines.
-The image sets `DOCKER_BUILDKIT=1` and
-`BUILDX_BUILDER=sagent`. `podman build` still uses Podman's own builder.
+The image sets `DOCKER_BUILDKIT=1` and `BUILDX_BUILDER=sagent`.
+`BUILDX_CONFIG=/run/buildkit/buildx` keeps builder definitions and client
+state private to this sandbox; Docker credentials remain in the home
+directory. `podman build` still uses Podman's own builder.
 
 Nested containers can switch to other UIDs, including apt's `_apt` user
 and PostgreSQL's UID 999. A nested image still needs its own dependencies:
@@ -109,14 +119,30 @@ image, starts PostgreSQL and a web service, and runs Chromium against it.
 ### Upgrading nested storage
 
 Earlier releases flattened image ownership into a single UID. Those layers
-cannot be repaired just by changing the UID map. New runs use
-`~/.local/share/containers/storage-multiuser`; the previous
+cannot be repaired just by changing the UID map. The first multi-UID layout
+used `~/.local/share/containers/storage-multiuser`; the previous
 `~/.local/share/containers/storage` directory is retained in the same volume.
+The concurrent-sandbox fix puts new stores below
+`~/.local/share/containers/workspaces/<project-hash>/<slot>/`. The hash
+identifies the physical workspace path; a slot is held until that sandbox
+exits, including across daemon restarts. `/run/sagent/storage-root` records
+the selected directory. Podman's store is its `storage-multiuser` child and
+BuildKit's cache is its `buildkit` child. Existing top-level `storage`,
+`storage-multiuser` and `buildkit` directories remain untouched, allowing
+an older sandbox to finish without its data being moved underneath it.
+
 Images must be pulled or built again, and Compose recreates its containers.
 Before recreating a database, recover any needed named-volume data from
 the old store's `volumes/<name>/_data` directory into the new volume, with
 ownership appropriate for that image. Bind-mounted project data is unchanged.
 Do not delete the old store until any needed data has been recovered.
+
+For data from a release with multiple UIDs, use the previous top-level
+`storage-multiuser/volumes/<name>/_data` directory instead. Stop the old
+service before copying database files, preserve their ownership, and copy
+into the corresponding named volume in the selected new store. Do not
+remove BuildKit lock files while another sandbox holds them; it needs
+exclusive access to its own cache.
 
 ## Builds
 

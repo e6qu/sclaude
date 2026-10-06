@@ -99,6 +99,8 @@
 | T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor; a stale socket fails at the startup deadline and prints the daemon log | #131 |
 | T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
 | T64: Shell lookup | Both wrappers preserve engine lookup errors and their exit status, consume large container listings without SIGPIPE, and select a fresh shell when the listing is empty | #133 |
+| T65: Nested storage leases | Real file locks allocate distinct slots for concurrent sandboxes, isolate projects, reuse released slots, retain old data and fail closed after lease loss | #134 |
+| T66: Concurrent nested engines | Two live sandboxes share home and cache volumes; identical image tags and Compose names remain isolated, daemon restarts retain the lease, and a new sandbox reuses its cache and named-volume data | #134 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -195,6 +197,12 @@ Failures include both the API and BuildKit service logs.
 T62 runs [test_buildkit.sh](../test_buildkit.sh) with stubbed RPCs and a
 temporary Unix socket. It needs no container engine or daemon and can also
 run directly with `bash test_buildkit.sh`. It checks both wrappers.
+
+T65 runs [test_storage.sh](../test_storage.sh) without a container engine.
+It exercises the generated storage allocator with real filesystem locks.
+T66 runs [test_concurrent.sh](../test_concurrent.sh) against two live
+sandboxes sharing volumes, including identical Compose names and a sandbox
+restart. Its temporary volumes are removed at the end of the test.
 
 T60 runs [test_nested.sh](../test_nested.sh) inside the sandbox with its
 normal nested-container restrictions. It builds and runs real PostgreSQL

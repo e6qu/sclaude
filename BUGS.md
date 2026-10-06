@@ -134,6 +134,7 @@ rewrites are pruned, leaving gaps. Tests and docs reference these numbers.
 | 132 | T60's last-40-lines daemon log lost the fatal header of a long Go dump during BuildKit export; the harness discarded the complete capture, leaving the exit cause unknown | Preserve failed-test captures as CI artifacts, include the full BuildKit log, and repeat the latest fatal header with PID/memory counters in the console tail. T63 covers long dumps, supervisor restarts, missing counters and failed-test capture |
 
 | 133 | Shell lookup discarded engine errors and could exit under pipefail when head closed a large listing; T43 deleted captured shell stderr during cleanup | Preserve lookup errors and status, select the first container after consuming the listing, and print failed shell stderr before cleanup. T64 covers both wrappers; T63 checks fresh and attached shell failure capture |
+| 134 | Concurrent sandboxes shared BuildKit's persistent root but had private supervisor locks, so the second daemon failed with "another instance running"; Podman's runtime database and Buildx client state were also shared across sandboxes | Reserve persistent per-project storage slots with a lifetime file lock, select the slot for both Podman and BuildKit, and keep Buildx state in the sandbox runtime directory. Retain old stores for recovery. T65 covers concurrent allocation, reuse and legacy preservation; T66 runs two sandboxes with identical image tags and Compose names, restarts daemons, and verifies persistent slot reuse |
 
 ## False positives
 

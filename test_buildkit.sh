@@ -39,6 +39,7 @@ printf '%s\n' "$((n + 60))" > "$BUILDKIT_TEST_ROOT/clock"
 SH
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
+printf '%s\n' "$tmp/storage" > "$tmp/storage-root"
 
 for wrapper in "$@"; do
     # Execute the printf block that writes the image helper. Relocate its
@@ -60,6 +61,8 @@ assert block.endswith('\\')
 helper = subprocess.check_output(['bash', '-c', block[:-1] + '\n']).decode()
 assert helper.count('[ -c /dev/fuse ] || exit 1') == 1
 helper = helper.replace('[ -c /dev/fuse ] || exit 1', ': # host-only test')
+helper = helper.replace('/usr/local/bin/sagent-container-storage || exit 1', ': # storage lease tested by T65')
+helper = helper.replace('/run/sagent/storage-root', str(root / 'storage-root'))
 helper = helper.replace('sock=/run/buildkit/buildkitd.sock', 'sock=' + shlex.quote(str(root / 'socket')))
 helper = helper.replace('/tmp/sagent-buildkit.log', str(root / 'buildkit.log'))
 (root / 'helper').write_text(helper)
