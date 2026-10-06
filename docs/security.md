@@ -111,7 +111,9 @@ or a socket inside a mounted directory, is a separate exposure.
 
 Container tooling inside the sandbox is on by default. It runs through a
 rootless podman inside the container, with images in the
-`sagent-containers` volume. The mode adds no capabilities beyond the set
+`sagent-containers` volume, with separately leased stores for each active
+sandbox. Its API and BuildKit socket reach only that sandbox's nested
+engines. The mode adds no capabilities beyond the set
 above. `newuidmap` and `newgidmap` carry only `SETUID` and `SETGID` file
 capabilities respectively, without setuid-root bits. They delegate sandbox
 IDs 1 through 65535, excluding the agent's own ID. UID 0 is not delegated;

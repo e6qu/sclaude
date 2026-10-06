@@ -2856,4 +2856,9 @@ run_test "T63: nested daemon failure diagnostics" bash "$SCRIPT_DIR/test_diagnos
 
 run_test "T64: sandbox shell lookup errors and large listings" bash "$SCRIPT_DIR/test_shell.sh" "$SCLAUDE" "$SCODEX"
 
+# Put the live regression before the standalone one to balance macOS shards.
+run_test "T66: concurrent sandbox builds and Compose isolation" bash "$SCRIPT_DIR/test_concurrent.sh"
+
+run_test "T65: concurrent nested storage leases" bash "$SCRIPT_DIR/test_storage.sh" "$SCLAUDE" "$SCODEX"
+
 print_results

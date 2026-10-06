@@ -108,6 +108,8 @@ Containers the agent starts run in the sandbox, on a podman of its own, not
 on your engine. `docker`, `docker compose` and anything that talks to
 `/var/run/docker.sock` work there. Their images are kept in a volume.
 Buildx and Compose builds use the sandbox's own rootless BuildKit service.
+Concurrent sandboxes reserve separate persistent stores, including when
+they run in the same project. Earlier nested stores are retained for recovery.
 `--no-docker` turns this off. See [nested builds and browser tests](docs/image.md#nested-builds-and-browser-tests)
 for dependencies and upgrading older nested storage.
 

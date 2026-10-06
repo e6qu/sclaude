@@ -879,7 +879,7 @@ RUN set -eux; \
     chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap; \
     setcap cap_setuid=ep /usr/bin/newuidmap; \
     setcap cap_setgid=ep /usr/bin/newgidmap; \
-    install -d -o agent -m 0755 /run/podman /run/buildkit; \
+    install -d -o agent -m 0755 /run/podman /run/buildkit /run/sagent; \
     ln -sfn /run/podman/podman.sock /var/run/docker.sock; \
     rm -f /usr/local/bin/docker /usr/local/bin/docker-compose; \
     mkdir -p /usr/local/lib/sagent; \
@@ -955,13 +955,78 @@ RUN set -eux; \
         '    time.sleep(0.5)' \
         > /usr/local/lib/sagent/healthchecks.py; \
     printf '%s\n' \
+        'import fcntl' \
+        'import hashlib' \
+        'import itertools' \
+        'import json' \
+        'import os' \
+        'from pathlib import Path' \
+        'import time' \
+        '' \
+        '# The volume is shared; this runtime directory belongs only to this sandbox.' \
+        'base = Path.home() / '"'"'.local/share/containers'"'"'' \
+        'runtime = Path('"'"'/run/sagent'"'"')' \
+        'scope = os.environ.get('"'"'SAGENT_STORAGE_WORKSPACE'"'"') or os.getcwd()' \
+        'workspace = hashlib.sha256(os.fsencode(scope)).hexdigest()' \
+        'for number in itertools.count():' \
+        '    root = base / '"'"'workspaces'"'"' / workspace / str(number)' \
+        '    root.mkdir(parents=True, exist_ok=True)' \
+        '    with (root / '"'"'.lease'"'"').open('"'"'a'"'"') as lease:' \
+        '        try:' \
+        '            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)' \
+        '        except BlockingIOError:' \
+        '            continue' \
+        '        config = '"'"'[storage]\ndriver = "overlay"\ngraphroot = %s\n'"'"' % json.dumps(str(root / '"'"'storage-multiuser'"'"'))' \
+        '        (runtime / '"'"'storage.conf'"'"').write_text(config)' \
+        '        (runtime / '"'"'storage.pid'"'"').write_text(str(os.getpid()))' \
+        '        # Publish last. Callers must never see a root without its config/lease.' \
+        '        pending = runtime / '"'"'storage-root.tmp'"'"'' \
+        '        pending.write_text(str(root))' \
+        '        pending.replace(runtime / '"'"'storage-root'"'"')' \
+        '        # Keep the lease across daemon restarts and idle periods. The outer' \
+        '        # engine kills this process when the sandbox exits, releasing flock.' \
+        '        while True:' \
+        '            time.sleep(3600)' \
+        > /usr/local/lib/sagent/container-storage.py; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# Reserve persistent storage before either nested engine accesses it.' \
+        'ready() {' \
+        '    [ -s /run/sagent/storage-root ] &&' \
+        '        kill -0 "$(cat /run/sagent/storage.pid)" 2>/dev/null' \
+        '}' \
+        'if [ -e /run/sagent/storage-root ]; then' \
+        '    ready && exit 0' \
+        '    echo '"'"'[sagent] Nested storage lease exited; restart this sandbox.'"'"' >&2' \
+        '    exit 1' \
+        'fi' \
+        'nohup flock -n /tmp/sagent-container-storage.lock /usr/bin/python3 /usr/local/lib/sagent/container-storage.py >>/tmp/sagent-container-storage.log 2>&1 </dev/null &' \
+        'i=0' \
+        'while [ "$i" -lt 100 ]; do' \
+        '    if ready; then' \
+        '        if [ -d "$HOME/.local/share/containers/storage" ] || [ -d "$HOME/.local/share/containers/storage-multiuser" ]; then' \
+        '            echo '"'"'[sagent] Nested containers now use per-project storage. Earlier images and volume data are retained in ~/.local/share/containers; see docs/image.md for recovery.'"'"' >&2' \
+        '        fi' \
+        '        exit 0' \
+        '    fi' \
+        '    sleep 0.1' \
+        '    i=$((i + 1))' \
+        'done' \
+        'echo '"'"'[sagent] Could not reserve nested storage; see /tmp/sagent-container-storage.log'"'"' >&2' \
+        'tail -n 20 /tmp/sagent-container-storage.log >&2 2>/dev/null || true' \
+        'exit 1' \
+        > /usr/local/bin/sagent-container-storage; \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '/usr/local/bin/sagent-container-storage || exit 1' \
+        'exec /usr/bin/podman "$@"' \
+        > /usr/local/bin/podman; \
+    printf '%s\n' \
         '#!/bin/sh' \
         '# sagent-docker-api: podman'"'"'s Docker API on /run/podman/podman.sock, kept' \
         '# running by one supervisor (the lock keeps it to one).' \
         'sock=/run/podman/podman.sock' \
-        'if [ -d "$HOME/.local/share/containers/storage" ] && [ ! -d "$HOME/.local/share/containers/storage-multiuser" ]; then' \
-        '    echo "[sagent] Nested containers now use multiple UIDs. Starting a new store; previous images and volume data are retained in $HOME/.local/share/containers/storage. See docs/image.md for migration." >&2' \
-        'fi' \
+        '/usr/local/bin/sagent-container-storage || exit 1' \
         '[ -c /dev/fuse ] || exit 1' \
         '# A dead service can leave a socket behind; test HTTP, not just -S.' \
         'api_ready() {' \
@@ -988,6 +1053,8 @@ RUN set -eux; \
         '#!/bin/sh' \
         '# Rootless BuildKit shares only the outer sandbox'"'"'s PID/network namespaces.' \
         '[ -c /dev/fuse ] || exit 1' \
+        '/usr/local/bin/sagent-container-storage || exit 1' \
+        'root=$(cat /run/sagent/storage-root) || exit 1' \
         sock=/run/buildkit/buildkitd.sock \
         'ready() {' \
         '    [ -S "$sock" ] || return 1' \
@@ -1001,11 +1068,11 @@ RUN set -eux; \
         '        while :; do' \
         '            rm -f "$1"' \
         '            XDG_RUNTIME_DIR=/run/buildkit rootlesskit buildkitd \' \
-        '                --addr "unix://$1" --root "$HOME/.local/share/containers/buildkit" \' \
+        '                --addr "unix://$1" --root "$2/buildkit" \' \
         '                --oci-worker-no-process-sandbox --oci-worker-snapshotter=fuse-overlayfs \' \
         '                --oci-worker-binary=/usr/local/bin/buildkit-runc --containerd-worker=false' \
         '            sleep 2' \
-        '        done'"'"' _ "$sock" >>/tmp/sagent-buildkit.log 2>&1 </dev/null &' \
+        '        done'"'"' _ "$sock" "$root" >>/tmp/sagent-buildkit.log 2>&1 </dev/null &' \
         '    while ! ready; do' \
         '        if [ "$(date +%s)" -ge "$deadline" ]; then' \
         '            echo "[sagent] BuildKit did not become ready; see /tmp/sagent-buildkit.log" >&2' \
@@ -1015,7 +1082,7 @@ RUN set -eux; \
         '        sleep 0.2' \
         '    done' \
         fi \
-        '# Configuration persists in the home volume. Serialize first-use creation.' \
+        '# Buildx configuration belongs to this sandbox. Serialize first-use creation.' \
         'flock /tmp/sagent-buildx.lock sh -ec '"'"'' \
         '    bx=/usr/libexec/docker/cli-plugins/docker-buildx' \
         '    "$bx" inspect sagent >/dev/null 2>&1 ||' \
@@ -1145,7 +1212,7 @@ RUN set -eux; \
         'done' \
         'exit "$rc"' \
         > /usr/local/lib/sagent/podman/crun; \
-    chmod 0755 /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/sagent-buildkit /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark /usr/local/lib/sagent/podman/crun; \
+    chmod 0755 /usr/local/bin/podman /usr/local/bin/sagent-container-storage /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/sagent-buildkit /usr/local/bin/sagent-docker-api /usr/local/lib/sagent/podman/netavark /usr/local/lib/sagent/podman/crun; \
     printf '[containers]\ndefault_sysctls = []\npidns = "host"\n[engine]\nevents_logger = "file"\ncgroup_manager = "cgroupfs"\ncompose_warning_logs = false\nhelper_binaries_dir = ["/usr/local/lib/sagent/podman", "/usr/local/libexec/podman", "/usr/local/lib/podman", "/usr/libexec/podman", "/usr/lib/podman"]\nruntime = "crun"\n[engine.runtimes]\ncrun = ["/usr/local/lib/sagent/podman/crun"]\n' > /etc/containers/containers.conf; \
     printf '[storage]\ndriver = "overlay"\ngraphroot = "/home/agent/.local/share/containers/storage-multiuser"\n' > /etc/containers/storage.conf
 
@@ -1545,10 +1612,11 @@ ENV LANG=C.UTF-8
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # The nested podman's Docker API (sagent-docker-api). podman compose hands this
 # to its compose provider instead of looking for its own socket.
-ENV CONTAINERS_STORAGE_CONF=/etc/containers/storage.conf
+ENV CONTAINERS_STORAGE_CONF=/run/sagent/storage.conf
 ENV DOCKER_HOST=unix:///run/podman/podman.sock
 ENV DOCKER_BUILDKIT=1
 ENV BUILDX_BUILDER=sagent
+ENV BUILDX_CONFIG=/run/buildkit/buildx
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
 # Persistent, user-writable install locations first (npm globals, pip user
 # scripts, cargo install, go install), then the system-wide toolchains.
@@ -4378,6 +4446,7 @@ run_tool() {
         -v "$CONTAINERS_VOLUME:/home/agent/.local/share/containers:rw" \
         -v "$APT_CACHE_VOLUME:/var/cache/apt:rw" \
         -v "$APT_LISTS_VOLUME:/var/lib/apt/lists:rw" \
+        -e "SAGENT_STORAGE_WORKSPACE=$WORKSPACE_HOST_PATH" \
         -w "$WORKSPACE_PATH" \
         --label "sagent.workspace=$WORKSPACE_PATH" \
         --label "sagent.tool=$SCRIPT_NAME" \
