@@ -1,0 +1,19 @@
+# Fresh hosted runners only. VM DNS and Docker container DNS are separate.
+cpu: 4
+memory: 10
+disk: 30
+rootDisk: 20
+arch: x86_64
+runtime: docker
+vmType: vz
+mountType: virtiofs
+sshConfig: true
+binfmt: true
+# An empty list retains Colima's default home-directory mount.
+mounts: []
+network:
+  mode: shared
+  gatewayAddress: 192.168.5.2
+  dns: [1.1.1.1, 8.8.8.8]
+docker:
+  dns: [1.1.1.1, 8.8.8.8]
