@@ -86,8 +86,9 @@ This supports `depends_on: condition: service_healthy` and `compose up --wait`.
 
 The service starts with the sandbox and restarts if it exits. Its log is
 `/tmp/sagent-buildkit.log`. Readiness probes allow five seconds per RPC,
-with a 60-second startup deadline, so a busy VM can answer without being
-mistaken for a dead service. Startup failures print the last 40 log lines.
+with a 120-second startup deadline. This allows cold worker discovery on a
+slow VM to finish before the daemon is treated as unavailable. Startup
+failures print the last 40 log lines.
 The image sets `DOCKER_BUILDKIT=1` and `BUILDX_BUILDER=sagent`.
 `BUILDX_CONFIG=/run/buildkit/buildx` keeps builder definitions and client
 state private to this sandbox; Docker credentials remain in the home

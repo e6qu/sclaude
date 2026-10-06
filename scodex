@@ -1062,7 +1062,8 @@ RUN set -eux; \
         '}' \
         '# A busy VM can take more than half a second to answer a healthy RPC.' \
         '# Bound the whole startup wait separately from each readiness probe.' \
-        'deadline=$(( $(date +%s) + 60 ))' \
+        '# Cold worker discovery on a slow VM can take more than a minute.' \
+        'deadline=$(( $(date +%s) + 120 ))' \
         'if ! ready; then' \
         '    nohup flock -n /tmp/sagent-buildkit.lock sh -c '"'"'' \
         '        while :; do' \
