@@ -84,8 +84,12 @@ systemd user manager. The scheduler calls `podman healthcheck run`; Podman
 handles each check's timeout, start period, retries and health status.
 This supports `depends_on: condition: service_healthy` and `compose up --wait`.
 
-The service starts with the sandbox and restarts if it exits. Its log is
-`/tmp/sagent-buildkit.log`. Readiness probes allow five seconds per RPC,
+BuildKit starts on the first `docker build` (also `docker image build`),
+`docker buildx`, `docker builder`
+or `docker compose` command and restarts if it exits. Shell sessions and
+`docker run`, `docker ps` and `docker info` do not start BuildKit. The Podman
+API stays available from session startup for SDKs and Testcontainers. BuildKit
+logs to `/tmp/sagent-buildkit.log`. Readiness probes allow five seconds per RPC,
 with a 120-second startup deadline. This allows cold worker discovery on a
 slow VM to finish before the daemon is treated as unavailable. Startup
 failures print the last 40 log lines.

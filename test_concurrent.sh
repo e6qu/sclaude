@@ -9,15 +9,16 @@ store="$name-store"
 first="$name-first"
 second="$name-second"
 third="$name-restart"
+other="$name-other-project"
 cleanup() {
     rc=$?
     if [ "$rc" -ne 0 ]; then
-        for container in "$first" "$second" "$third"; do
+        for container in "$first" "$second" "$third" "$other"; do
             "$ENGINE" logs "$container" >&2 2>/dev/null || true
             "$ENGINE" exec "$container" sh -c 'cat /tmp/sagent-container-storage.log /tmp/sagent-buildkit.log /tmp/sagent-docker-api.log' >&2 2>/dev/null || true
         done
     fi
-    "$ENGINE" rm -f "$first" "$second" "$third" >/dev/null 2>&1 || true
+    "$ENGINE" rm -f "$first" "$second" "$third" "$other" >/dev/null 2>&1 || true
     "$ENGINE" volume rm "$home" "$store" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -28,9 +29,9 @@ trap cleanup EXIT
     "$SUITE_IMG" sh -c 'chown "$(id -u agent):$(id -g agent)" /home/agent /home/agent/.local/share/containers'
 start() {
     # shellcheck disable=SC2086
-    "$ENGINE" run -d --name "$1" ${SAGENT_TEST_USERNS:-} \
+    "$ENGINE" run -d --init --ulimit nproc=-1:-1 --name "$1" ${SAGENT_TEST_USERNS:-} \
         -v "$home:/home/agent" -v "$store:/home/agent/.local/share/containers" \
-        -e SAGENT_STORAGE_WORKSPACE=/same/project \
+        -e "SAGENT_STORAGE_WORKSPACE=${2:-/same/project}" \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
         --security-opt label=disable --cap-drop=ALL \
@@ -46,12 +47,25 @@ ready() {
 # Start both before either is queried: this exercises first-use contention.
 start "$first"
 start "$second"
+start "$other" /another/project
+# Another directory should stay lightweight until it actually builds. These
+# commands also create short-lived health scheduler lock attempts; init must
+# reap them instead of leaving the session's PID budget to fill with zombies.
+"$ENGINE" exec "$other" sh -ec '
+    sagent-docker-api
+    for _ in $(seq 1 30); do docker ps >/dev/null; done
+    [ ! -S /run/buildkit/buildkitd.sock ]
+    sleep 0.1
+    ps -eo stat= | awk "/^Z/ {exit 1}"
+'
 ready "$first"
 ready "$second"
 root1=$("$ENGINE" exec "$first" cat /run/sagent/storage-root)
 root2=$("$ENGINE" exec "$second" cat /run/sagent/storage-root)
 [ "$root1" != "$root2" ]
 [ "${root1%/*}" = "${root2%/*}" ]
+other_root=$("$ENGINE" exec "$other" cat /run/sagent/storage-root)
+[ "${other_root%/*}" != "${root1%/*}" ]
 for container in "$first" "$second"; do
     root=$("$ENGINE" exec "$container" cat /run/sagent/storage-root)
     [ "$("$ENGINE" exec "$container" podman info --format '{{.Store.GraphRoot}}')" = "$root/storage-multiuser" ]
@@ -91,4 +105,4 @@ ready "$third"
 [ "$("$ENGINE" exec "$third" docker run --rm concurrent-check cat /marker)" = first ]
 [ "$("$ENGINE" exec "$third" docker run --rm -v identical-project_data:/data concurrent-check cat /data/marker)" = first ]
 check_marker "$second" second
-printf '%s\n' 'Concurrent builds, identical Compose projects, daemon restart and persistent slot reuse passed'
+printf '%s\n' 'Concurrent builds, another project without BuildKit, daemon restart and persistent slot reuse passed'

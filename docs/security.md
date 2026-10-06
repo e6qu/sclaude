@@ -79,6 +79,25 @@ process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
 
+Sessions run with the engine's init process to reap orphaned children from
+tools, detached test processes and nested engine helpers. Exited children
+otherwise remain as zombies and consume process slots. The limit counts
+threads and includes nested containers. The wrapper disables the inherited
+per-UID `nproc` limit; Linux counts it across containers using the same host
+UID. The per-sandbox cgroup PID limit remains in place, along with the VM's
+own limits.
+
+Concurrent sessions share the VM's CPU and RAM. The limits below do not
+reserve or divide that capacity among sessions. BuildKit starts only when a
+build-capable Docker command needs it, reducing overhead for sessions that
+edit files or run tests directly. Started services remain alive until the
+session ends; this does not evict active containers or discard build state.
+An 8-GiB VM has less than 82 MiB per session at 100 sessions, before VM and
+engine overhead. Support for 100 sessions running agents, tests and browsers
+must be measured with the actual workloads; heavy tasks need a concurrency
+budget or more memory. Dividing RAM into 100 hard limits would instead kill
+legitimate tests and pre-commit processes.
+
 The wrapper caps CPU and memory limits at the capacity reported by Docker
 or Podman. On macOS that is the engine VM's capacity. For example, a request
 for 4 CPUs and 8 GiB on a 2-CPU, 3-GiB engine runs with 2 CPUs and 3 GiB.
