@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.5](https://github.com/e6qu/sclaude/compare/v3.2.4...v3.2.5) (2026-10-06)
+
+
+### Bug Fixes
+
+* isolate nested engine storage for concurrent sandboxes ([#116](https://github.com/e6qu/sclaude/issues/116)) ([7c39d83](https://github.com/e6qu/sclaude/commit/7c39d83019a5b877d0c4aeaeadb9c299fc08a943))
+
 ## [3.2.4](https://github.com/e6qu/sclaude/compare/v3.2.3...v3.2.4) (2026-10-05)
 
 
