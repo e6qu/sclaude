@@ -6,6 +6,24 @@ work=$(mktemp -d /tmp/sagent-nested.XXXXXX)
 cd "$work"
 export COMPOSE_PROJECT_NAME=sagent-nested-check
 ssh_pid=""
+# A session can expire during slow VM I/O even though the build finishes
+# its layers. Give this fixed CI fixture one fresh session using that cache.
+# Keep both attempts visible and never retry a build or capture failure.
+build_nested_browser() {
+    local log="$1"
+    local -a status
+    if docker compose build browser 2>&1 | tee "$log"; then
+        return 0
+    else
+        status=("${PIPESTATUS[@]}")
+    fi
+    [ "${status[1]}" -eq 0 ] || return "${status[1]}"
+    if ! grep -Eq '^failed to solve: DeadlineExceeded: no active session for [^[:space:]]+: context deadline exceeded$' "$log"; then
+        return "${status[0]}"
+    fi
+    printf '\nBuildKit lost its session; retrying the browser fixture once with cached layers\n' >&2
+    docker compose build browser
+}
 # Keep the complete dump in the harness capture, then repeat a bounded
 # summary at the end so CI's console tail retains the reason for the exit.
 report_buildkit_failure() {
@@ -154,7 +172,7 @@ docker buildx build --platform linux/amd64,linux/arm64 --target probe \
     --secret id=token,src=token --ssh "default=$SSH_SOCKET" \
     --output type=oci,dest="$work/multiarch.tar" .
 tar -tf "$work/multiarch.tar" | grep -x index.json >/dev/null
-docker compose build browser
+build_nested_browser "$work/browser-build.log"
 docker compose up -d --wait --wait-timeout 90 db web
 docker compose exec -T --user root db sh -ec 'test "$(runuser -u _apt -- id -u)" = 42; apt-get update -qq'
 docker compose exec -T db sh -c 'test "$(id -u postgres)" = 999'

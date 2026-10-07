@@ -94,7 +94,7 @@
 | T57: Extra mounts at their own paths, read-only by default | `SAGENT_EXTRA_MOUNTS` entries mount read-only, or read-write with `:rw`; spaces and a trailing slash are dropped; `status` lists them; a relative path, a missing directory, `/`, a colon, the workspace, the drop folder and a repeated entry are refused; in a real run the read-only folder refuses writes and the read-write one takes them | -- |
 | T58: Engine recovery | Names a stopped engine; reports a lost session and resumes in a terminal, recalculating resource limits after restart | #117, #121 |
 | T59: Broken cached CLI | Removes a broken CLI from the npm volume so the image copy can run, or reports the failed removal | #119 |
-| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130 |
+| T60: Nested application workflow | Real Docker, Buildx and Compose builds with cache, secret and SSH mounts, multi-stage images and a multi-platform OCI export; PostgreSQL UID 999, automatic health checks and SQL; Playwright Chromium as UID 999 reaching a Compose service; executable temporary files and legacy storage retained | #122, #123, #124, #126, #128, #129, #130, #140 |
 | T61: Clipboard temporary directory failure | An unwritable cache or failed `mktemp` disables the bridge without registering the workspace for deletion, in both wrappers | #125 |
 | T62: BuildKit readiness | The generated helper accepts fast and one-second healthy replies without starting a duplicate supervisor, waits through a simulated 90-second cold startup, and rejects a stale socket at the bounded deadline with the daemon log | #131, #136 |
 | T63: Nested failure diagnostics | Long daemon dumps preserve their fatal header and resource counters in the console tail; complete failed-test output is retained when an artifact directory is configured; failed shell invocations retain stderr before cleanup | #132, #133 |
@@ -104,6 +104,7 @@
 | T67: Session processes | Both wrappers defer BuildKit until build-capable Docker commands, forward global options, request init and retain cgroup PID bounds without a shared-UID nproc ceiling; 256 orphaned tool children are reaped under a 64-task limit | #137 |
 | T68: Container DNS | Resolve ECR, npm and Ubuntu package hosts using the sandbox container's resolver, with a 30-second deadline per lookup | #138 |
 | T69: Container removal | Recover from delayed Docker exit notifications and removal already in progress, while preserving persistent failure and unrelated engine errors | #139 |
+| T70: Nested build session recovery | One fresh session recovers T60's browser build after a missing-session deadline; persistent session loss, build errors, other timeouts and output capture failures still fail | #140 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -230,6 +231,13 @@ T60 runs [test_nested.sh](../test_nested.sh) inside the sandbox with its
 normal nested-container restrictions. It builds and runs real PostgreSQL
 and Playwright services, so it needs registry, PyPI and browser-download
 network access. Browser dependencies are installed in the nested image.
+If BuildKit loses the browser build's client session before delivering the
+image, T60 retries that fixed build once using a fresh session and its
+existing layer cache. Both attempts remain in the test output. Only the
+exact missing-session deadline error permits a retry; all other errors and
+any second failure fail the test. The same test time budget covers both
+attempts. This does not change Docker commands run by users. T70 exercises
+the recovery helper without containers.
 `SAGENT_TEST_NESTED_TIMEOUT_SECONDS` gives T60 a separate time budget;
 it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 3600 seconds
 to cover cold dependency installation, image export/import and service startup

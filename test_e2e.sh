@@ -2867,4 +2867,6 @@ run_test "T68: container registry and package DNS" bash "$SCRIPT_DIR/test_dns.sh
 
 run_test "T69: delayed container exit notifications" bash "$SCRIPT_DIR/test_teardown.sh"
 
+run_test "T70: nested build session recovery" bash "$SCRIPT_DIR/test_nested_retry.sh"
+
 print_results
