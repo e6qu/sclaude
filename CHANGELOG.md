@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.8](https://github.com/e6qu/sclaude/compare/v3.2.7...v3.2.8) (2026-10-07)
+
+
+### Bug Fixes
+
+* ship sandbox init and raise process defaults to 4096 ([#128](https://github.com/e6qu/sclaude/issues/128)) ([0005b15](https://github.com/e6qu/sclaude/commit/0005b15ebeb67b7907a5c1311ad0404b102a652f))
+
 ## [3.2.7](https://github.com/e6qu/sclaude/compare/v3.2.6...v3.2.7) (2026-10-06)
 
 
