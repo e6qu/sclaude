@@ -32,7 +32,7 @@ trap cleanup EXIT
     "$SUITE_IMG" sh -c 'chown "$(id -u agent):$(id -g agent)" /home/agent /home/agent/.local/share/containers'
 start() {
     # shellcheck disable=SC2086
-    "$ENGINE" run -d --init --ulimit nproc=-1:-1 --name "$1" ${SAGENT_TEST_USERNS:-} \
+    "$ENGINE" run -d --ulimit nproc=-1:-1 --name "$1" ${SAGENT_TEST_USERNS:-} \
         -v "$home:/home/agent" -v "$store:/home/agent/.local/share/containers" \
         -e "SAGENT_STORAGE_WORKSPACE=${2:-/same/project}" \
         --device /dev/fuse --device /dev/net/tun \
@@ -40,7 +40,7 @@ start() {
         --security-opt label=disable --cap-drop=ALL \
         --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
         --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
-        --pids-limit=512 --memory=2g --cpus=2 \
+        --pids-limit=4096 --memory=2g --cpus=2 \
         --tmpfs /tmp:rw,nosuid,nodev,exec,size=256m \
         "$SUITE_IMG" sagent-run sleep infinity >/dev/null
 }

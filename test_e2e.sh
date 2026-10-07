@@ -1041,7 +1041,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
     # Podman. Preserve that mapping for both ownership setup and the test.
     "$ENGINE" run --rm $SAGENT_TEST_USERNS --user root -v sagent-containers$SAGENT_VOLUME_SUFFIX:/vol-containers "$IMG" \
         chown "$(id -u):$(id -g)" /vol-containers
-    "$ENGINE" run --rm --init --ulimit nproc=-1:-1 $SAGENT_TEST_USERNS \
+    "$ENGINE" run --rm --ulimit nproc=-1:-1 $SAGENT_TEST_USERNS \
         -v sagent-containers$SAGENT_VOLUME_SUFFIX:/home/agent/.local/share/containers:rw \
         --device /dev/fuse --device /dev/net/tun \
         --security-opt seccomp=unconfined \
@@ -1050,7 +1050,7 @@ run_test "T27: nested containers (--docker mode)" bash -ec '
         --cap-drop=ALL \
         --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
         --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
-        --pids-limit=512 \
+        --pids-limit=4096 \
         "$IMG" bash -c "
             set -e
             # On a failure, say which step and show the nested engine state.
@@ -2817,7 +2817,7 @@ run_test "T60: BuildKit, PostgreSQL and Playwright" bash -ec '
         --security-opt label=disable --cap-drop=ALL \
         --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
         --cap-add=SETGID --cap-add=SETUID --cap-add=SYS_CHROOT --cap-add=NET_BIND_SERVICE \
-        --pids-limit=512 --tmpfs /tmp:rw,nosuid,nodev,exec,size=1g \
+        --pids-limit=4096 --tmpfs /tmp:rw,nosuid,nodev,exec,size=1g \
         "$SUITE_IMG" bash -c "cat > /tmp/sagent-nested-test.sh; exec bash /tmp/sagent-nested-test.sh" < "$1"
 ' _ "$SCRIPT_DIR/test_nested.sh"
 TEST_TIMEOUT_SECONDS="$_t60_prev_timeout"

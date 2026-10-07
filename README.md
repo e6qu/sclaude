@@ -169,8 +169,8 @@ the settings file keeps your requested limits for future runs.
 |---|---|---|
 | `MEMORY_LIMIT` | Memory limit, a size like `16g` | `8g` |
 | `CPU_LIMIT` | CPU limit, a number | `4` |
-| `PIDS_LIMIT` | Process limit without nested containers | `100` |
-| `PIDS_LIMIT_NESTED` | Process limit with nested containers | `512` |
+| `PIDS_LIMIT` | Process and thread limit without nested containers | `4096` |
+| `PIDS_LIMIT_NESTED` | Process and thread limit with nested containers | `4096` |
 | `SAGENT_DOCKER` | `1` for docker and podman inside the sandbox, `0` for none | `1` |
 | `SAGENT_CONTAINER_ENGINE` | `docker` or `podman` | docker, then podman |
 | `SAGENT_CA_BUNDLE` | PEM file with extra CA certificates for the image | unset |

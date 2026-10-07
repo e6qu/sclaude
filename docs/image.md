@@ -11,6 +11,13 @@ the Docker CLI, Compose, Buildx and BuildKit are always installed. Each run
 serves podman's Docker API on `/var/run/docker.sock` and `DOCKER_HOST`.
 `--no-docker` turns the nested tooling off at run time.
 
+Tini is installed from Ubuntu's packages and is the image entrypoint. It
+reaps orphaned children, forwards signals to the main tool and preserves
+its exit status, including for direct `docker run` or `podman run` launches.
+The default command remains Bash. Subreaping remains enabled when a caller
+adds an engine init above Tini. Both process limit settings default to 4096;
+the limit counts threads and nested container processes together.
+
 | Toolchain | Default | Setting |
 |---|---|---|
 | Node.js | 26 | `SAGENT_NODE_VERSION` |
