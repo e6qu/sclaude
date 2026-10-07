@@ -80,6 +80,7 @@ checks out the pull request's code hands them to that code. Use
 | `test_e2e.sh`, `test_lib.sh`, `test_nested.sh`, `test_buildkit.sh` | The test suite, harness, nested BuildKit/PostgreSQL/Playwright scenario and standalone BuildKit readiness regression |
 | `test_diagnostics.sh` | Standalone regression for daemon crash summaries, full failed-test capture and shell stderr retention |
 | `test_shell.sh` | Standalone shell lookup regression for both wrappers, without containers |
+| `test_engine_selection.sh` | Explicit engine selection and bounded probe regression, without containers or VMs |
 | `test_storage.sh`, `test_concurrent.sh`, `test_sessions.sh` | Storage lease regression, concurrent nested engine integration and session process regressions |
 | `test_devcontainers.sh` | Dev container build and smoke tests |
 | `cleanup.sh` | macOS helper for reclaiming disk and engine state |

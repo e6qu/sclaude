@@ -972,8 +972,13 @@ run_test "T22: native args pass through" bash -ec '
 
 # ── T23: explicit engine selection works ─────────────────────────────
 run_test "T23: explicit engine selection" bash -ec '
-    SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$1" version >/dev/null
-    SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_ENGINE_TIMEOUT_SECONDS=5 SAGENT_SKIP_RELEASE_CHECK=1 "$2" version >/dev/null
+    bash "$(dirname "$1")/test_engine_selection.sh" "$1" "$2"
+    # Keep the configured probe budget: a busy macOS VM can take more than
+    # five seconds to answer even after the harness has waited for readiness.
+    for wrapper in "$1" "$2"; do
+        out=$(SAGENT_CONTAINER_ENGINE="$ENGINE" SAGENT_SKIP_RELEASE_CHECK=1 "$wrapper" version)
+        printf "%s\n" "$out" | grep -F "Engine: $ENGINE ("
+    done
 ' _ "$SCLAUDE" "$SCODEX"
 
 # ── T24: wrapper parity ──────────────────────────────────────────────
