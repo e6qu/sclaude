@@ -3,6 +3,9 @@
 # Two live sandboxes share volumes, but must not share nested engine state.
 set -euo pipefail
 : "${ENGINE:?}" "${SUITE_IMG:?}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test_lib.sh disable=SC1091
+. "$SCRIPT_DIR/test_lib.sh"
 name="sagent-concurrent-${SAGENT_VOLUME_SUFFIX#-}-$$"
 home="$name-home"
 store="$name-store"
@@ -97,7 +100,7 @@ ready "$first"
 [ "$("$ENGINE" exec "$first" cat /run/sagent/storage-root)" = "$root1" ]
 check_marker "$second" second
 "$ENGINE" exec "$first" sh -ec 'cd /tmp/concurrent-build; docker compose -p identical-project down'
-"$ENGINE" rm -f "$first" >/dev/null
+remove_test_container "$ENGINE" "$first"
 start "$third"
 ready "$third"
 [ "$("$ENGINE" exec "$third" cat /run/sagent/storage-root)" = "$root1" ]
