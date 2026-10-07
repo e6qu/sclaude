@@ -2871,4 +2871,6 @@ run_test "T70: nested build session recovery" bash "$SCRIPT_DIR/test_nested_retr
 
 run_test "T71: CI image archive integrity" bash "$SCRIPT_DIR/test_image_archive.sh"
 
+run_test "T72: Rancher CI container DNS" bash "$SCRIPT_DIR/test_rancher_dns.sh"
+
 print_results

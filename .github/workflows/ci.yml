@@ -444,6 +444,9 @@ jobs:
           command -v docker | grep -q "/.rd/bin/docker"
           docker context show
           docker version
+      - name: Configure Rancher container DNS
+        # Nested Podman inherited Lima's failing 192.168.5.2 forwarder (#143).
+        run: bash .github/configure-rancher-dns.sh
       - name: Report the engine's image store
         # The containerd image store (io.containerd.snapshotter.v1): a build
         # here paid 585s to export and 880s to unpack, so the image is loaded.
@@ -474,6 +477,10 @@ jobs:
             echo "::error::the prebuilt image is not the one this runner computes ($want); loaded: $(docker images sagent-sandbox --format '{{.Tag}}' | tr '\n' ' ')"
             exit 1
           fi
+          echo "SAGENT_CI_IMAGE=sagent-sandbox:$want" >> "$GITHUB_ENV"
+      - name: Check Rancher container DNS before E2E tests
+        timeout-minutes: 3
+        run: bash test_dns.sh docker "$SAGENT_CI_IMAGE" '1.1.1.1 8.8.8.8'
       - name: Run E2E tests
         # Skipped for the reasons given in test-macos; Rancher Desktop shares
         # only $HOME with its VM.

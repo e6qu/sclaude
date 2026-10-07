@@ -106,6 +106,7 @@
 | T69: Container removal | Recover from delayed Docker exit notifications and removal already in progress, while preserving persistent failure and unrelated engine errors | #139 |
 | T70: Nested build session recovery | One fresh session recovers T60's browser build after a missing-session deadline or status EOF with a new daemon SIGILL; stale crashes, plain EOF, other crashes, build/capture errors and repeated failures still fail | #140, #142 |
 | T71: CI image archive integrity | Both macOS load steps reject truncated, corrupt and missing archives before calling Docker; failed save pipelines stop checksum publication | #141 |
+| T72: Rancher CI container DNS | Keep existing daemon settings while configuring public container resolvers; reject invalid config, write/restart failures and an unready engine; verify configured resolvers and functional DNS | #143 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -208,6 +209,16 @@ Lima forwarder. After loading the image, CI runs
 fails immediately. T68 runs the same probe in every engine environment;
 the existing nested pull, Compose and BuildKit tests exercise the deeper
 container networks. These public DNS settings apply only to hosted CI VMs.
+
+Rancher CI runs [configure-rancher-dns.sh](../.github/configure-rancher-dns.sh)
+after its Docker engine starts. It merges the public resolvers into the
+existing `/etc/docker/daemon.json`, preserving settings such as the image
+store, then restarts the guest Docker service and waits up to two minutes
+for readiness. Its preflight verifies those nameservers actually appear in
+the sandbox container and resolves the registry/package hosts. This avoids
+using the Lima `192.168.5.2` forwarder that failed during nested service
+startup. It configures only the fresh hosted VM. T72 runs the real helper
+and probe against stubs without a VM or network access.
 
 T69 runs [test_teardown.sh](../test_teardown.sh) with a stub engine. It
 reproduces Docker returning a missing exit event before removal finishes.
