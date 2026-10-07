@@ -36,8 +36,8 @@ ENGINE_TIMEOUT_SECONDS="${SAGENT_ENGINE_TIMEOUT_SECONDS:-10}"
 IMAGE_REPO="sagent-sandbox"
 MEMORY_LIMIT="8g"
 CPU_LIMIT="4"
-PIDS_LIMIT="100"
-PIDS_LIMIT_NESTED="512"
+PIDS_LIMIT="4096"
+PIDS_LIMIT_NESTED="4096"
 
 # Toolchain versions baked into the image (all part of the image hash).
 # Defaults track the latest releases at the time of this wrapper's release.
@@ -616,7 +616,7 @@ RUN apt-get update && apt-get install -y \
     curl git git-lfs python3 build-essential ca-certificates gnupg sudo xz-utils unzip \
     libsecret-1-0 dbus dbus-x11 gnome-keyring \
     tree htop btop procps jq ripgrep fd-find bat vim nano wget zip rsync file lsof \
-    dnsutils netcat-openbsd tmux sqlite3 \
+    dnsutils netcat-openbsd tmux sqlite3 tini \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && ln -s /usr/bin/batcat /usr/local/bin/bat
@@ -1620,6 +1620,11 @@ DOCKERFILE_END
 
 USER agent
 ENV BROWSER=/usr/local/bin/host-open
+# Own the reaper in the image, including direct engine launches.
+# Subreaping also works when a caller supplies an additional engine init.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
+CMD ["/bin/bash"]
+
 WORKDIR /workspace
 ENV HOME=/home/agent
 ENV TMPDIR=/tmp
@@ -4411,10 +4416,10 @@ run_tool() {
     # Terminal identity is forwarded for Shift+Enter and hyperlinks. Not
     # exec'd: the clipboard agent stops with the run.
     local rc=0
-    # Reap orphaned tool/engine children before they consume the PID budget.
+    # The image entrypoint reaps orphaned tool/engine children.
     # nproc counts the shared host UID across sessions; the cgroup PID limit
     # below remains the per-sandbox bound, including threads and nested work.
-    "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm --init "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
+    "$ENGINE_CMD" run "${DOCKER_TTY_FLAGS[@]}" --rm "${USERNS_ARGS[@]+"${USERNS_ARGS[@]}"}" \
         "${CLIPBOARD_BRIDGE_ARGS[@]+"${CLIPBOARD_BRIDGE_ARGS[@]}"}" \
         "${SESSION_MOUNT_ARGS[@]+"${SESSION_MOUNT_ARGS[@]}"}" \
         -v "$WORKSPACE_HOST_PATH:$WORKSPACE_PATH:rw" \

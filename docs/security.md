@@ -75,12 +75,14 @@ a no-op elsewhere.
 ### Resource limits
 
 The defaults are 8 GB of memory, 4 CPUs and 8192 file descriptors. The
-process limit is 100, or 512 with nested containers on. `MEMORY_LIMIT`,
+process limit is 4096 in both modes. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
 
-Sessions run with the engine's init process to reap orphaned children from
-tools, detached test processes and nested engine helpers. Exited children
+The image runs Tini as its entrypoint to reap orphaned children from
+tools, detached test processes and nested engine helpers, forward signals
+and preserve the tool's exit status. Direct image launches have the same
+reaper without needing the engine's `--init` flag. Exited children
 otherwise remain as zombies and consume process slots. The limit counts
 threads and includes nested containers. The wrapper disables the inherited
 per-UID `nproc` limit; Linux counts it across containers using the same host
@@ -145,7 +147,7 @@ The mode changes four run options:
   and user-namespace syscalls.
 - The AppArmor profile is off on hosts that enforce one.
 - `/dev/fuse` and `/dev/net/tun` are passed in.
-- The process limit is `PIDS_LIMIT_NESTED`, 512 by default.
+- The process limit is `PIDS_LIMIT_NESTED`, 4096 by default.
 
 `/proc/sys` stays read-only. netavark, which sets up the nested bridge
 networks, writes a few per-interface sysctls such as `route_localnet`. The
