@@ -105,6 +105,7 @@
 | T68: Container DNS | Resolve ECR, npm and Ubuntu package hosts using the sandbox container's resolver, with a 30-second deadline per lookup | #138 |
 | T69: Container removal | Recover from delayed Docker exit notifications and removal already in progress, while preserving persistent failure and unrelated engine errors | #139 |
 | T70: Nested build session recovery | One fresh session recovers T60's browser build after a missing-session deadline; persistent session loss, build errors, other timeouts and output capture failures still fail | #140 |
+| T71: CI image archive integrity | Both macOS load steps reject truncated, corrupt and missing archives before calling Docker; failed save pipelines stop checksum publication | #141 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -187,7 +188,14 @@ nested virtualization. Building the image there would take most of the
 job, so build-macos-image builds it once on Linux, trimmed to
 `SAGENT_TOOLS=none` with no Go, Rust or Java, for the macOS runners' uid
 and gid. Each macOS job loads that image and checks it is the one the
-wrapper there computes. Those jobs skip T02, T10, T10b and T31, whose full
+wrapper there computes. The builder publishes the compressed archive and
+its SHA-256 manifest. Both macOS jobs verify the downloaded bytes before
+loading them, so a partial download fails in setup with a checksum error.
+The artifact actions use Node 24 and include the upstream download timeout
+rejection/retry fix. A failed `docker save` pipeline stops publication.
+T71 runs the actual save/load workflow blocks against small byte fixtures
+and loader stubs; it needs no container engine or zstd installation.
+Those jobs skip T02, T10, T10b and T31, whose full
 image builds do not depend on the engine and run in the Linux jobs, and
 T12b, because colima shares only `$HOME` and `/tmp/colima` with its VM and
 Rancher Desktop only `$HOME`.

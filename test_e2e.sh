@@ -2869,4 +2869,6 @@ run_test "T69: delayed container exit notifications" bash "$SCRIPT_DIR/test_tear
 
 run_test "T70: nested build session recovery" bash "$SCRIPT_DIR/test_nested_retry.sh"
 
+run_test "T71: CI image archive integrity" bash "$SCRIPT_DIR/test_image_archive.sh"
+
 print_results

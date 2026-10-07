@@ -239,12 +239,16 @@ jobs:
           [ -n "$tag" ]
           docker build --load --build-arg USER_UID=501 --build-arg USER_GID=20 \
             -t "sagent-sandbox:$tag" -f "$ctx/Dockerfile" "$ctx"
+          set -o pipefail
           docker save "sagent-sandbox:$tag" | zstd -T0 -3 -o sagent-macos-image.tar.zst
+          sha256sum sagent-macos-image.tar.zst | cut -d ' ' -f1 > sagent-macos-image.tar.zst.sha256
           ls -l sagent-macos-image.tar.zst
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: sagent-macos-image
-          path: sagent-macos-image.tar.zst
+          path: |
+            sagent-macos-image.tar.zst
+            sagent-macos-image.tar.zst.sha256
           compression-level: 0
           retention-days: 1
 
@@ -307,7 +311,8 @@ jobs:
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
             'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
-      - uses: actions/download-artifact@v4
+      # Includes the timeout rejection/retry fix missing from v4 (#141).
+      - uses: actions/download-artifact@v7
         with:
           name: sagent-macos-image
       - name: Load the prebuilt image
@@ -315,6 +320,7 @@ jobs:
         # suite would silently build its own, which is what this replaces.
         run: |
           brew install zstd
+          python3 .github/verify-image-archive.py sagent-macos-image.tar.zst
           zstd -dc sagent-macos-image.tar.zst | docker load
           rm sagent-macos-image.tar.zst
           # The daemon keeps unpacking after `load` returns and can leave
@@ -449,13 +455,14 @@ jobs:
           mkdir -p ~/.config/sagent
           printf '%s\n' 'SAGENT_TOOLS="none"' 'SAGENT_RUST_VERSION="none"' \
             'SAGENT_GO_VERSION="none"' 'SAGENT_JAVA_VERSION="none"' > ~/.config/sagent/config
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: sagent-macos-image
       - name: Load the prebuilt image
         # See test-macos.
         run: |
           brew install zstd
+          python3 .github/verify-image-archive.py sagent-macos-image.tar.zst
           zstd -dc sagent-macos-image.tar.zst | docker load
           rm sagent-macos-image.tar.zst
           # The daemon keeps unpacking after `load` returns and can leave
