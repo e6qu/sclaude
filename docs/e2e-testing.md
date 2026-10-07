@@ -104,8 +104,9 @@
 | T67: Session processes | Both wrappers defer BuildKit until build-capable Docker commands, forward global options, request init and retain cgroup PID bounds without a shared-UID nproc ceiling; 256 orphaned tool children are reaped under a 64-task limit | #137 |
 | T68: Container DNS | Resolve ECR, npm and Ubuntu package hosts using the sandbox container's resolver, with a 30-second deadline per lookup | #138 |
 | T69: Container removal | Recover from delayed Docker exit notifications and removal already in progress, while preserving persistent failure and unrelated engine errors | #139 |
-| T70: Nested build session recovery | One fresh session recovers T60's browser build after a missing-session deadline; persistent session loss, build errors, other timeouts and output capture failures still fail | #140 |
+| T70: Nested build session recovery | One fresh session recovers T60's browser build after a missing-session deadline or status EOF with a new daemon SIGILL; stale crashes, plain EOF, other crashes, build/capture errors and repeated failures still fail | #140, #142 |
 | T71: CI image archive integrity | Both macOS load steps reject truncated, corrupt and missing archives before calling Docker; failed save pipelines stop checksum publication | #141 |
+| T72: Rancher CI container DNS | Keep existing daemon settings while configuring public container resolvers; reject invalid config, write/restart failures and an unready engine; verify configured resolvers and functional DNS | #143 |
 
 Bug numbers in the matrix refer to entries in [`BUGS.md`](../BUGS.md).
 
@@ -209,6 +210,16 @@ fails immediately. T68 runs the same probe in every engine environment;
 the existing nested pull, Compose and BuildKit tests exercise the deeper
 container networks. These public DNS settings apply only to hosted CI VMs.
 
+Rancher CI runs [configure-rancher-dns.sh](../.github/configure-rancher-dns.sh)
+after its Docker engine starts. It merges the public resolvers into the
+existing `/etc/docker/daemon.json`, preserving settings such as the image
+store, then restarts the guest Docker service and waits up to two minutes
+for readiness. Its preflight verifies those nameservers actually appear in
+the sandbox container and resolves the registry/package hosts. This avoids
+using the Lima `192.168.5.2` forwarder that failed during nested service
+startup. It configures only the fresh hosted VM. T72 runs the real helper
+and probe against stubs without a VM or network access.
+
 T69 runs [test_teardown.sh](../test_teardown.sh) with a stub engine. It
 reproduces Docker returning a missing exit event before removal finishes.
 T66 retries only that error and removal already in progress, up to six
@@ -242,10 +253,15 @@ network access. Browser dependencies are installed in the nested image.
 If BuildKit loses the browser build's client session before delivering the
 image, T60 retries that fixed build once using a fresh session and its
 existing layer cache. Both attempts remain in the test output. Only the
-exact missing-session deadline error permits a retry; all other errors and
-any second failure fail the test. The same test time budget covers both
-attempts. This does not change Docker commands run by users. T70 exercises
-the recovery helper without containers.
+exact missing-session deadline error, or the exact status-read EOF together
+with a new SIGILL in the daemon log, permits a retry. A pre-existing crash
+cannot authorize recovery of a later unrelated EOF. SIGILL recovery prints
+the complete daemon crash report before retrying. All other errors and any
+second failure fail the test. The same test time budget covers both attempts.
+The supervisor already restarts BuildKit; this gives only the fixed browser
+fixture a fresh client after that restart. It does not resolve the SIGILL
+or change Docker commands run by users. T70 exercises the recovery helper
+without containers.
 `SAGENT_TEST_NESTED_TIMEOUT_SECONDS` gives T60 a separate time budget;
 it otherwise uses `TEST_TIMEOUT_SECONDS`. macOS CI sets it to 3600 seconds
 to cover cold dependency installation, image export/import and service startup
@@ -269,9 +285,12 @@ On failure the harness prints the last 30 lines of the test's output.
 usually names the command that failed, even when that command sent its
 own output elsewhere.
 
-Set `SAGENT_TEST_LOG_DIR` to retain complete failed-test captures in that
-directory. CI uploads them as `diagnostics-*` artifacts, retained for
-seven days. T60 includes the complete BuildKit daemon log on failure,
+Set `SAGENT_TEST_LOG_DIR` to retain complete failed-test captures and
+successful BuildKit recovery captures in that directory. Recovered tests
+print `RETRY(buildkit) PASS`; failure to retain configured recovery evidence
+fails the test. CI uploads available captures as `diagnostics-*` artifacts
+even when the job passes, retained for seven days. T60 includes the complete
+BuildKit daemon log on failure,
 then prints PID/memory cgroup counters and the first 40 lines of the
 latest fatal error again, so a long Go dump or supervisor restart cannot
 hide its cause beyond the console tail. T63 checks this with synthetic
