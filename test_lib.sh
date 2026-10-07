@@ -12,8 +12,8 @@ SAGENT_TEST_SKIP="${SAGENT_TEST_SKIP:-}"
 # How much of a failed test's capture to print. Tests run traced, so the
 # tail of it holds the commands that led to the failure.
 FAIL_OUTPUT_LINES="${FAIL_OUTPUT_LINES:-30}"
-# Optional directory for complete failed-test captures, including daemon
-# dumps too long for the console tail. CI uploads these as artifacts.
+# Optional directory for complete failed-test and recovered BuildKit captures,
+# including daemon dumps too long for the console tail. CI uploads artifacts.
 SAGENT_TEST_LOG_DIR="${SAGENT_TEST_LOG_DIR:-}"
 # "2/3" runs every third test from the second. Tests are numbered in file
 # order, skipped or not, so every slice agrees on which test is which.
@@ -161,6 +161,19 @@ run_test() {
     local lines
     lines=$(wc -l < "$output_file" | tr -d " ")
     if [ "$rc" -eq 0 ]; then
+        if grep -Eq '^BuildKit (lost its session|crashed with SIGILL); retrying the browser fixture once with cached layers$' "$output_file"; then
+            printf 'RETRY(buildkit) '
+            if [ -n "$SAGENT_TEST_LOG_DIR" ]; then
+                if ! mkdir -p "$SAGENT_TEST_LOG_DIR" ||
+                    ! cp "$output_file" "$SAGENT_TEST_LOG_DIR/${name%%:*}.log"; then
+                    printf '    Could not preserve the recovery capture in %s\n' "$SAGENT_TEST_LOG_DIR" >&2
+                    rm -f "$output_file"
+                    FAIL=$((FAIL + 1))
+                    printf 'FAIL\n'
+                    return 0
+                fi
+            fi
+        fi
         rm -f "$output_file"
         printf "PASS\n"
         PASS=$((PASS + 1))

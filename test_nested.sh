@@ -8,20 +8,32 @@ export COMPOSE_PROJECT_NAME=sagent-nested-check
 ssh_pid=""
 # A session can expire during slow VM I/O even though the build finishes
 # its layers. Give this fixed CI fixture one fresh session using that cache.
-# Keep both attempts visible and never retry a build or capture failure.
+# Also recover EOF after a new daemon SIGILL, retaining its crash report.
+# Keep both attempts visible; RUN and capture failures remain failures.
 build_nested_browser() {
-    local log="$1"
+    local log="$1" daemon_log="${2:-/tmp/sagent-buildkit.log}"
+    local sigill_before sigill_after reason
     local -a status
+    sigill_before=$(grep -c '^SIGILL: illegal instruction$' "$daemon_log" 2>/dev/null || true)
     if docker compose build browser 2>&1 | tee "$log"; then
         return 0
     else
         status=("${PIPESTATUS[@]}")
     fi
     [ "${status[1]}" -eq 0 ] || return "${status[1]}"
-    if ! grep -Eq '^failed to solve: DeadlineExceeded: no active session for [^[:space:]]+: context deadline exceeded$' "$log"; then
+    if grep -Eq '^failed to solve: DeadlineExceeded: no active session for [^[:space:]]+: context deadline exceeded$' "$log"; then
+        reason='lost its session'
+    elif grep -Fxq 'failed to receive status: rpc error: code = Unavailable desc = error reading from server: EOF' "$log"; then
+        sigill_after=$(grep -c '^SIGILL: illegal instruction$' "$daemon_log" 2>/dev/null || true)
+        if [ -z "$sigill_after" ] || [ "$sigill_after" -le "${sigill_before:-0}" ]; then
+            return "${status[0]}"
+        fi
+        reason='crashed with SIGILL'
+        report_buildkit_failure "$daemon_log" >&2
+    else
         return "${status[0]}"
     fi
-    printf '\nBuildKit lost its session; retrying the browser fixture once with cached layers\n' >&2
+    printf '\nBuildKit %s; retrying the browser fixture once with cached layers\n' "$reason" >&2
     docker compose build browser
 }
 # Keep the complete dump in the harness capture, then repeat a bounded

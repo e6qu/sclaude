@@ -49,6 +49,47 @@ grep -F cause-at-start "$tmp/artifacts/T99.log" >/dev/null
 grep -F 'T99: synthetic failure' "$tmp/console" >/dev/null
 grep -F FAIL "$tmp/console" >/dev/null
 
+# A recovered daemon crash must remain visible even when the test passes.
+for reason in 'lost its session' 'crashed with SIGILL'; do
+    PATH="$tmp/bin:$PATH" SAGENT_TEST_LOG_DIR="$tmp/recoveries" \
+        TEST_TIMEOUT_SECONDS=2 SAGENT_TEST_SHARD='' SAGENT_TEST_SKIP='' \
+        bash -c '
+            . "$1"
+            run_test "T60: recovered browser build" sh -c '\''
+                printf "first-attempt-evidence\n"
+                printf "BuildKit %s; retrying the browser fixture once with cached layers\n" "$1"
+                printf "second-attempt-evidence\n"
+            '\'' _ "$2"
+            [ "$PASS" = 1 ] && [ "$FAIL" = 0 ]
+        ' _ "$SCRIPT_DIR/test_lib.sh" "$reason" > "$tmp/recovery-console"
+    grep -F 'RETRY(buildkit) PASS' "$tmp/recovery-console" >/dev/null
+    grep -F first-attempt-evidence "$tmp/recoveries/T60.log" >/dev/null
+    grep -F second-attempt-evidence "$tmp/recoveries/T60.log" >/dev/null
+done
+
+# A clean success saves nothing, and recovery evidence must be writable.
+for mode in healthy unwritable; do
+    artifact_path="$tmp/$mode-artifacts"
+    if [ "$mode" = unwritable ]; then printf blocked > "$artifact_path"; fi
+    PATH="$tmp/bin:$PATH" SAGENT_TEST_LOG_DIR="$artifact_path" \
+        TEST_TIMEOUT_SECONDS=2 SAGENT_TEST_SHARD='' SAGENT_TEST_SKIP='' \
+        bash -c '
+            . "$1"
+            if [ "$2" = healthy ]; then
+                run_test "T60: clean build" sh -c "printf healthy\\n"
+                [ "$PASS" = 1 ] && [ "$FAIL" = 0 ]
+                [ ! -e "$SAGENT_TEST_LOG_DIR" ]
+            else
+                run_test "T60: unwritable recovery" sh -c '\''
+                    printf "BuildKit crashed with SIGILL; retrying the browser fixture once with cached layers\n"
+                '\''
+                [ "$PASS" = 0 ] && [ "$FAIL" = 1 ]
+            fi
+        ' _ "$SCRIPT_DIR/test_lib.sh" "$mode" > "$tmp/$mode-console" 2>&1
+done
+grep -F 'Could not preserve the recovery capture' "$tmp/unwritable-console" >/dev/null
+grep -F FAIL "$tmp/unwritable-console" >/dev/null
+
 # Run the real T43 body against stubs. Both shell invocations must print
 # their captured stderr before the workspace's EXIT trap removes it.
 sed -n '/^run_test "T43:/,/^#.*T44:/p' "$SCRIPT_DIR/test_e2e.sh" > "$tmp/t43"
