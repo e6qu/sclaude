@@ -52,7 +52,7 @@
 | T20: scodex config sync | `auth.json` and `config.toml` land in `scodex-config`; an `auth.json` with a later `last_refresh` in the volume survives, a newer host copy replaces it | #40, #102 |
 | T21: Release check non-fatal | Wrapper update check caches and does not fail normal flow | -- |
 | T22: Native args pass through | Tool args after native command are not wrapper-dispatched | #39, #41 |
-| T23: Explicit engine selection | `SAGENT_CONTAINER_ENGINE` works for both wrappers | -- |
+| T23: Explicit engine selection | Both wrappers select the named real engine using the configured probe timeout; controlled engines accept fast and slow healthy replies, reject timed-out, failed and missing engines, and never fall back after an explicit selection fails | #145 |
 | T24: Wrapper parity | Shared functions and main dispatch identical between `sclaude` and `scodex` (drift guard) | -- |
 | T25: Corrupted release cache | Non-numeric cache content does not break execution | #58 |
 | T26: `--force-rebuild` validation | Flag rejected outside the `update` command | -- |
