@@ -31,13 +31,16 @@ startup file.
 
 `SAGENT_VOLUME_SUFFIX` puts a suffix on every volume name, which selects a
 second set of volumes. Bind mounts and image tags stay the same. The test
-suite runs on `-e2e` volumes.
+suite runs on `-e2e` volumes. Different suffixes have independent home,
+config and cache volumes; sessions with the same suffix share them.
 
 Nested engines reserve `workspaces/<project-hash>/<slot>/` inside
 `sagent-containers`. Simultaneous sandboxes never use the same slot. Its
 lease is released when the sandbox exits, allowing later runs to reuse its
 cache and data. A concurrent sandbox uses a separate slot with separate
-named volumes. `/run/sagent/storage-root` names the active slot, and
+nested named volumes. Home directories, credentials and package caches
+still share the outer volumes listed above. `/run/sagent/storage-root`
+names the active slot, and
 `CONTAINERS_STORAGE_CONF=/run/sagent/storage.conf` selects its Podman store.
 Legacy top-level nested stores remain available for
 [data recovery](image.md#upgrading-nested-storage).
@@ -55,7 +58,10 @@ cache volume against the settings:
 
 When the stamp is missing or differs, the helper clears that volume, says
 so, and writes the new stamp. `sclaude reset-caches` clears these volumes
-on demand.
+on demand. Back up nested named-volume data before changing the Ubuntu
+release or clearing caches: the containers volume holds application data
+as well as images and build cache. Avoid changing shared toolchain settings
+while other sessions use those volumes.
 
 ## Environment inside the sandbox
 

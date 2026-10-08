@@ -34,8 +34,8 @@ chmod +x sclaude scodex
 From a clone, `./sclaude install` links the scripts, so `git pull` updates
 them. `install DIR` or `SAGENT_INSTALL_DIR` picks another directory.
 
-No image is downloaded. The first run builds the sandbox image on your
-machine, for your user and your settings. That takes a few minutes and
+The first run builds the sandbox image on your machine, for your user and
+your settings. That takes a few minutes and
 about 5.5 GB of disk, with 8 GB free needed during the build. Behind a
 TLS-inspecting proxy the build takes the proxy's CA from your trust store.
 If the host does not trust it either, see
@@ -85,8 +85,7 @@ Every native CLI flag passes through. Yolo means
 `--dangerously-bypass-approvals-and-sandbox` for Codex. The sandbox limits
 what that can reach. [Security](docs/security.md) says how far.
 
-Commit before you start. Afterwards, review with `git diff`, then commit or
-`git reset --hard`, which discards every uncommitted change.
+Commit before you start and review the agent's changes with `git diff`.
 
 ## What the sandbox shares with the host
 
@@ -105,11 +104,11 @@ Commit before you start. Afterwards, review with `git diff`, then commit or
   too.
 
 Containers the agent starts run in the sandbox, on a podman of its own, not
-on your engine. `docker`, `docker compose` and anything that talks to
-`/var/run/docker.sock` work there. Their images are kept in a volume.
+on your engine. `docker`, `docker compose` and Docker API clients use the
+sandbox's own Unix socket. Their images are kept in a volume.
 Buildx and Compose builds use the sandbox's own rootless BuildKit service.
 Concurrent sandboxes reserve separate persistent stores, including when
-they run in the same project. Earlier nested stores are retained for recovery.
+they run in the same project.
 `--no-docker` turns this off. See [nested builds and browser tests](docs/image.md#nested-builds-and-browser-tests)
 for dependencies and upgrading older nested storage.
 
@@ -119,18 +118,17 @@ so. In a terminal it waits for the engine to come back and resumes the
 session with `--continue`. When no engine answers at the start, the error
 names what is stopped and the command that starts it.
 
-Most of these have a setting that turns them off or narrows them.
 [Host state in the sandbox](docs/host-state.md) has the details and
 [security](docs/security.md) has the trade-offs.
 
 ## What is in the image
 
-Ubuntu 26.04 with Claude Code, Codex, `gh`, git and build tools. Node.js 26,
-Python 3.14, Go 1.27, Rust stable and Java 26. Four tool groups you can
-drop: `js`, `java`, `infra` (kubectl, Helm, Terraform, Terragrunt) and
-`cloud` (AWS, Azure and Google Cloud CLIs). Every version and group is a
-setting. `sclaude tools` shows what is in. [The image](docs/image.md) lists
-everything and covers builds, mirrors and disk use.
+Ubuntu with Claude Code, Codex, `gh`, git and build tools, plus Node.js,
+Python, Go, Rust and Java. The optional tool groups are `js`, `java`,
+`infra` and `cloud`. Toolchain versions and tool selection are
+configurable; `sclaude tools` shows the selection.
+[The image](docs/image.md) lists the contents and covers builds,
+mirrors and disk use.
 
 ## Commands
 
@@ -138,7 +136,7 @@ everything and covers builds, mirrors and disk use.
 |---|---|
 | `sclaude update` | Update both wrappers and the agent CLIs in the image. `--force-rebuild` rebuilds everything |
 | `sclaude install [DIR]` | Put both wrappers on PATH |
-| `sclaude shell [args]` | Bash in the sandbox. Attaches to the one running for this directory, or starts one |
+| `sclaude shell [args]` | Bash in the sandbox. Attaches to a running sandbox for this directory, or starts one |
 | `sclaude status` | What a run would use |
 | `sclaude doctor` | Diagnostics, with a fix per finding |
 | `sclaude tools` | List tools. `enable` and `disable` change the selection |
@@ -156,7 +154,8 @@ Both wrappers have these commands.
 
 ## Settings
 
-Settings live in `~/.config/sagent/config`, a bash file that is sourced.
+Settings live in `~/.config/sagent/config` (under `XDG_CONFIG_HOME` when
+set), a bash file that is sourced.
 `sclaude config set KEY VALUE` writes it. For the `SAGENT_` settings, an
 environment variable wins over the file. The resource limits are read from
 the file only.
@@ -164,6 +163,8 @@ the file only.
 CPU and memory limits are automatically capped at the engine's capacity.
 On macOS this is the engine VM's capacity. Each run reports any reduction;
 the settings file keeps your requested limits for future runs.
+These limits do not reserve resources across concurrent sessions; see
+[resource limits](docs/security.md#resource-limits).
 
 | Setting | Meaning | Default |
 |---|---|---|
@@ -172,7 +173,7 @@ the settings file keeps your requested limits for future runs.
 | `PIDS_LIMIT` | Process and thread limit without nested containers | `4096` |
 | `PIDS_LIMIT_NESTED` | Process and thread limit with nested containers | `4096` |
 | `SAGENT_DOCKER` | `1` for docker and podman inside the sandbox, `0` for none | `1` |
-| `SAGENT_CONTAINER_ENGINE` | `docker` or `podman` | docker, then podman |
+| `SAGENT_CONTAINER_ENGINE` | `docker` or `podman`; explicit selection never falls back | docker, then podman |
 | `SAGENT_CA_BUNDLE` | PEM file with extra CA certificates for the image | unset |
 | `SAGENT_GIT_PROTOCOL` | `ssh` or `https` for GitHub | your gh setting, else `https` |
 | `SAGENT_CLIPBOARD` | `1` to share the host clipboard, `0` to keep it out | `1` |
@@ -197,16 +198,23 @@ setting can differ per wrapper:
 [ "$SCRIPT_NAME" = scodex ] && SAGENT_SESSIONS=0
 ```
 
+Two additional environment controls are not managed by `config set`:
+`SAGENT_ENGINE_TIMEOUT_SECONDS` sets the engine probe deadline (10 seconds
+by default), and `SAGENT_SKIP_SHARE_CHECK=1` bypasses the VM share check
+for a path you shared yourself.
+
 ## Uninstall
 
 ```bash
 sclaude reset
-docker images sagent-sandbox -q | xargs -r docker rmi
+for image in $(docker images sagent-sandbox -q | sort -u); do
+    docker rmi "$image"
+done
 rm ~/.local/bin/sclaude ~/.local/bin/scodex
 ```
 
 With podman, replace `docker` with `podman`. `install DIR` may have put the
-wrappers elsewhere. An install from before 2.16 lives in `/usr/local/bin`.
+wrappers elsewhere; remove them from that directory instead.
 The PATH block `install` added to your shell startup file is marked
 `added by sclaude/scodex`. The settings file and `~/sagent-drop` stay.
 
@@ -220,7 +228,7 @@ The PATH block `install` added to your shell startup file is marked
 - [Security](docs/security.md): what the sandbox isolates and what it lets
   through.
 - [Testing](docs/e2e-testing.md), [releasing](docs/releasing.md),
-  [contributing](CONTRIBUTING.md), [bugs](BUGS.md),
+  [contributing](CONTRIBUTING.md), [known issues](BUGS.md),
   [changelog](CHANGELOG.md).
 
 ## License

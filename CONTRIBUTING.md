@@ -4,8 +4,7 @@
 
 You need Docker or Podman, bash, zsh and pre-commit. pre-commit comes from
 `brew install pre-commit` or `pipx install pre-commit`, and installs
-shellcheck and actionlint itself. If this checkout once set
-`core.hooksPath=.githooks`, run `git config --unset core.hooksPath` first.
+shellcheck and actionlint itself.
 
 ```bash
 git clone https://github.com/e6qu/sclaude.git
@@ -20,8 +19,10 @@ pre-commit install --install-hooks
   `bash -n` and `zsh -n` on the scripts, and the docs character check. The
   commit message check runs when you commit. CI runs the same hooks on
   Linux and macOS.
-- `bash test_e2e.sh` passes. [Testing](docs/e2e-testing.md) covers the
-  engines, the volumes the suite uses, and running part of it.
+- Run the regressions relevant to code changes. [Testing](docs/e2e-testing.md)
+  covers standalone checks and the full engine matrix, which runs in CI.
+  For documentation changes, check links and commands against the code;
+  container builds are not needed locally.
 - `sclaude` and `scodex` stay identical apart from the tool constants at
   the top and three functions that differ per agent: `read_credentials`,
   `sync_state` and `run_tool`. Test T24 fails when anything else diverges.
@@ -41,24 +42,31 @@ Both wrappers must run on macOS and Linux.
 
 ## Fixing a bug
 
-1. Add a test to `test_e2e.sh`, or to `test_devcontainers.sh` for the dev
-   containers, that fails.
+1. Add a failing regression in the appropriate test script. Integrate it
+   into `test_e2e.sh`, or `test_devcontainers.sh` for dev containers.
 2. Fix it. Shared code changes go into both wrappers.
-3. Run the suite and the hooks.
-4. Commit as `fix: ...` and add a row to `BUGS.md`.
+3. Run the relevant regressions and hooks, and check CI before merging.
+4. Commit as `fix: ...`. Describe the trigger and resulting behavior in
+   the PR. Keep [BUGS.md](BUGS.md) for unresolved issues and follow-ups;
+   remove an entry when its fix lands rather than adding a fixed-bug row.
 
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/) for commit
 messages and PR titles. A hook checks the message and CI checks the title.
-`fix:` requests a patch release and `feat:` a minor one. A `!` after the
-type, or a `BREAKING CHANGE:` footer, requests a major one. `docs:`,
+Use one subject line of at most 80 characters, with no body, trailers or
+AI attribution. `fix:` requests a patch release and `feat:` a minor one.
+A `!` after the type requests a major one. `docs:`,
 `test:`, `ci:` and `chore:` request none.
 
 ```text
 feat: mount a drop folder for files handed to the agent
 fix: credential sync fails when python3 is missing on the host
 ```
+
+Squash-merge ordinary PRs after CI passes, supplying the subject and an
+empty commit body. Release PRs intentionally skip test jobs; see
+[release checks](docs/releasing.md#release-checks).
 
 ## Releases
 
@@ -77,11 +85,8 @@ checks out the pull request's code hands them to that code. Use
 | Path | What it is |
 |---|---|
 | `sclaude`, `scodex` | The two wrappers |
-| `test_e2e.sh`, `test_lib.sh`, `test_nested.sh`, `test_buildkit.sh` | The test suite, harness, nested BuildKit/PostgreSQL/Playwright scenario and standalone BuildKit readiness regression |
-| `test_diagnostics.sh` | Standalone regression for daemon crash summaries, full failed-test capture and shell stderr retention |
-| `test_shell.sh` | Standalone shell lookup regression for both wrappers, without containers |
-| `test_engine_selection.sh` | Explicit engine selection and bounded probe regression, without containers or VMs |
-| `test_storage.sh`, `test_concurrent.sh`, `test_sessions.sh` | Storage lease regression, concurrent nested engine integration and session process regressions |
+| `test_e2e.sh`, `test_lib.sh` | Wrapper integration suite and shared harness |
+| `test_*.sh` | Focused regressions and nested scenarios; see the [test inventory](docs/e2e-testing.md#focused-regressions) |
 | `test_devcontainers.sh` | Dev container build and smoke tests |
 | `cleanup.sh` | macOS helper for reclaiming disk and engine state |
 | `.devcontainer/` | Dev container for working on sclaude |
@@ -90,7 +95,8 @@ checks out the pull request's code hands them to that code. Use
 | `.githooks/`, `.pre-commit-config.yaml` | The hooks CI and `git commit` run |
 | `release-please-config.json`, `.release-please-manifest.json` | Release automation |
 | `docs/` | [Host state](docs/host-state.md), [image](docs/image.md), [storage layout](docs/storage-layout.md), [security](docs/security.md), [testing](docs/e2e-testing.md), [releasing](docs/releasing.md) |
-| `BUGS.md`, `CHANGELOG.md` | Bug history; release history, written by release-please |
+| `BUGS.md` | Known issues and outstanding follow-ups |
+| `CHANGELOG.md` | Release history, maintained by release-please |
 
 ## What changes the image
 

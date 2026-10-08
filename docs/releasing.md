@@ -1,83 +1,101 @@
 # Releasing
 
-[release-please](https://github.com/googleapis/release-please) prepares
-releases from conventional commits.
-[`release-please.yml`](../.github/workflows/release-please.yml) publishes
-the wrappers and the container images.
+[release-please.yml](../.github/workflows/release-please.yml) uses
+[release-please](https://github.com/googleapis/release-please) to prepare
+version bumps and publish wrappers and images. Commit types determine
+whether a release is needed; see [commits](../CONTRIBUTING.md#commits).
+Documentation, test and CI changes alone do not request a new version.
 
-## How a release happens
+## Release flow
 
-1. A push to `main` runs the workflow. When there are unreleased `fix:` or
-   `feat:` commits, release-please opens or updates the release PR, which
-   bumps the version in both wrappers and the manifest and adds the
-   changelog entry.
-2. Merging the release PR runs the workflow again. It pushes the tag at the
-   release commit, creates the GitHub release as a draft, uploads both
-   wrappers, verifies them, and publishes the release. `latest` never points
-   at a release without its wrappers.
-3. Separate jobs build the amd64 and arm64 images, push them to `ghcr.io`,
-   and publish the multi-arch manifest.
-4. Once the wrappers are published, the same run prepares the next release
-   PR from the new tag. It does not wait for the image jobs.
+1. A push to `main` opens or updates the release PR when there are
+   unreleased release-worthy commits. It changes both wrappers' versions,
+   the manifest and the changelog.
+2. Merging that PR tags its merge commit and creates a draft release.
+   The workflow uploads and verifies both scripts before publishing it.
+   The GitHub `latest` release therefore has its wrapper assets attached.
+3. Image jobs build and verify `amd64` and `arm64` images from that tag,
+   then publish the multi-architecture manifest. Images can finish after
+   the wrapper release is visible.
+4. Once the wrapper publication succeeds, `release-pr` prepares the next
+   release PR if more release-worthy commits remain. It does not wait for
+   image publication.
 
-[Commits](../CONTRIBUTING.md#commits) says which commit types request a
-release.
+The wrappers build their own image locally. Published images use the
+release's defaults and UID/GID 1000; see [published images](image.md#published-images).
+A tag can trail `main` when later commits only change tests or docs.
 
-## The release PR's checks
+## Release checks
 
-The workflow creates the release PR with `GITHUB_TOKEN`, and GitHub holds
-the workflow runs such a PR triggers until someone approves them. Press
-"Approve and run" on the PR's checks once. The one job that runs there,
-`what-ran`, says that the test jobs are skipped on purpose. The tests run
-on `main` after the merge. Left unapproved, the run shows as failed and
-the PR looks broken.
+Check that the code on `main` has passing CI before cutting a release.
+Release PRs intentionally skip test and lint jobs. If their CI workflow
+runs, only the `what-ran` reporter runs. No jobs on a release PR is fine.
 
-## Merge order
+GitHub can hold workflows triggered by `GITHUB_TOKEN` PR creation for
+approval. Approval is optional for this repository's release PR because
+it would only start the reporter. Do not treat absent or skipped release-PR
+checks as a product failure. See [GitHub's trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 
-After merging the release PR, let its run finish before merging anything
-else. If another PR that touches a workflow file lands on `main` first,
-the release commit sits behind `main` with a workflow diff, and GitHub
-refuses the Actions token both the tag and the release for that commit.
-The job says so when it happens. Finish the release by hand, below.
+After merging, monitor both `CI` and `Release Please`. Confirm the scripts
+are attached to a published release and `publish-manifest` succeeded for
+both architectures. Let release publication finish before merging another
+workflow change: GitHub can refuse the Actions token permission to tag or
+release an older commit after workflow files change.
 
-## When a release does not finish
+## Check what is published
 
-A failure after the release exists leaves a draft, or a published release
-without images. Dispatch the workflow with the tag. That path skips
-release-please and runs the publishing jobs again, which replaces the
-wrapper assets and rebuilds the images from the tag with the packages of
-the day. It publishes the draft as well:
+From the checkout, with authenticated `gh`:
 
 ```bash
-gh workflow run release-please.yml -f tag=v3.1.2
+gh release view --json tagName,isDraft,publishedAt,assets,url
+gh run list --workflow release-please.yml --limit 5
+git fetch origin --tags
+git log --oneline "$(gh release view --json tagName --jq .tagName)..origin/main"
 ```
 
-When the tag step reports the merge-order failure above, finish the
-release with your own credentials. Use the version from
-`.release-please-manifest.json` and the merged release PR's commit and
-number:
+Read any commits after the tag to distinguish runtime changes from tests
+and documentation. A published wrapper release does not by itself prove
+its image jobs finished.
+
+## Recover an incomplete release
+
+If the tag and release already exist, dispatch the workflow for that tag.
+It skips release-please, replaces the wrapper assets, verifies and
+publishes the draft if needed, and rebuilds images from the tagged source:
 
 ```bash
-RELEASE_SHA=0123abc
-RELEASE_PR=123
-git push origin "$RELEASE_SHA:refs/tags/v3.1.2"
-awk '/^## \[3\.1\.2\]/{f=1; next} f&&/^## \[/{exit} f' CHANGELOG.md > notes.md
-gh release create v3.1.2 --draft --title v3.1.2 --notes-file notes.md
-gh pr edit "$RELEASE_PR" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
-gh workflow run release-please.yml -f tag=v3.1.2
+release_tag=TAG_FROM_FAILED_RUN
+gh workflow run release-please.yml -f tag="$release_tag"
 ```
 
-Swap the labels, or every later run retries that version. Any other
-failure before the release exists needs the job log.
+Replace `TAG_FROM_FAILED_RUN` with the intended tag, including `v`.
+Do not infer an unpublished draft's tag from the latest published release.
+Rerun only a failed job when retaining successful jobs is appropriate.
+A dispatch rebuild uses the packages available at that time.
 
-To get the next release PR without waiting for a runner, let any release
-in progress publish first, then run release-please from the repository
-root. It creates the same PR the workflow would:
+If the job log says the Actions token cannot tag the release commit after
+a workflow change, finish it with your own authenticated credentials.
+Replace `RELEASE_PR_NUMBER` with the merged release PR number and run from
+a checkout of that release commit, so the manifest and notes match:
 
 ```bash
-npx release-please release-pr \
-    --repo-url=e6qu/sclaude \
-    --token="$(gh auth token)" \
-    --config-file=release-please-config.json \
-    --manifest-file=.release-please-manifest.json
+release_pr=RELEASE_PR_NUMBER
+release_sha=$(gh pr view "$release_pr" --json mergeCommit --jq .mergeCommit.oid)
+release_version=$(jq -r '.["."]' .release-please-manifest.json)
+release_tag="v$release_version"
+release_notes=$(mktemp)
+awk -v version="$release_version" '
+    index($0, "## [" version "]") == 1 { found=1; next }
+    found && /^## \[/ { exit }
+    found { print }
+' CHANGELOG.md > "$release_notes"
+git push origin "$release_sha:refs/tags/$release_tag"
+gh release create "$release_tag" --draft --title "$release_tag" --notes-file "$release_notes"
+rm "$release_notes"
+gh pr edit "$release_pr" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+gh workflow run release-please.yml -f tag="$release_tag"
 ```
+
+The label change prevents later runs from retrying that pending release.
+For other failures before a tag or release exists, diagnose the job log
+before choosing recovery steps.
