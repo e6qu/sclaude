@@ -1,30 +1,35 @@
-# Example: Claude Code in a Dev Container
+# Claude Code directly in a devcontainer
 
-Run Claude Code directly inside a dev container. No Docker nesting or sclaude required.
+This example runs Claude Code in an Ubuntu 24.04 devcontainer with Node.js
+LTS and Python 3.12. It does not use sclaude or create nested containers.
 
-## Usage
+## Use
 
-1. Copy the `.devcontainer/` folder into your project root.
-2. Set `ANTHROPIC_API_KEY` in your environment (or use OAuth — see below).
-3. Open in VS Code and choose "Reopen in Container", or use the CLI:
+Copy this example's [.devcontainer](.devcontainer/) directory into your
+project root. Set `ANTHROPIC_API_KEY` in the host environment before
+starting the devcontainer, or sign in inside it.
+
+Open the project in VS Code and choose Reopen in Container, or use the
+Dev Container CLI:
 
 ```bash
 devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . claude
 ```
 
-## Authentication
+The configuration installs the Claude Code npm package and VS Code
+extension. Claude runs with the devcontainer user's access to the workspace
+and any other configured mounts; sclaude's sandbox limits do not apply.
 
-**API key** (simplest): Set `ANTHROPIC_API_KEY` on your host. It's forwarded into the container via `remoteEnv`.
+## Authentication and persistence
 
-**OAuth**: Run `claude` inside the container and follow the login flow. Credentials persist in the container's home directory volume.
+`remoteEnv` forwards `ANTHROPIC_API_KEY` from the host. For OAuth, run
+`claude` inside and open its sign-in link on the host.
 
-## What's included
+Credentials are stored in the devcontainer user's home. This example does
+not configure a persistent home volume or mount the host's Claude state.
+Do not rely on its credentials surviving container replacement; sign in
+again or add an appropriate persistent mount.
 
-- Node.js (LTS) and Python 3.12
-- Claude Code CLI (`@anthropic-ai/claude-code`)
-- VS Code Claude Code extension
-
-## Customization
-
-Edit `.devcontainer/devcontainer.json` to add your project's language runtimes, tools, or extensions.
+Edit [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) to
+change tools, extensions or mounts.

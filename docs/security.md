@@ -8,8 +8,9 @@ what it lets through on purpose, and the settings that narrow it.
 ## What it protects against
 
 - Direct access to host files outside the mounted directories.
-- The agent reaching the host engine, other containers, or host services
-  through `localhost`.
+- Direct use of the host engine socket, which is not mounted.
+- Sharing the host's PID or network namespace; the sandbox's `localhost`
+  is its own. Gateway addresses and host aliases can still reach the host.
 - An ordinary process reaching the host through the container's user and
   filesystem namespaces.
 - Memory, CPU, process and file descriptor use beyond the configured
@@ -31,8 +32,8 @@ what it lets through on purpose, and the settings that narrow it.
 
 The wrapper mounts the workspace and the drop folder read-write at their
 own paths, and the folders in `SAGENT_EXTRA_MOUNTS` read-only unless an
-entry is marked `:rw`. With sharing on, it also mounts the session directories and the
-per-run clipboard spool, and with `SAGENT_SESSIONS=all` Claude's
+entry is marked `:rw`. With sharing on, it also mounts session directories
+and the per-run clipboard spool, and with `SAGENT_SESSIONS=all` Claude's
 `file-history`. Everything else the sandbox sees is a named volume or a
 copy. The workspace source is the physical path, with symlinks resolved,
 and `/` is refused. `..` from a bind mount lands in the container's own
@@ -50,7 +51,7 @@ install`) go to the persistent home volumes.
 
 ### User and sudo
 
-Everything runs as `agent`, with your uid and gid, so files in the
+The main tool runs as `agent`, with your uid and gid, so files in the
 workspace keep their owner. A helper container runs as root before each
 session to fill the volumes.
 
@@ -74,7 +75,7 @@ a no-op elsewhere.
 
 ### Resource limits
 
-The defaults are 8 GB of memory, 4 CPUs and 8192 file descriptors. The
+The defaults are 8 GiB of memory, 4 CPUs and 8192 file descriptors. The
 process limit is 4096 in both modes. `MEMORY_LIMIT`,
 `CPU_LIMIT`, `PIDS_LIMIT` and `PIDS_LIMIT_NESTED` in the settings file
 change them. The file descriptor limit is fixed.
@@ -89,16 +90,11 @@ per-UID `nproc` limit; Linux counts it across containers using the same host
 UID. The per-sandbox cgroup PID limit remains in place, along with the VM's
 own limits.
 
-Concurrent sessions share the VM's CPU and RAM. The limits below do not
-reserve or divide that capacity among sessions. BuildKit starts only when a
-build-capable Docker command needs it, reducing overhead for sessions that
-edit files or run tests directly. Started services remain alive until the
-session ends; this does not evict active containers or discard build state.
-An 8-GiB VM has less than 82 MiB per session at 100 sessions, before VM and
-engine overhead. Support for 100 sessions running agents, tests and browsers
-must be measured with the actual workloads; heavy tasks need a concurrency
-budget or more memory. Dividing RAM into 100 hard limits would instead kill
-legitimate tests and pre-commit processes.
+Concurrent sessions share the engine's CPU and RAM. These limits neither
+reserve nor divide that capacity. BuildKit starts lazily, but services
+already started remain alive until the sandbox exits. Budget concurrent
+agents, tests and builds together. The 100-session capacity target is
+[not yet validated](../BUGS.md#concurrent-session-capacity).
 
 The wrapper caps CPU and memory limits at the capacity reported by Docker
 or Podman. On macOS that is the engine VM's capacity. For example, a request
@@ -167,9 +163,10 @@ agent and nested containers. The host's PID namespace and engine socket
 are not exposed. BuildKit uses a Unix socket owned by the agent, not a
 network listener.
 
-The sandbox's `/tmp` is executable for compilers and browser tooling, while
-`nosuid` and `nodev` remain set. Service-specific tmpfs mounts keep the
-options requested in their Compose configuration.
+The wrapper normally mounts `/tmp` as an executable tmpfs with `nosuid`
+and `nodev`. It omits that tmpfs when the workspace is under `/tmp`, so
+the workspace bind mount is not hidden. Service-specific tmpfs mounts
+keep the options requested in their Compose configuration.
 
 ### Ephemeral container
 

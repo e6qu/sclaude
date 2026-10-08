@@ -72,9 +72,6 @@ For Claude Code the shared directory is this workspace's transcripts under
 Codex it is the whole `~/.codex/sessions` tree, which Codex does not split
 per project.
 
-Sessions the sandbox recorded before sharing existed move out to the host
-on the next run, unless the host already has one by that name.
-
 The agent can read and write those transcripts. `SAGENT_SESSIONS=0` keeps
 them out. Sessions started inside then stay in the config volume.
 `SAGENT_SESSIONS=all` also shares `~/.claude/file-history`, the snapshots
@@ -119,8 +116,10 @@ logged in to.
 ## Sign-in and credentials
 
 Each wrapper copies the sign-in for its own agent. Claude's comes from the
-macOS keychain, or from the credentials file on Linux. Codex's is
-`auth.json` under `~/.codex`, or under `CODEX_HOME` when you set it.
+macOS keychain, or on Linux from `~/.claude/.credentials.json` with
+`~/.config/claude-code/credentials.json` as a fallback (`XDG_CONFIG_HOME`
+changes that fallback directory). Codex's is `auth.json` under `~/.codex`,
+or under `CODEX_HOME` when you set it.
 
 The newer copy wins. Claude compares `claudeAiOauth.expiresAt` and Codex
 compares `last_refresh`. Refresh tokens rotate, and copying an older host
@@ -152,13 +151,6 @@ contents change or the sandbox copy is missing. Servers added inside stay
 until you edit the host file. Deleting the host file leaves the sandbox
 copy in place.
 
-## Container tooling
-
-`docker` and `podman` inside the sandbox run through nested rootless podman.
-The host engine socket is never mounted. `--no-docker` or `SAGENT_DOCKER=0`
-turns this off and restores the default seccomp and AppArmor profiles. See
-[nested containers](security.md#nested-containers).
-
 ## Terminal
 
 The wrapper forwards terminal identity such as `TERM_PROGRAM`, so the CLI
@@ -175,6 +167,5 @@ line, and nothing in the config volume can override that.
 `SAGENT_AI_ATTRIBUTION=1` leaves the policy out of the next image build, so
 Claude's own settings decide.
 
-Codex has no local switch. Whether it signs is a setting of the ChatGPT
-workspace you sign in with, which the CLI fetches on each run. The wrapper
-does not change it.
+`SAGENT_AI_ATTRIBUTION` applies to Claude Code. The wrapper does not
+configure Codex attribution.
